@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* =============================================================================
+   BNP design system — "Modern booking" aesthetic.
+   Bright, photo-forward, approachable. A confident coral brand color, soft
+   neutrals, generous radius, and layered soft shadows.
+   ============================================================================= */
+
+@layer base {
+  :root {
+    --background: #ffffff;
+    --foreground: #1c1917; /* warm near-black */
+
+    --card: #ffffff;
+    --card-foreground: #1c1917;
+    --popover: #ffffff;
+    --popover-foreground: #1c1917;
+
+    /* Brand: warm coral. Friendly, premium-hospitality, distinct. */
+    --primary: #e0533d;
+    --primary-foreground: #ffffff;
+
+    --secondary: #f5f3f1; /* warm off-white */
+    --secondary-foreground: #1c1917;
+
+    --muted: #f5f3f1;
+    --muted-foreground: #78716c; /* warm gray */
+
+    --accent: #fef2ef; /* faint coral wash */
+    --accent-foreground: #b8412e;
+
+    --destructive: #dc2626;
+    --destructive-foreground: #ffffff;
+
+    --border: #ebe7e3;
+    --input: #ebe7e3;
+    --ring: #e0533d;
+
+    --radius: 0.875rem; /* roomy, modern rounding */
+
+    /* Layered soft shadows for the photo-card aesthetic. */
+    --shadow-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 4px 16px rgba(28, 25, 23, 0.06);
+    --shadow-card-hover: 0 2px 4px rgba(28, 25, 23, 0.06), 0 12px 32px rgba(28, 25, 23, 0.12);
+  }
+
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: Inter, system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  h1, h2, h3 {
+    font-family: "Fraunces", Georgia, "Times New Roman", serif;
+    letter-spacing: -0.01em;
+  }
+}
+
+@layer components {
+  /* Card with the signature soft shadow + lift on hover. */
+  .bnp-card {
+    @apply rounded-2xl border bg-card transition-all duration-200;
+    box-shadow: var(--shadow-card);
+  }
+  .bnp-card-interactive:hover {
+    box-shadow: var(--shadow-card-hover);
+    transform: translateY(-2px);
+  }
+
+  /* Pill filter button. */
+  .bnp-pill {
+    @apply rounded-full border px-4 py-1.5 text-sm font-medium transition-colors;
+  }
+}

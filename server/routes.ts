@@ -1,0 +1,555 @@
+// server/routes.ts
+// =============================================================================
+// Full REST surface for BNP.
+//   Public:  inventory browse/detail, quote, create booking, guest lookup
+//   Stripe:  webhook (source of truth for payment state)
+//   Admin:   dashboard aggregates, bookings, reconciliation (mark-paid),
+//            inventory CRUD, payments/subscriptions view, KPI push-now
+// All DB access goes through `storage`. Money is always computed server-side via
+// the canonical breakdown (see server/lib/booking.ts).
+// =============================================================================
+
+import { createServer, type Server } from "http";
+import express, { type Express } from "express";
+import { z } from "zod";
+import { setupAuth, requireAdmin } from "./auth";
+import { storage } from "./storage";
+import {
+  quoteRequestSchema,
+  createBookingSchema,
+  type CreateBookingResponse,
+} from "@shared/api-types";
+import {
+  insertPropertySchema,
+  insertRoomSchema,
+} from "@shared/schema";
+import {
+  resolveBooking,
+  buildQuote,
+  generateReference,
+  BookingError,
+} from "./lib/booking";
+import {
+  isStripeConfigured,
+  createCheckoutSession,
+  createWeeklySubscriptionCheckout,
+  constructWebhookEvent,
+} from "./lib/stripe";
+import { buildAndPushSnapshot } from "./integrations/kpiRollup";
+import { log } from "./server-log";
+
+function appUrl(req: express.Request, path: string): string {
+  const proto = req.protocol;
+  const host = req.get("host");
+  return `${proto}://${host}${path}`;
+}
+
+export async function registerRoutes(app: Express): Promise<Server> {
+  // -------------------------------------------------------------------------
+  // Stripe webhook MUST receive the raw body for signature verification, so it
+  // is registered BEFORE express.json() (mounted in index.ts). We use a
+  // route-specific raw parser here.
+  // -------------------------------------------------------------------------
+  app.post(
+    "/api/stripe/webhook",
+    express.raw({ type: "application/json" }),
+    async (req, res) => {
+      const sig = req.headers["stripe-signature"];
+      if (!sig || typeof sig !== "string") {
+        return res.status(400).json({ message: "Missing stripe-signature" });
+      }
+      let event;
+      try {
+        event = constructWebhookEvent(req.body as Buffer, sig);
+      } catch (err) {
+        log(`webhook verify failed: ${(err as Error).message}`, "stripe");
+        return res.status(400).json({ message: "Invalid signature" });
+      }
+
+      try {
+        await handleStripeEvent(event);
+      } catch (err) {
+        log(`webhook handler error: ${(err as Error).message}`, "stripe");
+        // Return 200 so Stripe doesn't hammer retries on our bugs; we logged it.
+      }
+      res.json({ received: true });
+    },
+  );
+
+  // Session-based admin auth (adds /api/admin/login, /logout, /me).
+  await setupAuth(app);
+
+  // ---- Health ----
+  app.get("/api/health", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "bnp",
+      stripe: isStripeConfigured() ? "configured" : "test-placeholder",
+      time: new Date().toISOString(),
+    });
+  });
+
+  // =========================================================================
+  // PUBLIC — inventory
+  // =========================================================================
+  app.get("/api/properties", async (_req, res, next) => {
+    try {
+      res.json(await storage.getProperties({ activeOnly: true }));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/properties/:id", async (req, res, next) => {
+    try {
+      const property = await storage.getProperty(req.params.id);
+      if (!property || !property.active) {
+        return res.status(404).json({ message: "Property not found" });
+      }
+      const rooms =
+        property.type === "COLIVING" ? await storage.getRoomsByProperty(property.id) : [];
+      res.json({ property, rooms });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/rooms/:id", async (req, res, next) => {
+    try {
+      const room = await storage.getRoom(req.params.id);
+      if (!room) return res.status(404).json({ message: "Room not found" });
+      const property = await storage.getProperty(room.propertyId);
+      res.json({ room, property });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // =========================================================================
+  // PUBLIC — quote (method-aware; computed server-side)
+  // =========================================================================
+  app.post("/api/quote", async (req, res, next) => {
+    try {
+      const parsed = quoteRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid quote request" });
+      }
+      const { propertyId, roomId, checkIn, checkOut, paymentMethod } = parsed.data;
+      const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
+      res.json(buildQuote(resolved, paymentMethod));
+    } catch (err) {
+      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // =========================================================================
+  // PUBLIC — create booking
+  //   STRIPE  → create payment record(s) + Stripe Checkout, return checkoutUrl
+  //   CASHAPP/ZELLE → pending booking + manual instructions
+  // =========================================================================
+  app.post("/api/bookings", async (req, res, next) => {
+    try {
+      const parsed = createBookingSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid booking" });
+      }
+      const { propertyId, roomId, checkIn, checkOut, paymentMethod, guest } = parsed.data;
+
+      const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
+      const quote = buildQuote(resolved, paymentMethod);
+      const reference = generateReference();
+
+      const guestRow = await storage.upsertGuestByEmail(guest);
+
+      const booking = await storage.createBooking({
+        propertyId: resolved.property.id,
+        roomId: resolved.room?.id ?? null,
+        guestId: guestRow.id,
+        model: resolved.model,
+        checkIn: resolved.checkIn,
+        checkOut: resolved.checkOut,
+        status: "PENDING_PAYMENT",
+        paymentMethod,
+        reference,
+        quotedTotal: String(quote.dueNow.total),
+      });
+
+      const dueNow = quote.dueNow.total;
+      const surcharge = quote.dueNow.surcharge;
+      const paymentType = resolved.model === "COLIVING" ? "DEPOSIT" : "ONE_TIME";
+
+      const response: CreateBookingResponse = {
+        reference,
+        bookingId: booking.id,
+        paymentMethod,
+        quote,
+      };
+
+      if (paymentMethod === "STRIPE") {
+        if (!isStripeConfigured()) {
+          return res.status(503).json({
+            message: "Card payments aren't enabled yet (Stripe test key not set). Use CashApp or Zelle.",
+          });
+        }
+        // Deposit / one-time payment record (PENDING until webhook confirms).
+        const payment = await storage.createPayment({
+          bookingId: booking.id,
+          type: paymentType,
+          method: "STRIPE",
+          amount: String(dueNow - surcharge),
+          surcharge: String(surcharge),
+          status: "PENDING",
+          stripeRef: null,
+          confirmedBy: null,
+          paidAt: null,
+        });
+
+        const session = await createCheckoutSession({
+          amount: dueNow,
+          description:
+            resolved.model === "COLIVING"
+              ? `Deposit — ${resolved.room!.name} @ ${resolved.property.name}`
+              : `Stay — ${resolved.property.name}`,
+          reference,
+          guestEmail: guest.email,
+          successUrl: appUrl(req, `/confirmation/${reference}`),
+          cancelUrl: appUrl(req, `/property/${resolved.property.id}`),
+        });
+        await storage.updatePayment(payment.id, { stripeRef: session.id });
+        response.checkoutUrl = session.url ?? undefined;
+      } else {
+        // CASHAPP / ZELLE — manual, no surcharge, pending until admin confirms.
+        await storage.createPayment({
+          bookingId: booking.id,
+          type: paymentType,
+          method: paymentMethod,
+          amount: String(dueNow),
+          surcharge: "0",
+          status: "PENDING",
+          stripeRef: null,
+          confirmedBy: null,
+          paidAt: null,
+        });
+        const handle =
+          paymentMethod === "CASHAPP"
+            ? process.env.CASHAPP_TAG ?? "$BeNiceProperties"
+            : process.env.ZELLE_HANDLE ?? "pay@beniceproperties.com";
+        response.manualInstructions = {
+          method: paymentMethod,
+          handle,
+          amount: dueNow,
+          memo: reference,
+        };
+      }
+
+      res.status(201).json(response);
+    } catch (err) {
+      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // =========================================================================
+  // PUBLIC — guest booking lookup (reference + email)
+  // =========================================================================
+  app.get("/api/lookup", async (req, res, next) => {
+    try {
+      const schema = z.object({ reference: z.string().min(1), email: z.string().email() });
+      const parsed = schema.safeParse(req.query);
+      if (!parsed.success) return res.status(400).json({ message: "Provide reference and email" });
+
+      const booking = await storage.getBookingByReference(parsed.data.reference);
+      if (!booking) return res.status(404).json({ message: "Booking not found" });
+      const guest = await storage.getGuest(booking.guestId);
+      // Verify the email matches the booking's guest (lightweight auth).
+      if (!guest || guest.email.toLowerCase() !== parsed.data.email.toLowerCase()) {
+        return res.status(404).json({ message: "Booking not found" });
+      }
+      const property = await storage.getProperty(booking.propertyId);
+      const payments = await storage.getPaymentsByBooking(booking.id);
+      const room = booking.roomId ? await storage.getRoom(booking.roomId) : null;
+      res.json({
+        booking,
+        property: property ? { name: property.name, location: property.location } : null,
+        room: room ? { name: room.name } : null,
+        // Only payment status/amounts — no stripe refs to the public.
+        payments: payments.map((p) => ({
+          type: p.type,
+          method: p.method,
+          amount: p.amount,
+          surcharge: p.surcharge,
+          status: p.status,
+          paidAt: p.paidAt,
+        })),
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // =========================================================================
+  // ADMIN (auth-gated)
+  // =========================================================================
+  app.get("/api/admin/dashboard", requireAdmin, async (_req, res, next) => {
+    try {
+      const agg = await storage.getKpiAggregates();
+      const bookings = await storage.getBookings();
+      const pending = await storage.getPendingManualPayments();
+      res.json({ aggregates: agg, recentBookings: bookings.slice(0, 20), pendingCount: pending.length });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/admin/bookings", requireAdmin, async (req, res, next) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      res.json(await storage.getBookings(status ? { status } : undefined));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Reconciliation queue: pending manual payments with booking + guest context.
+  app.get("/api/admin/reconciliation", requireAdmin, async (_req, res, next) => {
+    try {
+      const pending = await storage.getPendingManualPayments();
+      const enriched = await Promise.all(
+        pending
+          .filter((p) => p.method !== "STRIPE")
+          .map(async (p) => {
+            const booking = await storage.getBooking(p.bookingId);
+            const guest = booking ? await storage.getGuest(booking.guestId) : null;
+            return {
+              payment: p,
+              booking,
+              guest: guest ? { name: guest.name, email: guest.email } : null,
+            };
+          }),
+      );
+      res.json(enriched);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Mark a manual payment paid → confirm booking + record who/when.
+  app.post("/api/admin/payments/:id/mark-paid", requireAdmin, async (req, res, next) => {
+    try {
+      const payment = await storage.getPayment(req.params.id);
+      if (!payment) return res.status(404).json({ message: "Payment not found" });
+      if (payment.method === "STRIPE") {
+        return res.status(400).json({ message: "Stripe payments are confirmed by webhook, not manually" });
+      }
+      const adminId = (req.user as { id: string }).id;
+      const updated = await storage.updatePayment(payment.id, {
+        status: "PAID",
+        confirmedBy: adminId,
+        paidAt: new Date(),
+      });
+      // Confirm the booking; activate co-living + occupy the room.
+      const booking = await storage.getBooking(payment.bookingId);
+      if (booking) {
+        await storage.updateBooking(booking.id, {
+          status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
+        });
+        if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
+      }
+      res.json({ payment: updated });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Payments / subscriptions read view.
+  app.get("/api/admin/payments", requireAdmin, async (_req, res, next) => {
+    try {
+      const bookings = await storage.getBookings();
+      const rows = await Promise.all(
+        bookings.map(async (b) => ({
+          booking: b,
+          payments: await storage.getPaymentsByBooking(b.id),
+          subscription: await storage.getSubscriptionByBooking(b.id),
+        })),
+      );
+      res.json(rows);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // ---- Inventory management ----
+  app.post("/api/admin/properties", requireAdmin, async (req, res, next) => {
+    try {
+      const parsed = insertPropertySchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.status(201).json(await storage.createProperty(parsed.data));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.patch("/api/admin/properties/:id", requireAdmin, async (req, res, next) => {
+    try {
+      const parsed = insertPropertySchema.partial().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const updated = await storage.updateProperty(req.params.id, parsed.data);
+      if (!updated) return res.status(404).json({ message: "Property not found" });
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/admin/properties", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await storage.getProperties());
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post("/api/admin/rooms", requireAdmin, async (req, res, next) => {
+    try {
+      const parsed = insertRoomSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.status(201).json(await storage.createRoom(parsed.data));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.patch("/api/admin/rooms/:id", requireAdmin, async (req, res, next) => {
+    try {
+      const parsed = insertRoomSchema.partial().safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const updated = await storage.updateRoom(req.params.id, parsed.data);
+      if (!updated) return res.status(404).json({ message: "Room not found" });
+      res.json(updated);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Manually trigger a KPI rollup + UO push (dry-run unless enabled).
+  app.post("/api/admin/kpi/push", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json({ snapshot: await buildAndPushSnapshot() });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  return createServer(app);
+}
+
+// ===========================================================================
+// Stripe webhook handler — SOURCE OF TRUTH for payment state.
+// ===========================================================================
+// Extract the subscription id from an invoice across Stripe SDK shapes. v18
+// moved it off `invoice.subscription`; it now lives under the invoice line
+// items' parent (subscription_item_details) or the invoice parent details.
+function subIdFromInvoice(invoice: import("stripe").Stripe.Invoice): string | undefined {
+  const anyInv = invoice as unknown as {
+    subscription?: string | { id: string };
+    parent?: { subscription_details?: { subscription?: string | { id: string } } };
+    lines?: { data?: Array<{ parent?: { subscription_item_details?: { subscription?: string } } }> };
+  };
+  const direct = anyInv.subscription;
+  if (typeof direct === "string") return direct;
+  if (direct && typeof direct === "object") return direct.id;
+  const parentSub = anyInv.parent?.subscription_details?.subscription;
+  if (typeof parentSub === "string") return parentSub;
+  if (parentSub && typeof parentSub === "object") return parentSub.id;
+  const lineSub = anyInv.lines?.data?.find((l) => l.parent?.subscription_item_details?.subscription)
+    ?.parent?.subscription_item_details?.subscription;
+  return lineSub;
+}
+
+async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<void> {
+  switch (event.type) {
+    case "checkout.session.completed": {
+      const session = event.data.object as import("stripe").Stripe.Checkout.Session;
+      const reference = session.metadata?.reference || session.client_reference_id || undefined;
+      if (!reference) break;
+      const booking = await storage.getBookingByReference(reference);
+      if (!booking) break;
+
+      // Mark the one-time/deposit payment PAID (matched by session id stored as stripeRef).
+      const payment = await storage.getPaymentByStripeRef(session.id);
+      if (payment) {
+        await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
+      }
+
+      // Confirm booking; co-living becomes ACTIVE and the room is occupied.
+      await storage.updateBooking(booking.id, {
+        status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
+      });
+      if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
+
+      // If this checkout also created a subscription (co-living weekly), record it.
+      if (session.mode === "subscription" && session.subscription) {
+        const subId =
+          typeof session.subscription === "string" ? session.subscription : session.subscription.id;
+        const existing = await storage.getSubscriptionByStripeId(subId);
+        if (!existing) {
+          const room = booking.roomId ? await storage.getRoom(booking.roomId) : null;
+          await storage.createSubscription({
+            bookingId: booking.id,
+            stripeSubscriptionId: subId,
+            weeklyAmount: room ? room.weeklyRent : "0",
+            status: "active",
+            nextChargeAt: null,
+          });
+        }
+      }
+      log(`booking ${reference} confirmed via checkout.session.completed`, "stripe");
+      break;
+    }
+
+    case "invoice.paid": {
+      const invoice = event.data.object as import("stripe").Stripe.Invoice;
+      const subId = subIdFromInvoice(invoice);
+      if (!subId) break;
+      const sub = await storage.getSubscriptionByStripeId(subId);
+      if (!sub) break;
+      // Record the weekly rent payment.
+      await storage.createPayment({
+        bookingId: sub.bookingId,
+        type: "WEEKLY",
+        method: "STRIPE",
+        amount: String((invoice.amount_paid ?? 0) / 100),
+        surcharge: "0",
+        status: "PAID",
+        stripeRef: invoice.id ?? null,
+        confirmedBy: null,
+        paidAt: new Date(),
+      });
+      await storage.updateSubscription(sub.id, { status: "active" });
+      log(`weekly invoice paid for subscription ${subId}`, "stripe");
+      break;
+    }
+
+    case "invoice.payment_failed": {
+      const invoice = event.data.object as import("stripe").Stripe.Invoice;
+      const subId = subIdFromInvoice(invoice);
+      if (!subId) break;
+      const sub = await storage.getSubscriptionByStripeId(subId);
+      if (sub) await storage.updateSubscription(sub.id, { status: "past_due" });
+      log(`weekly invoice FAILED for subscription ${subId}`, "stripe");
+      break;
+    }
+
+    case "customer.subscription.updated":
+    case "customer.subscription.deleted": {
+      const sub = event.data.object as import("stripe").Stripe.Subscription;
+      const local = await storage.getSubscriptionByStripeId(sub.id);
+      if (local) await storage.updateSubscription(local.id, { status: sub.status });
+      break;
+    }
+
+    default:
+      break;
+  }
+}
