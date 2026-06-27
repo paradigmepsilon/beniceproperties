@@ -231,3 +231,30 @@ rejects ("Saved card + own scheduler, not Stripe Subscriptions").
 **PHASE 3: COMPLETE — tests green**
 
 ---
+
+## POST-PHASE-3 — Schema applied to the database
+
+After the user confirmed the current `DATABASE_URL` branch is a dev/test branch
+(not prod), the additive lease schema was applied:
+
+- `drizzle-kit push` could not be used non-interactively (it prompts to
+  disambiguate new-column vs rename and there is no TTY in this shell). Instead an
+  idempotent additive migration script was written and run:
+  `scripts/push-lease-schema.mjs` — every statement is `IF NOT EXISTS` /
+  `ADD COLUMN IF NOT EXISTS`, so it never drops or alters an existing column and is
+  safe to re-run.
+- **Pre-state verified:** existing tables (admin_users, bookings, guests,
+  kpi_snapshots, payments, properties, rooms, subscriptions, admin_sessions) all
+  present; none of the new tables/columns existed yet (no partial migration).
+- **Applied:** 4 new tables (`leases`, `lease_rooms`, `payment_schedule`,
+  `late_fees`) + indexes, and 3 additive columns (`properties.entity`,
+  `rooms.room_number`, `leases.signed_document_html`).
+- **Post-state verified:** all 4 tables + 3 columns present; existing data intact
+  (3 placeholder properties preserved, 0 bookings). `npm test` (39) and `npx tsc`
+  still green afterward.
+
+The DB is now ready for Phase 4 to write real lease/schedule rows. (The
+`migrations/0000_bnp_baseline.sql` drizzle baseline remains as the schema-of-record
+artifact; the script is the applied delta.)
+
+---
