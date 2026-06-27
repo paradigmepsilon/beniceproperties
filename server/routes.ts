@@ -30,6 +30,11 @@ import {
   BookingError,
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
+import { createDraftLease, signLease } from "./lib/leaseFlow";
+import {
+  createDraftLeaseSchema,
+  signLeaseSchema,
+} from "@shared/api-types";
 import {
   isStripeConfigured,
   createCheckoutSession,
@@ -160,6 +165,103 @@ export async function registerRoutes(app: Express): Promise<void> {
       res.json(await buildLeaseQuote(parsed.data));
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // =========================================================================
+  // PUBLIC — co-living lease creation + e-signature (Phase 3). No payment here.
+  // =========================================================================
+
+  // Create the DRAFT (→ PENDING_SIGNATURE) lease + persisted schedule, and
+  // return the agreement rendered for review.
+  app.post("/api/leases", async (req, res, next) => {
+    try {
+      const parsed = createDraftLeaseSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid lease request" });
+      }
+      const { lease, documentHtml } = await createDraftLease(parsed.data);
+      res.status(201).json({ leaseId: lease.id, status: lease.status, documentHtml });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Fetch a lease + its schedule + the review document (for the sign page).
+  app.get("/api/leases/:id", async (req, res, next) => {
+    try {
+      const lease = await storage.getLease(req.params.id);
+      if (!lease) return res.status(404).json({ message: "Lease not found" });
+      const leaseRooms = await storage.getLeaseRooms(lease.id);
+      const schedule = await storage.getScheduleByLease(lease.id);
+      const guest = await storage.getGuest(lease.guestId);
+      res.json({
+        lease: {
+          id: lease.id,
+          status: lease.status,
+          startDate: lease.startDate,
+          endDate: lease.endDate,
+          paymentCadence: lease.paymentCadence,
+          weeklyRateSnapshot: lease.weeklyRateSnapshot,
+          totalLeaseValue: lease.totalLeaseValue,
+          prorationNote: lease.prorationNote,
+          signedAt: lease.signedAt,
+          signedName: lease.signedName,
+          signedPdfUrl: lease.signedPdfUrl,
+        },
+        rooms: leaseRooms.map((lr) => ({ name: lr.roomNameSnapshot, roomNumber: lr.roomNumberSnapshot })),
+        schedule: schedule.map((s) => ({
+          seq: s.scheduleSeq,
+          dueDate: s.dueDate,
+          amount: s.amount,
+          status: s.status,
+        })),
+        guest: guest ? { name: guest.name, email: guest.email } : null,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Sign the lease (typed name + affirmation). Captures timestamp + IP server-side.
+  app.post("/api/leases/:id/sign", async (req, res, next) => {
+    try {
+      const parsed = signLeaseSchema.safeParse({ ...req.body, leaseId: req.params.id });
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid signature" });
+      }
+      const fwd = req.headers["x-forwarded-for"];
+      const ip =
+        (typeof fwd === "string" ? fwd.split(",")[0]?.trim() : undefined) ||
+        req.socket.remoteAddress ||
+        "unknown";
+      const { lease, documentUrl } = await signLease({
+        leaseId: parsed.data.leaseId,
+        signedName: parsed.data.signedName,
+        affirmed: parsed.data.affirmed,
+        ip,
+      });
+      res.json({ leaseId: lease.id, status: lease.status, documentUrl });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Serve the signed agreement HTML (guest re-download, anytime). Falls back to
+  // the review render if not yet signed.
+  app.get("/api/leases/:id/document", async (req, res, next) => {
+    try {
+      const lease = await storage.getLease(req.params.id);
+      if (!lease) return res.status(404).json({ message: "Lease not found" });
+      if (!lease.signedDocumentHtml) {
+        return res.status(409).json({ message: "Lease has not been signed yet" });
+      }
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(lease.signedDocumentHtml);
+    } catch (err) {
       next(err);
     }
   });

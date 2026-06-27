@@ -83,6 +83,7 @@ CREATE TABLE "leases" (
 	"signed_at" timestamp,
 	"signed_ip" text,
 	"signed_pdf_url" text,
+	"signed_document_html" text,
 	"stripe_customer_id" text,
 	"stripe_payment_method_id" text,
 	"created_at" timestamp DEFAULT now() NOT NULL,

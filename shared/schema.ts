@@ -438,7 +438,12 @@ export const leases = pgTable(
     signedName: text("signed_name"),
     signedAt: timestamp("signed_at"),
     signedIp: text("signed_ip"),
+    // URL the guest re-downloads their signed agreement from (the serve route).
     signedPdfUrl: text("signed_pdf_url"),
+    // The rendered signed agreement (self-contained, print-to-PDF HTML), frozen
+    // at signing time with the signature block, timestamp, and IP. Stored inline
+    // (no external blob store wired yet). Reference-only; contains no card data.
+    signedDocumentHtml: text("signed_document_html"),
     // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
     stripeCustomerId: text("stripe_customer_id"),
     stripePaymentMethodId: text("stripe_payment_method_id"),

@@ -130,3 +130,48 @@ export interface LeaseQuoteResponse {
   /** The amount due today (schedule_seq 1). Convenience for the UI. */
   dueToday: number;
 }
+
+// --- Create draft lease (Phase 3) ----------------------------------------
+// Commits the previewed selection into a DRAFT → PENDING_SIGNATURE lease with
+// its persisted payment schedule. No payment taken.
+
+export const createDraftLeaseSchema = z.object({
+  propertyId: z.string().min(1),
+  roomIds: z.array(z.string().min(1)).min(1, "Select at least one room"),
+  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  cadence: z.enum(PAYMENT_CADENCES),
+  guest: z.object({
+    name: z.string().min(1, "Name required"),
+    email: z.string().email("Valid email required"),
+    phone: z.string().optional(),
+  }),
+});
+
+export type CreateDraftLeaseRequest = z.infer<typeof createDraftLeaseSchema>;
+
+export interface CreateDraftLeaseResponse {
+  leaseId: string;
+  status: string;
+  documentHtml: string;
+}
+
+// --- Sign lease (Phase 3) ------------------------------------------------
+// In-app typed e-signature: legal name + affirmation. Timestamp + IP captured
+// server-side. Moves the lease to PENDING_FIRST_PAYMENT.
+
+export const signLeaseSchema = z.object({
+  leaseId: z.string().min(1),
+  signedName: z.string().min(2, "Type your full legal name"),
+  affirmed: z.literal(true, {
+    errorMap: () => ({ message: "You must affirm the agreement to sign" }),
+  }),
+});
+
+export type SignLeaseRequest = z.infer<typeof signLeaseSchema>;
+
+export interface SignLeaseResponse {
+  leaseId: string;
+  status: string;
+  documentUrl: string;
+}

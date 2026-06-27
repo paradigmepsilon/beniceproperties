@@ -1,5 +1,5 @@
 {
-  "id": "f9cc9b97-bf9f-4091-b15d-93a687b0dd13",
+  "id": "be7fc422-1b8c-431b-9267-a1ae2366e040",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -802,6 +802,12 @@
         },
         "signed_pdf_url": {
           "name": "signed_pdf_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "signed_document_html": {
+          "name": "signed_document_html",
           "type": "text",
           "primaryKey": false,
           "notNull": false

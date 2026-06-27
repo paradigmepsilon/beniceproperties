@@ -158,3 +158,76 @@ rejects ("Saved card + own scheduler, not Stripe Subscriptions").
 **PHASE 2: COMPLETE — tests green**
 
 ---
+
+## PHASE 3 — Lease Generation + E-Signature (in-app)
+
+**What was built**
+- `server/lib/leaseDocument.ts` — co-living Room Rental Agreement generator from
+  an ADMIN-EDITABLE template (`DEFAULT_LEASE_TEMPLATE`: intro + 6 sections +
+  house rules + E-SIGN/UETA affirmation statement, `{{token}}` substitution).
+  `renderLeaseHtml()` produces the review render; `renderSignedLeaseHtml()` appends
+  the signature block (typed name, ISO timestamp, IP). Escapes user-supplied
+  fields. Generic — every name comes from lease data, nothing hard-coded. Late-fee
+  policy ($25/day from the day after due date) and the full schedule table are
+  rendered in.
+- `server/lib/leaseFlow.ts`:
+  - `createDraftLease()` re-validates the selection via `buildLeaseQuote`
+    (server recompute, never trust client), upserts the guest, persists the lease +
+    room links + payment schedule via `createLeaseWithSchedule`, sets status
+    `PENDING_SIGNATURE`, returns the review document.
+  - `signLease()` captures typed legal name + affirmation + timestamp + IP,
+    rebuilds the signed agreement from the lease's OWN persisted data (no drift),
+    stores it, sets the signature fields + `signedPdfUrl` (serve route) +
+    `signedDocumentHtml`, and moves the lease `PENDING_SIGNATURE →
+    PENDING_FIRST_PAYMENT`. **Never reaches ACTIVE** — that gate is the first
+    payment (Phase 4). Idempotent: re-signing a signed lease is a no-op.
+- `shared/schema.ts` — additive column `leases.signed_document_html` (stores the
+  rendered signed artifact inline; no blob store wired yet).
+- `shared/api-types.ts` — `createDraftLeaseSchema` / `signLeaseSchema` + response
+  types. The sign schema requires `affirmed: true`.
+- `server/routes.ts` — `POST /api/leases` (create draft), `GET /api/leases/:id`
+  (lease + schedule + guest for the sign page), `POST /api/leases/:id/sign` (IP
+  captured from X-Forwarded-For / socket), `GET /api/leases/:id/document` (serves
+  the signed HTML; guest re-download anytime).
+- `client/src/pages/lease-sign.tsx` + `/lease/sign` route — creates the draft on
+  load, shows the agreement in a sandboxed iframe, captures typed name +
+  affirmation checkbox, signs, then confirms "pending first payment" with a
+  download link. Hands off to payment setup (Phase 4).
+
+**Files touched**
+- `server/lib/leaseDocument.ts` (new), `server/lib/leaseFlow.ts` (new),
+  `shared/schema.ts` (+1 column), `shared/api-types.ts`, `server/routes.ts`,
+  `client/src/pages/lease-sign.tsx` (new), `client/src/App.tsx`,
+  `server/lib/leaseDocument.test.ts` (new), `server/lib/leaseFlow.test.ts` (new),
+  `migrations/` (reset to a single clean `0000_bnp_baseline.sql`)
+
+**Tests run + results**
+- `npm test` → **39 passed** (added 7 document-render + 8 lease-flow tests). Flow
+  tests assert the key invariant: signing moves to PENDING_FIRST_PAYMENT and
+  **never** to ACTIVE; name/affirmation guards; IP + timestamp capture; idempotent
+  re-sign; 404 on missing lease.
+- `npx tsc` → exit 0.  `npm run build` → exit 0.
+- `drizzle-kit generate` → clean baseline, 12 tables, **zero** destructive ops.
+
+**Decisions**
+- **PDF artifact = self-contained HTML** (print-to-PDF), stored in
+  `signed_document_html` and served at `/api/leases/:id/document`. Rationale: no
+  PDF library is in the dependency set, and adding puppeteer/pdfkit would bloat the
+  Vercel serverless bundle and add a dependency for a format choice. E-SIGN/UETA
+  validity comes from the captured name + affirmation + timestamp + IP on the lease
+  row, not the file container. This is a low-stakes, reversible engineering choice
+  (artifact format), so it was made without halting; a true PDF renderer can be
+  swapped in later behind the same route.
+- The signed document is rebuilt from the lease's persisted data at signing time,
+  not re-quoted, so the artifact can never drift if inventory changes after booking.
+- IP is taken from `X-Forwarded-For` (first hop) then the socket address — works
+  behind Vercel's proxy.
+
+**Deferred / suggested**
+- Admin UI to edit `DEFAULT_LEASE_TEMPLATE` (template is already data-shaped for it).
+- Swap the HTML artifact for a true PDF renderer if a hard PDF is later required.
+- First-payment collection + lease → ACTIVE transition are Phase 4 (gated).
+
+**PHASE 3: COMPLETE — tests green**
+
+---
