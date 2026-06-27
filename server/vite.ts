@@ -69,7 +69,16 @@ export function serveStatic(app: Express) {
       `Could not find the build directory: ${distPath}. Run \`npm run build\` first.`,
     );
   }
-  app.use(express.static(distPath));
+  app.use(
+    express.static(distPath, {
+      setHeaders(res, filePath) {
+        // Never cache the service worker or manifest so PWA updates ship.
+        if (/(?:sw\.js|workbox-.*\.js|manifest\.webmanifest)$/.test(filePath)) {
+          res.setHeader("Cache-Control", "no-cache");
+        }
+      },
+    }),
+  );
   app.use("*", (_req, res) => {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
