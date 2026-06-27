@@ -6,3 +6,4 @@ dist/
 .DS_Store
 tsbuildinfo
 migrations/meta/_journal.json.lock
+.vercel
