@@ -8,7 +8,7 @@ var __export = (target, all) => {
 import "dotenv/config";
 
 // server/storage.ts
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql as sql3 } from "drizzle-orm";
 
 // server/db.ts
 import { neon } from "@neondatabase/serverless";
@@ -29,6 +29,9 @@ __export(schema_exports, {
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
   LEASE_STATUSES: () => LEASE_STATUSES,
   MAX_LEASE_DAYS: () => MAX_LEASE_DAYS,
+  MESSAGE_AUTHOR_ROLES: () => MESSAGE_AUTHOR_ROLES,
+  MESSAGE_CATEGORIES: () => MESSAGE_CATEGORIES,
+  MESSAGE_STATUSES: () => MESSAGE_STATUSES,
   NOTIFICATION_KINDS: () => NOTIFICATION_KINDS,
   OVERDUE_MESSAGE_DAYS: () => OVERDUE_MESSAGE_DAYS,
   PAYMENT_CADENCES: () => PAYMENT_CADENCES,
@@ -43,10 +46,12 @@ __export(schema_exports, {
   adminUsers: () => adminUsers,
   appSettings: () => appSettings,
   bookings: () => bookings,
+  guestMessages: () => guestMessages,
   guests: () => guests,
   insertAdminUserSchema: () => insertAdminUserSchema,
   insertAppSettingSchema: () => insertAppSettingSchema,
   insertBookingSchema: () => insertBookingSchema,
+  insertGuestMessageSchema: () => insertGuestMessageSchema,
   insertGuestSchema: () => insertGuestSchema,
   insertKpiSnapshotSchema: () => insertKpiSnapshotSchema,
   insertLateFeeSchema: () => insertLateFeeSchema,
@@ -403,6 +408,10 @@ var leases = pgTable(
     // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
     stripeCustomerId: text("stripe_customer_id"),
     stripePaymentMethodId: text("stripe_payment_method_id"),
+    // --- Guest portal access token (Phase 6). Random, unguessable; the guest's
+    // self-serve link is /portal/<token>. Mirrors TRAD's tokenized preference
+    // links — no full account needed. Additive. ---
+    portalToken: text("portal_token"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull()
   },
@@ -568,6 +577,39 @@ var insertUoEscalationSchema = createInsertSchema(uoEscalations, {
   kind: z.enum(ESCALATION_KINDS),
   severity: z.enum(ESCALATION_SEVERITIES).optional(),
   status: z.enum(ESCALATION_STATUSES).optional()
+}).omit({ id: true, createdAt: true, updatedAt: true });
+var MESSAGE_AUTHOR_ROLES = ["GUEST", "STAFF"];
+var MESSAGE_STATUSES = ["OPEN", "ANSWERED", "RESOLVED"];
+var MESSAGE_CATEGORIES = ["QUESTION", "MAINTENANCE", "OTHER"];
+var guestMessages = pgTable(
+  "guest_messages",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    guestId: varchar("guest_id").notNull(),
+    // The root message id of this thread (a root row points to itself).
+    threadId: varchar("thread_id").notNull(),
+    // "GUEST" | "STAFF"
+    authorRole: text("author_role").notNull().default("GUEST"),
+    // "QUESTION" | "MAINTENANCE" | "OTHER" (set on the root)
+    category: text("category").notNull().default("QUESTION"),
+    subject: text("subject"),
+    body: text("body").notNull(),
+    // Thread lifecycle, maintained on the root row: OPEN | ANSWERED | RESOLVED
+    status: text("status").notNull().default("OPEN"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("guest_messages_lease_idx").on(table.leaseId),
+    threadIdx: index("guest_messages_thread_idx").on(table.threadId),
+    statusIdx: index("guest_messages_status_idx").on(table.status)
+  })
+);
+var insertGuestMessageSchema = createInsertSchema(guestMessages, {
+  authorRole: z.enum(MESSAGE_AUTHOR_ROLES).optional(),
+  category: z.enum(MESSAGE_CATEGORIES).optional(),
+  status: z.enum(MESSAGE_STATUSES).optional()
 }).omit({ id: true, createdAt: true, updatedAt: true });
 
 // server/db.ts
@@ -799,8 +841,37 @@ var Storage = class {
     const [row] = await db.update(leases).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(leases.id, id)).returning();
     return row;
   }
+  async getLeaseByPortalToken(token) {
+    const [row] = await db.select().from(leases).where(eq(leases.portalToken, token));
+    return row;
+  }
   async getLeaseRooms(leaseId) {
     return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+  // --- Guest messages ---
+  async getMessageThreadsByLease(leaseId) {
+    const all = await db.select().from(guestMessages).where(eq(guestMessages.leaseId, leaseId)).orderBy(desc(guestMessages.createdAt));
+    return all.filter((m) => m.id === m.threadId);
+  }
+  async getMessagesByThread(threadId) {
+    return db.select().from(guestMessages).where(eq(guestMessages.threadId, threadId)).orderBy(asc(guestMessages.createdAt));
+  }
+  async getMessage(id) {
+    const [row] = await db.select().from(guestMessages).where(eq(guestMessages.id, id));
+    return row;
+  }
+  async createMessage(data) {
+    if (data.threadId) {
+      const [row2] = await db.insert(guestMessages).values(data).returning();
+      return row2;
+    }
+    const [row] = await db.insert(guestMessages).values({ ...data, threadId: sql3`gen_random_uuid()` }).returning();
+    const [fixed] = await db.update(guestMessages).set({ threadId: row.id }).where(eq(guestMessages.id, row.id)).returning();
+    return fixed;
+  }
+  async updateMessage(id, updates) {
+    const [row] = await db.update(guestMessages).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(guestMessages.id, id)).returning();
+    return row;
   }
   // --- Payment schedule ---
   async getScheduleByLease(leaseId) {

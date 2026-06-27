@@ -74,6 +74,7 @@ export interface StartFirstPaymentResult {
   clientSecret: string;
   paymentIntentId: string;
   amount: number;
+  portalToken: string | null;
 }
 
 export async function startFirstPayment(leaseId: string): Promise<StartFirstPaymentResult> {
@@ -126,7 +127,12 @@ export async function startFirstPayment(leaseId: string): Promise<StartFirstPaym
   await storage.updateScheduleRow(first.id, { stripePaymentIntentId: pi.id });
 
   if (!pi.client_secret) throw new LeaseError("Stripe did not return a client secret", 502);
-  return { clientSecret: pi.client_secret, paymentIntentId: pi.id, amount };
+  return {
+    clientSecret: pi.client_secret,
+    paymentIntentId: pi.id,
+    amount,
+    portalToken: lease.portalToken ?? null,
+  };
 }
 
 /**

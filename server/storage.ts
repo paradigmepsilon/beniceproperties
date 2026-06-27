@@ -9,7 +9,7 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   properties,
@@ -27,6 +27,7 @@ import {
   notificationLog,
   appSettings,
   uoEscalations,
+  guestMessages,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -57,6 +58,8 @@ import {
   type AppSetting,
   type UoEscalation,
   type InsertUoEscalation,
+  type GuestMessage,
+  type InsertGuestMessage,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -141,7 +144,15 @@ export interface IStorage {
     schedule: InsertPaymentScheduleRow[];
   }): Promise<Lease>;
   updateLease(id: string, updates: Partial<InsertLease>): Promise<Lease | undefined>;
+  getLeaseByPortalToken(token: string): Promise<Lease | undefined>;
   getLeaseRooms(leaseId: string): Promise<LeaseRoom[]>;
+
+  // --- Guest messages (threaded portal questions / requests) ---
+  getMessageThreadsByLease(leaseId: string): Promise<GuestMessage[]>; // roots only
+  getMessagesByThread(threadId: string): Promise<GuestMessage[]>; // all in a thread
+  getMessage(id: string): Promise<GuestMessage | undefined>;
+  createMessage(data: InsertGuestMessage): Promise<GuestMessage>;
+  updateMessage(id: string, updates: Partial<InsertGuestMessage>): Promise<GuestMessage | undefined>;
 
   // --- Payment schedule ---
   getScheduleByLease(leaseId: string): Promise<PaymentScheduleRow[]>;
@@ -498,8 +509,69 @@ class Storage implements IStorage {
     return row;
   }
 
+  async getLeaseByPortalToken(token: string): Promise<Lease | undefined> {
+    const [row] = await db.select().from(leases).where(eq(leases.portalToken, token));
+    return row;
+  }
+
   async getLeaseRooms(leaseId: string): Promise<LeaseRoom[]> {
     return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+
+  // --- Guest messages ---
+  async getMessageThreadsByLease(leaseId: string): Promise<GuestMessage[]> {
+    // Roots: where id === threadId. Fetch lease messages, filter to roots.
+    const all = await db
+      .select()
+      .from(guestMessages)
+      .where(eq(guestMessages.leaseId, leaseId))
+      .orderBy(desc(guestMessages.createdAt));
+    return all.filter((m) => m.id === m.threadId);
+  }
+
+  async getMessagesByThread(threadId: string): Promise<GuestMessage[]> {
+    return db
+      .select()
+      .from(guestMessages)
+      .where(eq(guestMessages.threadId, threadId))
+      .orderBy(asc(guestMessages.createdAt));
+  }
+
+  async getMessage(id: string): Promise<GuestMessage | undefined> {
+    const [row] = await db.select().from(guestMessages).where(eq(guestMessages.id, id));
+    return row;
+  }
+
+  async createMessage(data: InsertGuestMessage): Promise<GuestMessage> {
+    // Root messages reference themselves as the thread. Caller passes threadId
+    // for replies; for a new root, insert then point threadId at the new id.
+    if (data.threadId) {
+      const [row] = await db.insert(guestMessages).values(data).returning();
+      return row;
+    }
+    const [row] = await db
+      .insert(guestMessages)
+      .values({ ...data, threadId: sql`gen_random_uuid()` as unknown as string })
+      .returning();
+    // Fix threadId to equal the row's own id (self-referential root).
+    const [fixed] = await db
+      .update(guestMessages)
+      .set({ threadId: row.id })
+      .where(eq(guestMessages.id, row.id))
+      .returning();
+    return fixed;
+  }
+
+  async updateMessage(
+    id: string,
+    updates: Partial<InsertGuestMessage>,
+  ): Promise<GuestMessage | undefined> {
+    const [row] = await db
+      .update(guestMessages)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(guestMessages.id, id))
+      .returning();
+    return row;
   }
 
   // --- Payment schedule ---

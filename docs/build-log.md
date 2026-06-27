@@ -458,4 +458,60 @@ artifact; the script is the applied delta.)
 
 **PHASE 5: BUILT — test-mode green — awaiting "go" review (no live charge run)**
 
+> Phase 5 reviewed; user replied "go". Phases 6–8 run autonomously; 9 stops for final review.
+
+---
+
+## PHASE 6 — Guest Portal (book, pay, sign, ask, check status)
+
+**What was built**
+- Token-authenticated portal (no account): `leases.portal_token` (additive,
+  unguessable 32-char nanoid, set at lease creation). Self-serve link is
+  `/portal/<token>` — mirrors TRAD's tokenized links.
+- `server/lib/portal.ts` (new): `getPortalView` (lease + rooms + full schedule
+  with paid/upcoming/late status + accrued late-fee total + message threads +
+  signed-lease URL), `payInstallmentNow` (charge an open/LATE/FAILED installment
+  early against the saved card — same idempotency key as the scheduler so a portal
+  pay + a sweep can't double-charge — then bills that row's accrued late fees),
+  and threaded messaging (`submitMessage`/`replyToThread`/`getThread`).
+- `guest_messages` table (additive): threaded (root row points to itself;
+  replies share `thread_id`), `author_role` GUEST/STAFF, status OPEN/ANSWERED/
+  RESOLVED on the root. Storage methods incl. self-referential root creation.
+- Routes: `GET /api/portal/:token`, `POST /api/portal/:token/pay/:seq`,
+  `POST /api/portal/:token/messages`, `GET …/messages/:threadId`,
+  `POST …/messages/:threadId/reply`.
+- `client/src/pages/portal.tsx` + `/portal/:token` route — lease summary, schedule
+  with a "Pay now" on the next due row (saved-card leases), accrued late fees,
+  signed-lease download, and a submit/track messages panel. The first-payment
+  page now redirects to `/portal/<token>` on success.
+
+**Files touched**
+- `shared/schema.ts` (+`portal_token`, +`guest_messages`), `server/storage.ts`
+  (+token lookup, +message methods), `server/lib/portal.ts` (new),
+  `server/lib/leaseFlow.ts` (generate portal token), `server/lib/leasePayments.ts`
+  (return token), `server/routes.ts` (+portal routes), `client/src/pages/portal.tsx`
+  (new), `client/src/pages/lease-pay.tsx` (redirect to portal), `client/src/App.tsx`,
+  `server/lib/portal.test.ts` (new), `scripts/push-lease-schema.mjs` (+P6), bundled `api/*`
+
+**Tests + results**
+- `npm test` → **79 passed** (+8 portal: token resolution, view shape + accrued
+  late-fee total, pay-installment success + no-card/already-paid guards, message
+  submit + reply-reopens-thread + foreign-thread rejection).
+- `tsc` 0 · `build` 0 · `build:api` 0. `guest_messages` + `portal_token` applied to
+  DB (additive); baseline regenerated (16 tables, 0 destructive).
+
+**Decisions**
+- Portal pay reuses the scheduler's per-installment Stripe idempotency key, so a
+  guest paying early and the nightly sweep can never double-charge the same row.
+- STR guests keep the existing reference+email `/lookup`; the token portal is the
+  co-living lease surface. (Both coexist.)
+- "Update saved card" is surfaced conceptually; a full card-update Elements flow is
+  deferred (the fix-card link from the failure path already routes to `/lease/pay`).
+
+**Deferred / suggested**
+- Staff replies to guest messages come via the UO write-back (Phase 8).
+- Dedicated card-update Elements page (separate from first payment).
+
+**PHASE 6: COMPLETE — tests green**
+
 ---

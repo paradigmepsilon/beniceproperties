@@ -145,6 +145,25 @@ const statements = [
   `CREATE INDEX IF NOT EXISTS "uo_escalations_lease_idx" ON "uo_escalations" ("lease_id")`,
   `CREATE INDEX IF NOT EXISTS "uo_escalations_status_idx" ON "uo_escalations" ("status")`,
   `CREATE INDEX IF NOT EXISTS "uo_escalations_open_kind_idx" ON "uo_escalations" ("lease_id","schedule_seq","kind","status")`,
+
+  // --- Phase 6: portal token + guest_messages ---
+  `ALTER TABLE "leases" ADD COLUMN IF NOT EXISTS "portal_token" text`,
+  `CREATE TABLE IF NOT EXISTS "guest_messages" (
+    "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    "lease_id" varchar NOT NULL,
+    "guest_id" varchar NOT NULL,
+    "thread_id" varchar NOT NULL,
+    "author_role" text NOT NULL DEFAULT 'GUEST',
+    "category" text NOT NULL DEFAULT 'QUESTION',
+    "subject" text,
+    "body" text NOT NULL,
+    "status" text NOT NULL DEFAULT 'OPEN',
+    "created_at" timestamp DEFAULT now() NOT NULL,
+    "updated_at" timestamp DEFAULT now() NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS "guest_messages_lease_idx" ON "guest_messages" ("lease_id")`,
+  `CREATE INDEX IF NOT EXISTS "guest_messages_thread_idx" ON "guest_messages" ("thread_id")`,
+  `CREATE INDEX IF NOT EXISTS "guest_messages_status_idx" ON "guest_messages" ("status")`,
 ];
 
 async function run() {

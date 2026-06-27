@@ -41,6 +41,13 @@ import {
 } from "./lib/leasePayments";
 import { billAccruedLateFees, handleChargeFailure } from "./lib/dunning";
 import {
+  getPortalView,
+  payInstallmentNow,
+  submitMessage,
+  replyToThread,
+  getThread,
+} from "./lib/portal";
+import {
   createDraftLeaseSchema,
   signLeaseSchema,
 } from "@shared/api-types";
@@ -276,6 +283,74 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // =========================================================================
+  // GUEST PORTAL (Phase 6) — token-authenticated self-serve. The token is the
+  // credential; no session needed.
+  // =========================================================================
+  app.get("/api/portal/:token", async (req, res, next) => {
+    try {
+      res.json(await getPortalView(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Pay an open installment now (early pay, or settle a LATE/FAILED row) against
+  // the saved card; also bills that installment's accrued late fees.
+  app.post("/api/portal/:token/pay/:seq", async (req, res, next) => {
+    try {
+      const seq = parseInt(req.params.seq, 10);
+      if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
+      res.json(await payInstallmentNow(req.params.token, seq));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Submit a question / maintenance request (creates a thread root).
+  app.post("/api/portal/:token/messages", async (req, res, next) => {
+    try {
+      const schema = z.object({
+        category: z.enum(["QUESTION", "MAINTENANCE", "OTHER"]).optional(),
+        subject: z.string().max(200).optional(),
+        body: z.string().min(1, "Message can't be empty").max(5000),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const msg = await submitMessage(req.params.token, parsed.data);
+      res.status(201).json({ threadId: msg.id, status: msg.status });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Fetch a thread (status check + history).
+  app.get("/api/portal/:token/messages/:threadId", async (req, res, next) => {
+    try {
+      res.json(await getThread(req.params.token, req.params.threadId));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Reply to a thread.
+  app.post("/api/portal/:token/messages/:threadId/reply", async (req, res, next) => {
+    try {
+      const schema = z.object({ body: z.string().min(1).max(5000) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const reply = await replyToThread(req.params.token, req.params.threadId, parsed.data.body);
+      res.status(201).json({ id: reply.id });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
   // Start the co-living first payment (Phase 4). Creates a Stripe Customer + a
   // PaymentIntent that saves the card; returns the client secret for Elements.
   // Booking becomes ACTIVE only after Stripe confirms success (webhook).
@@ -288,6 +363,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       res.json({
         clientSecret: result.clientSecret,
         amount: result.amount,
+        portalToken: result.portalToken,
         publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY,
       });
     } catch (err) {

@@ -31,6 +31,20 @@ CREATE TABLE "bookings" (
 	CONSTRAINT "bookings_reference_unique" UNIQUE("reference")
 );
 --> statement-breakpoint
+CREATE TABLE "guest_messages" (
+	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"lease_id" varchar NOT NULL,
+	"guest_id" varchar NOT NULL,
+	"thread_id" varchar NOT NULL,
+	"author_role" text DEFAULT 'GUEST' NOT NULL,
+	"category" text DEFAULT 'QUESTION' NOT NULL,
+	"subject" text,
+	"body" text NOT NULL,
+	"status" text DEFAULT 'OPEN' NOT NULL,
+	"created_at" timestamp DEFAULT now() NOT NULL,
+	"updated_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "guests" (
 	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"name" text NOT NULL,
@@ -92,6 +106,7 @@ CREATE TABLE "leases" (
 	"signed_document_html" text,
 	"stripe_customer_id" text,
 	"stripe_payment_method_id" text,
+	"portal_token" text,
 	"created_at" timestamp DEFAULT now() NOT NULL,
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
@@ -209,6 +224,9 @@ CREATE INDEX "bookings_room_idx" ON "bookings" USING btree ("room_id");--> state
 CREATE INDEX "bookings_guest_idx" ON "bookings" USING btree ("guest_id");--> statement-breakpoint
 CREATE INDEX "bookings_status_idx" ON "bookings" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "bookings_reference_idx" ON "bookings" USING btree ("reference");--> statement-breakpoint
+CREATE INDEX "guest_messages_lease_idx" ON "guest_messages" USING btree ("lease_id");--> statement-breakpoint
+CREATE INDEX "guest_messages_thread_idx" ON "guest_messages" USING btree ("thread_id");--> statement-breakpoint
+CREATE INDEX "guest_messages_status_idx" ON "guest_messages" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "guests_email_idx" ON "guests" USING btree ("email");--> statement-breakpoint
 CREATE INDEX "kpi_snapshots_date_idx" ON "kpi_snapshots" USING btree ("snapshot_date");--> statement-breakpoint
 CREATE INDEX "kpi_snapshots_pushed_idx" ON "kpi_snapshots" USING btree ("pushed_to_uo");--> statement-breakpoint

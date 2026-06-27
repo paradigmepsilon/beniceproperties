@@ -25,7 +25,7 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 
 // server/storage.ts
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql as sql3 } from "drizzle-orm";
 
 // server/db.ts
 import { neon } from "@neondatabase/serverless";
@@ -46,6 +46,9 @@ __export(schema_exports, {
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
   LEASE_STATUSES: () => LEASE_STATUSES,
   MAX_LEASE_DAYS: () => MAX_LEASE_DAYS,
+  MESSAGE_AUTHOR_ROLES: () => MESSAGE_AUTHOR_ROLES,
+  MESSAGE_CATEGORIES: () => MESSAGE_CATEGORIES,
+  MESSAGE_STATUSES: () => MESSAGE_STATUSES,
   NOTIFICATION_KINDS: () => NOTIFICATION_KINDS,
   OVERDUE_MESSAGE_DAYS: () => OVERDUE_MESSAGE_DAYS,
   PAYMENT_CADENCES: () => PAYMENT_CADENCES,
@@ -60,10 +63,12 @@ __export(schema_exports, {
   adminUsers: () => adminUsers,
   appSettings: () => appSettings,
   bookings: () => bookings,
+  guestMessages: () => guestMessages,
   guests: () => guests,
   insertAdminUserSchema: () => insertAdminUserSchema,
   insertAppSettingSchema: () => insertAppSettingSchema,
   insertBookingSchema: () => insertBookingSchema,
+  insertGuestMessageSchema: () => insertGuestMessageSchema,
   insertGuestSchema: () => insertGuestSchema,
   insertKpiSnapshotSchema: () => insertKpiSnapshotSchema,
   insertLateFeeSchema: () => insertLateFeeSchema,
@@ -420,6 +425,10 @@ var leases = pgTable(
     // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
     stripeCustomerId: text("stripe_customer_id"),
     stripePaymentMethodId: text("stripe_payment_method_id"),
+    // --- Guest portal access token (Phase 6). Random, unguessable; the guest's
+    // self-serve link is /portal/<token>. Mirrors TRAD's tokenized preference
+    // links — no full account needed. Additive. ---
+    portalToken: text("portal_token"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull()
   },
@@ -585,6 +594,39 @@ var insertUoEscalationSchema = createInsertSchema(uoEscalations, {
   kind: z.enum(ESCALATION_KINDS),
   severity: z.enum(ESCALATION_SEVERITIES).optional(),
   status: z.enum(ESCALATION_STATUSES).optional()
+}).omit({ id: true, createdAt: true, updatedAt: true });
+var MESSAGE_AUTHOR_ROLES = ["GUEST", "STAFF"];
+var MESSAGE_STATUSES = ["OPEN", "ANSWERED", "RESOLVED"];
+var MESSAGE_CATEGORIES = ["QUESTION", "MAINTENANCE", "OTHER"];
+var guestMessages = pgTable(
+  "guest_messages",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    guestId: varchar("guest_id").notNull(),
+    // The root message id of this thread (a root row points to itself).
+    threadId: varchar("thread_id").notNull(),
+    // "GUEST" | "STAFF"
+    authorRole: text("author_role").notNull().default("GUEST"),
+    // "QUESTION" | "MAINTENANCE" | "OTHER" (set on the root)
+    category: text("category").notNull().default("QUESTION"),
+    subject: text("subject"),
+    body: text("body").notNull(),
+    // Thread lifecycle, maintained on the root row: OPEN | ANSWERED | RESOLVED
+    status: text("status").notNull().default("OPEN"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("guest_messages_lease_idx").on(table.leaseId),
+    threadIdx: index("guest_messages_thread_idx").on(table.threadId),
+    statusIdx: index("guest_messages_status_idx").on(table.status)
+  })
+);
+var insertGuestMessageSchema = createInsertSchema(guestMessages, {
+  authorRole: z.enum(MESSAGE_AUTHOR_ROLES).optional(),
+  category: z.enum(MESSAGE_CATEGORIES).optional(),
+  status: z.enum(MESSAGE_STATUSES).optional()
 }).omit({ id: true, createdAt: true, updatedAt: true });
 
 // server/db.ts
@@ -874,8 +916,37 @@ var Storage = class {
     const [row] = await db.update(leases).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(leases.id, id)).returning();
     return row;
   }
+  async getLeaseByPortalToken(token) {
+    const [row] = await db.select().from(leases).where(eq(leases.portalToken, token));
+    return row;
+  }
   async getLeaseRooms(leaseId) {
     return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+  // --- Guest messages ---
+  async getMessageThreadsByLease(leaseId) {
+    const all = await db.select().from(guestMessages).where(eq(guestMessages.leaseId, leaseId)).orderBy(desc(guestMessages.createdAt));
+    return all.filter((m) => m.id === m.threadId);
+  }
+  async getMessagesByThread(threadId) {
+    return db.select().from(guestMessages).where(eq(guestMessages.threadId, threadId)).orderBy(asc(guestMessages.createdAt));
+  }
+  async getMessage(id) {
+    const [row] = await db.select().from(guestMessages).where(eq(guestMessages.id, id));
+    return row;
+  }
+  async createMessage(data) {
+    if (data.threadId) {
+      const [row2] = await db.insert(guestMessages).values(data).returning();
+      return row2;
+    }
+    const [row] = await db.insert(guestMessages).values({ ...data, threadId: sql3`gen_random_uuid()` }).returning();
+    const [fixed] = await db.update(guestMessages).set({ threadId: row.id }).where(eq(guestMessages.id, row.id)).returning();
+    return fixed;
+  }
+  async updateMessage(id, updates) {
+    const [row] = await db.update(guestMessages).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(guestMessages.id, id)).returning();
+    return row;
   }
   // --- Payment schedule ---
   async getScheduleByLease(leaseId) {
@@ -1482,6 +1553,9 @@ function assertCompleteMetadata(meta) {
   }
 }
 
+// server/lib/leaseFlow.ts
+import { customAlphabet as customAlphabet2 } from "nanoid";
+
 // server/lib/leaseDocument.ts
 var CADENCE_LABEL = {
   WEEKLY: "weekly",
@@ -1580,6 +1654,10 @@ function renderSignedLeaseHtml(data, signature, template = DEFAULT_LEASE_TEMPLAT
 }
 
 // server/lib/leaseFlow.ts
+var portalTokenGen = customAlphabet2(
+  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  32
+);
 function docDataFrom(leaseId, quote, guest, location) {
   return {
     leaseId,
@@ -1631,7 +1709,8 @@ async function createDraftLease(input) {
       weeklyRateSnapshot: String(quote.weeklyRateTotal),
       totalLeaseValue: String(quote.totalLeaseValue),
       prorationNote: quote.prorationNote,
-      status: "PENDING_SIGNATURE"
+      status: "PENDING_SIGNATURE",
+      portalToken: portalTokenGen()
     },
     rooms: quote.rooms.map((r) => ({
       // leaseId is filled in by storage.createLeaseWithSchedule.
@@ -2042,7 +2121,12 @@ async function startFirstPayment(leaseId) {
   });
   await storage.updateScheduleRow(first.id, { stripePaymentIntentId: pi.id });
   if (!pi.client_secret) throw new LeaseError("Stripe did not return a client secret", 502);
-  return { clientSecret: pi.client_secret, paymentIntentId: pi.id, amount };
+  return {
+    clientSecret: pi.client_secret,
+    paymentIntentId: pi.id,
+    amount,
+    portalToken: lease.portalToken ?? null
+  };
 }
 async function finalizeFirstPayment(paymentIntentId) {
   const lease = await findLeaseByFirstPaymentIntent(paymentIntentId);
@@ -2084,6 +2168,166 @@ async function findLeaseByFirstPaymentIntent(piId) {
     if (first?.stripePaymentIntentId === piId) return lease;
   }
   return void 0;
+}
+
+// server/lib/portal.ts
+var OPEN_FOR_PAY = /* @__PURE__ */ new Set(["SCHEDULED", "DUE", "LATE", "FAILED"]);
+async function resolvePortalLease(token) {
+  if (!token || token.length < 16) throw new LeaseError("Invalid portal link", 404);
+  const lease = await storage.getLeaseByPortalToken(token);
+  if (!lease) throw new LeaseError("Portal link not found", 404);
+  return lease;
+}
+async function getPortalView(token) {
+  const lease = await resolvePortalLease(token);
+  const [property, guest, rooms2, schedule, lateFees2, threads] = await Promise.all([
+    storage.getProperty(lease.propertyId),
+    storage.getGuest(lease.guestId),
+    storage.getLeaseRooms(lease.id),
+    storage.getScheduleByLease(lease.id),
+    storage.getLateFeesByLease(lease.id),
+    storage.getMessageThreadsByLease(lease.id)
+  ]);
+  const accruedLateFeeTotal = Math.round(
+    lateFees2.filter((f) => f.status === "ACCRUED").reduce((s, f) => s + parseFloat(f.amount), 0) * 100
+  ) / 100;
+  return {
+    lease: {
+      id: lease.id,
+      status: lease.status,
+      startDate: lease.startDate,
+      endDate: lease.endDate,
+      paymentCadence: lease.paymentCadence,
+      weeklyRateSnapshot: lease.weeklyRateSnapshot,
+      totalLeaseValue: lease.totalLeaseValue,
+      prorationNote: lease.prorationNote,
+      signedAt: lease.signedAt,
+      signedPdfUrl: lease.signedPdfUrl,
+      hasSavedCard: Boolean(lease.stripeCustomerId && lease.stripePaymentMethodId)
+    },
+    property: property ? { name: property.name, location: property.location } : null,
+    guest: guest ? { name: guest.name, email: guest.email } : null,
+    rooms: rooms2.map((r) => ({ name: r.roomNameSnapshot, roomNumber: r.roomNumberSnapshot })),
+    schedule: schedule.map((s) => ({
+      seq: s.scheduleSeq,
+      dueDate: s.dueDate,
+      amount: s.amount,
+      status: s.status,
+      paidAt: s.paidAt,
+      paymentMethod: s.paymentMethod
+    })),
+    lateFees: {
+      accruedTotal: accruedLateFeeTotal,
+      rows: lateFees2.map((f) => ({
+        scheduleSeq: f.scheduleSeq,
+        accrualDate: f.accrualDate,
+        amount: f.amount,
+        status: f.status
+      }))
+    },
+    threads: threads.map((t) => ({
+      id: t.id,
+      subject: t.subject,
+      category: t.category,
+      status: t.status,
+      createdAt: t.createdAt
+    }))
+  };
+}
+function chargeTotalFor2(rent) {
+  return calculateBreakdown({ baseAmount: rent, paymentMethod: "STRIPE" }).total;
+}
+async function payInstallmentNow(token, scheduleSeq) {
+  const lease = await resolvePortalLease(token);
+  if (!lease.stripeCustomerId || !lease.stripePaymentMethodId) {
+    throw new LeaseError("No saved card on this lease; pay via your arranged method", 409);
+  }
+  const property = await storage.getProperty(lease.propertyId);
+  if (!property) throw new LeaseError("Lease property missing", 500);
+  const rooms2 = await storage.getLeaseRooms(lease.id);
+  const schedule = await storage.getScheduleByLease(lease.id);
+  const row = schedule.find((s) => s.scheduleSeq === scheduleSeq);
+  if (!row) throw new LeaseError("Installment not found", 404);
+  if (row.status === "PAID") throw new LeaseError("That installment is already paid", 409);
+  if (row.status === "WAIVED") throw new LeaseError("That installment was waived", 409);
+  if (!OPEN_FOR_PAY.has(row.status)) throw new LeaseError("That installment can't be paid now", 409);
+  const amount = chargeTotalFor2(parseFloat(row.amount));
+  const metadata = buildLeaseChargeMetadata({
+    entity: property.entity,
+    property,
+    lease,
+    rooms: rooms2,
+    paymentKind: "SCHEDULED_RENT",
+    scheduleSeq: row.scheduleSeq
+  });
+  const pi = await chargeSavedCard({
+    amount,
+    customerId: lease.stripeCustomerId,
+    paymentMethodId: lease.stripePaymentMethodId,
+    metadata,
+    // Same key as the scheduler so a portal pay + a sweep can't double-charge.
+    idempotencyKey: `lease-rent-${lease.id}-seq-${row.scheduleSeq}`
+  });
+  if (pi.status !== "succeeded") {
+    throw new LeaseError("Payment did not complete; please try again", 402);
+  }
+  await storage.updateScheduleRow(row.id, {
+    status: "PAID",
+    paidAt: /* @__PURE__ */ new Date(),
+    stripePaymentIntentId: pi.id
+  });
+  try {
+    await billAccruedLateFees({ lease, property, rooms: rooms2, scheduleSeq: row.scheduleSeq });
+  } catch {
+  }
+  return { paid: true, amount, paymentIntentId: pi.id };
+}
+async function submitMessage(token, input) {
+  const lease = await resolvePortalLease(token);
+  const root = await storage.createMessage({
+    leaseId: lease.id,
+    guestId: lease.guestId,
+    threadId: "",
+    // storage assigns a self-referential root id
+    authorRole: "GUEST",
+    category: input.category ?? "QUESTION",
+    subject: input.subject ?? null,
+    body: input.body,
+    status: "OPEN"
+  });
+  return root;
+}
+async function replyToThread(token, threadId, body) {
+  const lease = await resolvePortalLease(token);
+  const thread = await storage.getMessagesByThread(threadId);
+  const root = thread.find((m) => m.id === threadId);
+  if (!root || root.leaseId !== lease.id) throw new LeaseError("Thread not found", 404);
+  const reply = await storage.createMessage({
+    leaseId: lease.id,
+    guestId: lease.guestId,
+    threadId,
+    authorRole: "GUEST",
+    category: root.category,
+    body,
+    status: "OPEN"
+  });
+  if (root.status === "ANSWERED") await storage.updateMessage(root.id, { status: "OPEN" });
+  return reply;
+}
+async function getThread(token, threadId) {
+  const lease = await resolvePortalLease(token);
+  const messages = await storage.getMessagesByThread(threadId);
+  const root = messages.find((m) => m.id === threadId);
+  if (!root || root.leaseId !== lease.id) throw new LeaseError("Thread not found", 404);
+  return {
+    thread: { id: root.id, subject: root.subject, category: root.category, status: root.status },
+    messages: messages.map((m) => ({
+      id: m.id,
+      authorRole: m.authorRole,
+      body: m.body,
+      createdAt: m.createdAt
+    }))
+  };
 }
 
 // server/integrations/unifiedOps.ts
@@ -2347,6 +2591,60 @@ async function registerRoutes(app) {
       next(err);
     }
   });
+  app.get("/api/portal/:token", async (req, res, next) => {
+    try {
+      res.json(await getPortalView(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/portal/:token/pay/:seq", async (req, res, next) => {
+    try {
+      const seq = parseInt(req.params.seq, 10);
+      if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
+      res.json(await payInstallmentNow(req.params.token, seq));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/portal/:token/messages", async (req, res, next) => {
+    try {
+      const schema = z3.object({
+        category: z3.enum(["QUESTION", "MAINTENANCE", "OTHER"]).optional(),
+        subject: z3.string().max(200).optional(),
+        body: z3.string().min(1, "Message can't be empty").max(5e3)
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const msg = await submitMessage(req.params.token, parsed.data);
+      res.status(201).json({ threadId: msg.id, status: msg.status });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/portal/:token/messages/:threadId", async (req, res, next) => {
+    try {
+      res.json(await getThread(req.params.token, req.params.threadId));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/portal/:token/messages/:threadId/reply", async (req, res, next) => {
+    try {
+      const schema = z3.object({ body: z3.string().min(1).max(5e3) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const reply = await replyToThread(req.params.token, req.params.threadId, parsed.data.body);
+      res.status(201).json({ id: reply.id });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
   app.post("/api/leases/:id/first-payment", async (req, res, next) => {
     try {
       if (!isStripeConfigured()) {
@@ -2356,6 +2654,7 @@ async function registerRoutes(app) {
       res.json({
         clientSecret: result.clientSecret,
         amount: result.amount,
+        portalToken: result.portalToken,
         publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY
       });
     } catch (err) {

@@ -13,6 +13,7 @@ import Checkout from "@/pages/checkout";
 import LeaseBooking from "@/pages/lease-booking";
 import LeaseSign from "@/pages/lease-sign";
 import LeasePay from "@/pages/lease-pay";
+import Portal from "@/pages/portal";
 import Confirmation from "@/pages/confirmation";
 import BookingLookup from "@/pages/booking-lookup";
 import AdminLogin from "@/pages/admin/login";
@@ -29,6 +30,7 @@ function Router() {
       <Route path="/lease" component={LeaseBooking} />
       <Route path="/lease/sign" component={LeaseSign} />
       <Route path="/lease/pay" component={LeasePay} />
+      <Route path="/portal/:token" component={Portal} />
       <Route path="/confirmation/:reference" component={Confirmation} />
       <Route path="/lookup" component={BookingLookup} />
       <Route path="/admin/login" component={AdminLogin} />

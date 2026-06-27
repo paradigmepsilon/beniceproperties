@@ -476,6 +476,10 @@ export const leases = pgTable(
     // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
     stripeCustomerId: text("stripe_customer_id"),
     stripePaymentMethodId: text("stripe_payment_method_id"),
+    // --- Guest portal access token (Phase 6). Random, unguessable; the guest's
+    // self-serve link is /portal/<token>. Mirrors TRAD's tokenized preference
+    // links — no full account needed. Additive. ---
+    portalToken: text("portal_token"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -717,3 +721,49 @@ export const insertUoEscalationSchema = createInsertSchema(uoEscalations, {
 
 export type UoEscalation = typeof uoEscalations.$inferSelect;
 export type InsertUoEscalation = z.infer<typeof insertUoEscalationSchema>;
+
+// =============================================================================
+// guest_messages — threaded guest questions / maintenance requests (Phase 6).
+// A thread is a root message (threadId = its own id) plus replies. authorRole
+// distinguishes the guest from a staff/UO responder (Phase 8 write-back). status
+// tracks the thread's lifecycle on the root row.
+// =============================================================================
+
+export const MESSAGE_AUTHOR_ROLES = ["GUEST", "STAFF"] as const;
+export const MESSAGE_STATUSES = ["OPEN", "ANSWERED", "RESOLVED"] as const;
+export const MESSAGE_CATEGORIES = ["QUESTION", "MAINTENANCE", "OTHER"] as const;
+
+export const guestMessages = pgTable(
+  "guest_messages",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    guestId: varchar("guest_id").notNull(),
+    // The root message id of this thread (a root row points to itself).
+    threadId: varchar("thread_id").notNull(),
+    // "GUEST" | "STAFF"
+    authorRole: text("author_role").notNull().default("GUEST"),
+    // "QUESTION" | "MAINTENANCE" | "OTHER" (set on the root)
+    category: text("category").notNull().default("QUESTION"),
+    subject: text("subject"),
+    body: text("body").notNull(),
+    // Thread lifecycle, maintained on the root row: OPEN | ANSWERED | RESOLVED
+    status: text("status").notNull().default("OPEN"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    leaseIdx: index("guest_messages_lease_idx").on(table.leaseId),
+    threadIdx: index("guest_messages_thread_idx").on(table.threadId),
+    statusIdx: index("guest_messages_status_idx").on(table.status),
+  }),
+);
+
+export const insertGuestMessageSchema = createInsertSchema(guestMessages, {
+  authorRole: z.enum(MESSAGE_AUTHOR_ROLES).optional(),
+  category: z.enum(MESSAGE_CATEGORIES).optional(),
+  status: z.enum(MESSAGE_STATUSES).optional(),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+
+export type GuestMessage = typeof guestMessages.$inferSelect;
+export type InsertGuestMessage = z.infer<typeof insertGuestMessageSchema>;

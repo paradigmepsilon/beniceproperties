@@ -18,6 +18,7 @@
 // No payment is taken in this phase.
 // =============================================================================
 
+import { customAlphabet } from "nanoid";
 import { buildLeaseQuote, LeaseError } from "./lease";
 import {
   renderLeaseHtml,
@@ -25,6 +26,13 @@ import {
   type LeaseDocData,
 } from "./leaseDocument";
 import { storage } from "../storage";
+
+// Unguessable guest-portal token (URL-safe, 32 chars). The guest's self-serve
+// link is /portal/<token>.
+const portalTokenGen = customAlphabet(
+  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  32,
+);
 import type { Lease } from "@shared/schema";
 import type { PaymentCadence } from "@shared/leaseSchedule";
 
@@ -106,6 +114,7 @@ export async function createDraftLease(input: CreateDraftLeaseInput): Promise<Cr
       totalLeaseValue: String(quote.totalLeaseValue),
       prorationNote: quote.prorationNote,
       status: "PENDING_SIGNATURE",
+      portalToken: portalTokenGen(),
     },
     rooms: quote.rooms.map((r) => ({
       // leaseId is filled in by storage.createLeaseWithSchedule.

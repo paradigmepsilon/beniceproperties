@@ -41,6 +41,7 @@ interface FirstPaymentInit {
   clientSecret: string;
   amount: number;
   publishableKey: string;
+  portalToken: string | null;
 }
 
 export default function LeasePay() {
@@ -102,7 +103,7 @@ export default function LeasePay() {
             </CardHeader>
             <CardContent>
               <Elements stripe={stripePromise} options={{ clientSecret: init.clientSecret }}>
-                <PayForm leaseId={leaseId} />
+                <PayForm portalToken={init.portalToken} />
               </Elements>
             </CardContent>
           </Card>
@@ -113,7 +114,7 @@ export default function LeasePay() {
   );
 }
 
-function PayForm({ leaseId }: { leaseId: string }) {
+function PayForm({ portalToken }: { portalToken: string | null }) {
   const stripe = useStripe();
   const elements = useElements();
   const [, navigate] = useLocation();
@@ -139,8 +140,9 @@ function PayForm({ leaseId }: { leaseId: string }) {
     }
     if (paymentIntent && paymentIntent.status === "succeeded") {
       setDone(true);
-      // The lease is activated server-side by the webhook; give it a beat, then go.
-      setTimeout(() => navigate("/lookup"), 1500);
+      // The lease is activated server-side by the webhook; give it a beat, then
+      // send the guest to their portal (or the lookup page if no token).
+      setTimeout(() => navigate(portalToken ? `/portal/${portalToken}` : "/lookup"), 1500);
       return;
     }
     setErr("Payment is processing. You'll get a confirmation shortly.");
