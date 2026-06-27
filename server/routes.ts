@@ -49,6 +49,7 @@ import {
 } from "./lib/portal";
 import { requireServiceToken } from "./lib/serviceAuth";
 import * as uo from "./lib/uoApi";
+import { buildReconciliationReport } from "./lib/reconciliation";
 import {
   createDraftLeaseSchema,
   signLeaseSchema,
@@ -67,6 +68,30 @@ function appUrl(req: express.Request, path: string): string {
   const proto = req.protocol;
   const host = req.get("host");
   return `${proto}://${host}${path}`;
+}
+
+// Shared reconciliation handler (Phase 9). Module-level so both the UO and admin
+// routes reference it regardless of registration order.
+async function reconciliationHandler(
+  req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): Promise<void> {
+  try {
+    const schema = z.object({
+      from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    });
+    const parsed = schema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ message: "from and to (YYYY-MM-DD) required" });
+      return;
+    }
+    const report = await buildReconciliationReport(parsed.data.from, parsed.data.to, new Date().toISOString());
+    res.json(report);
+  } catch (err) {
+    next(err);
+  }
 }
 
 export async function registerRoutes(app: Express): Promise<void> {
@@ -415,6 +440,9 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Admin reconciliation report (same builder as the UO route).
+  app.get("/api/admin/reconciliation-report", requireAdmin, reconciliationHandler);
+
   // =========================================================================
   // PUBLIC — create booking
   //   STRIPE  → create payment record(s) + Stripe Checkout, return checkoutUrl
@@ -625,6 +653,12 @@ export async function registerRoutes(app: Express): Promise<void> {
       res.json(await uo.listEscalations(status));
     } catch (e) { uoErr(e, res, next); }
   });
+
+  // Reconciliation report (Phase 9): per-entity→property→room collected totals
+  // for a date range (rent vs late, card vs manual), reconciled via metadata.
+  // Handler (reconciliationHandler) is a module-level fn so both the UO and admin
+  // routes can share it regardless of declaration order.
+  app.get("/api/uo/reconciliation", requireServiceToken, reconciliationHandler);
 
   // --- Write-backs (constrained, idempotent) ---
   app.post("/api/uo/leases/:id/mark-paid", requireServiceToken, async (req, res, next) => {

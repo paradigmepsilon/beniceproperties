@@ -2769,6 +2769,103 @@ async function waiveLateFees(args) {
   return { waivedCount: target.length };
 }
 
+// server/lib/reconciliation.ts
+var round = (v) => Math.round(v * 100) / 100;
+var inRange = (d, from, to) => {
+  if (!d) return false;
+  const day = (typeof d === "string" ? d : d.toISOString()).slice(0, 10);
+  return day >= from && day <= to;
+};
+async function buildReconciliationReport(from, to, generatedAt) {
+  const leases2 = await storage.getLeases();
+  const entities = /* @__PURE__ */ new Map();
+  function entityBucket(entity) {
+    let e = entities.get(entity);
+    if (!e) {
+      e = { entity, rentCard: 0, rentManual: 0, lateFees: 0, total: 0, properties: [] };
+      entities.set(entity, e);
+    }
+    return e;
+  }
+  function propertyBucket(e, id, name) {
+    let p = e.properties.find((x) => x.propertyId === id);
+    if (!p) {
+      p = { propertyId: id, propertyName: name, rentCard: 0, rentManual: 0, lateFees: 0, total: 0, rooms: [] };
+      e.properties.push(p);
+    }
+    return p;
+  }
+  function roomBucket(p, room) {
+    let r = p.rooms.find((x) => x.roomId === room.id);
+    if (!r) {
+      r = { roomId: room.id, roomName: room.name, roomNumber: room.number, rentCard: 0, rentManual: 0, lateFees: 0, total: 0 };
+      p.rooms.push(r);
+    }
+    return r;
+  }
+  for (const lease of leases2) {
+    const property = await storage.getProperty(lease.propertyId);
+    if (!property) continue;
+    const rooms2 = await storage.getLeaseRooms(lease.id);
+    const schedule = await storage.getScheduleByLease(lease.id);
+    const lateFees2 = await storage.getLateFeesByLease(lease.id);
+    const e = entityBucket(property.entity);
+    const p = propertyBucket(e, property.id, property.name);
+    const primaryRoom = rooms2[0] ? { id: rooms2[0].roomId, name: rooms2[0].roomNameSnapshot, number: rooms2[0].roomNumberSnapshot } : { id: `${lease.id}:whole`, name: property.name, number: null };
+    const r = roomBucket(p, primaryRoom);
+    for (const row of schedule) {
+      if (row.status !== "PAID") continue;
+      if (!inRange(row.paidAt, from, to)) continue;
+      const amt = round(parseFloat(row.amount));
+      if (row.paymentMethod === "MANUAL") {
+        r.rentManual += amt;
+        p.rentManual += amt;
+        e.rentManual += amt;
+      } else {
+        r.rentCard += amt;
+        p.rentCard += amt;
+        e.rentCard += amt;
+      }
+    }
+    for (const fee of lateFees2) {
+      if (fee.status !== "BILLED" && fee.status !== "PAID") continue;
+      if (!inRange(fee.accrualDate, from, to)) continue;
+      const amt = round(parseFloat(fee.amount));
+      r.lateFees += amt;
+      p.lateFees += amt;
+      e.lateFees += amt;
+    }
+  }
+  const grand = { rentCard: 0, rentManual: 0, lateFees: 0, total: 0 };
+  const entityList = Array.from(entities.values());
+  for (const e of entityList) {
+    for (const p of e.properties) {
+      for (const r of p.rooms) {
+        r.rentCard = round(r.rentCard);
+        r.rentManual = round(r.rentManual);
+        r.lateFees = round(r.lateFees);
+        r.total = round(r.rentCard + r.rentManual + r.lateFees);
+      }
+      p.rentCard = round(p.rentCard);
+      p.rentManual = round(p.rentManual);
+      p.lateFees = round(p.lateFees);
+      p.total = round(p.rentCard + p.rentManual + p.lateFees);
+    }
+    e.rentCard = round(e.rentCard);
+    e.rentManual = round(e.rentManual);
+    e.lateFees = round(e.lateFees);
+    e.total = round(e.rentCard + e.rentManual + e.lateFees);
+    grand.rentCard += e.rentCard;
+    grand.rentManual += e.rentManual;
+    grand.lateFees += e.lateFees;
+  }
+  grand.rentCard = round(grand.rentCard);
+  grand.rentManual = round(grand.rentManual);
+  grand.lateFees = round(grand.lateFees);
+  grand.total = round(grand.rentCard + grand.rentManual + grand.lateFees);
+  return { from, to, generatedAt, grand, entities: entityList };
+}
+
 // server/integrations/unifiedOps.ts
 var FORBIDDEN_KEYS = [
   "name",
@@ -2861,6 +2958,23 @@ function appUrl(req, path) {
   const proto = req.protocol;
   const host = req.get("host");
   return `${proto}://${host}${path}`;
+}
+async function reconciliationHandler(req, res, next) {
+  try {
+    const schema = z3.object({
+      from: z3.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z3.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+    });
+    const parsed = schema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json({ message: "from and to (YYYY-MM-DD) required" });
+      return;
+    }
+    const report = await buildReconciliationReport(parsed.data.from, parsed.data.to, (/* @__PURE__ */ new Date()).toISOString());
+    res.json(report);
+  } catch (err) {
+    next(err);
+  }
 }
 async function registerRoutes(app) {
   app.post(
@@ -3134,6 +3248,7 @@ async function registerRoutes(app) {
       next(err);
     }
   });
+  app.get("/api/admin/reconciliation-report", requireAdmin, reconciliationHandler);
   app.post("/api/bookings", async (req, res, next) => {
     try {
       const parsed = createBookingSchema.safeParse(req.body);
@@ -3321,6 +3436,7 @@ async function registerRoutes(app) {
       uoErr(e, res, next);
     }
   });
+  app.get("/api/uo/reconciliation", requireServiceToken, reconciliationHandler);
   app.post("/api/uo/leases/:id/mark-paid", requireServiceToken, async (req, res, next) => {
     try {
       const schema = z3.object({ scheduleSeq: z3.number().int(), note: z3.string().min(1), actor: z3.string().min(1) });

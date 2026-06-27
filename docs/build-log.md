@@ -623,3 +623,96 @@ architectural rule honored).
 **PHASE 8: COMPLETE — tests green**
 
 ---
+
+## PHASE 9 — Hardening, Reconciliation Report, Expansion Test
+
+**What was built**
+- `server/lib/reconciliation.ts` (new) — `buildReconciliationReport(from, to,
+  generatedAt)`: per-entity → per-property → per-room collected totals for a date
+  range, split **rent (card vs manual)** and **late fees**, reconciled via the
+  metadata contract (the breakout fields come from the same DB data the metadata
+  builder uses, so it ties to Stripe by metadata). PAID installments are bucketed
+  by `paid_at` in range + `payment_method`; BILLED/PAID late fees by `accrual_date`.
+- Routes: `GET /api/uo/reconciliation` (service token) + `GET
+  /api/admin/reconciliation-report` (admin), sharing a module-level handler.
+- `scripts/expansion-test.mjs` (new) — **the rule-4 proof**. Adds a 3rd co-living
+  house (2 rooms) + a 4th STR villa via plain INSERTs against the EXISTING tables
+  (zero DDL). Idempotent (keyed off name).
+- `scripts/stripe-payments-proof.mjs` already exercises the money paths in test
+  mode (first payment, off-session rent, idempotency, late fee).
+
+**Tests + results**
+- `npm test` → **105 passed** (+5: 3 reconciliation rollup/date-range/multi-entity,
+  2 idempotency-audit double-run checks — no double charge, no duplicate late fee).
+- Live: reconciliation report runs end-to-end against the DB (valid structure).
+- `tsc` 0 · `build` 0 · `build:api` 0.
+
+**EXPANSION TEST — PASSED (rule #4 holds)**
+- Ran `node scripts/expansion-test.mjs`: created "[EXPANSION TEST] Third Co-Living
+  House" (+Rooms X, Y) and "[EXPANSION TEST] Fourth STR Villa" as **data only**.
+  Verified counts (co-living: 3, STR: 2). **Zero schema/migration change** was
+  required — `Property`/`Room` are generic, `type`/`entity` are data. A re-run added
+  0 (idempotent). If adding a property had required DDL, the model would have failed
+  rule #4; it did not.
+
+**Idempotency audit (no double charges / no duplicate late fees)**
+- Rent sweep: a row carrying a `stripePaymentIntentId` (or not in SCHEDULED/DUE) is
+  skipped; per-(lease,seq) Stripe idempotency key (`lease-rent-<id>-seq-<n>`) is
+  shared by the scheduler AND the portal pay path, so they can't double-charge.
+  Double-run test confirms exactly one charge.
+- Late fees: `accrueLateFeeOnce` enforces one row per (lease, seq, day) via a
+  select-guard; double-run same day accrues once. Late-fee billing uses
+  `lease-latefee-<id>-seq-<n>`.
+- First payment: `lease-first-<id>` key; `finalizeFirstPayment` no-ops if the lease
+  is already ACTIVE.
+- Lifecycle + dunning sends: deduped via `lifecycle_events` / `notification_log`
+  (one per kind per day/installment).
+- UO write-backs: mark-paid/approve/resolve are no-ops when already in the target
+  state.
+
+**Edge cases handled**
+- Lease ending mid-schedule: final installment is day-prorated (Phase 1 generator).
+- Manual-pay overdue: late fees accrue but are NOT auto-charged; settle via UO
+  Mark Paid (fees stay ACCRUED until then).
+- Room → maintenance / rename: lease_rooms snapshots preserve name/number; metadata
+  uses the snapshot.
+- Charge dispute / async outcome: webhook is source of truth; requires_action rows
+  stay DUE with the PI recorded, settled on webhook.
+- Partial manual payment: out of scope for auto-charge; admin Mark Paid settles the
+  installment, with the note capturing context.
+
+**Deferred / suggested (post-foundation)**
+- Real SendGrid + Twilio creds (sends dry-run until set; env names in
+  `notifications.ts`).
+- Live Stripe key flip (manual human step) — still in TEST mode.
+- Admin UIs for lease/lifecycle templates + a reconciliation dashboard view.
+- Multi-room room-level reconciliation currently attributes a multi-room lease's
+  money to the lease's primary (first) room for the room rollup; property/entity
+  totals are exact. Split per-room if needed later.
+
+**PHASE 9: COMPLETE — tests green**
+
+---
+
+## BUILD COMPLETE — all 9 phases
+
+All nine phases built, tested, and committed. **105 unit tests pass**; `npm run
+build` and `npm run build:api` succeed; the full additive schema (17 tables) is
+applied to the DB with zero destructive operations. Stripe remained in TEST mode
+throughout — no live charge was ever executed; the live-key flip is the user's
+manual step. No Unified Ops database was ever written (UO consumes BNP's API).
+
+**Phase gates honored:** Phases 4 and 5 (the money gates) stopped for human review
+and only advanced on explicit "go". Phases 1–3 and 6–9 ran autonomously.
+
+**What a co-living guest can now do end-to-end:** browse rooms → pick term +
+cadence → preview the full payment schedule → sign a lease in-app → pay the first
+installment and save a card → get charged on schedule → receive reminders/receipts
+→ self-serve in the portal (pay early, ask questions) → and be managed from UO
+(mark-paid, approve, respond, resolve, waive). STR nightly booking is unchanged and
+now carries full charge metadata.
+
+**Before go-live (carry-through):** set test→live Stripe keys (manual), add
+SendGrid/Twilio creds, set `UO_BNP_API_TOKEN` + `CRON_SECRET` in prod, replace
+placeholder/expansion-test inventory with real properties, and run a real
+(refundable) end-to-end checkout once live keys are in.
