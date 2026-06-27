@@ -750,7 +750,7 @@ var secret = process.env.STRIPE_SECRET_KEY;
 function isStripeConfigured() {
   return Boolean(secret && secret.startsWith("sk_") && !secret.includes("placeholder"));
 }
-var stripe = isStripeConfigured() ? new Stripe(secret) : null;
+var stripe = isStripeConfigured() ? new Stripe(secret, { apiVersion: "2025-08-27.basil" }) : null;
 function requireStripe() {
   if (!stripe) {
     throw Object.assign(

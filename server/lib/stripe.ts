@@ -20,8 +20,12 @@ export function isStripeConfigured(): boolean {
   return Boolean(secret && secret.startsWith("sk_") && !secret.includes("placeholder"));
 }
 
+// Pin the API version so the SDK and the webhook endpoint agree on payload
+// shapes (the handler reads version-sensitive fields like invoice.subscription
+// vs invoice.parent). Keep this in lockstep with the webhook endpoint's
+// version in the Stripe dashboard.
 export const stripe: Stripe | null = isStripeConfigured()
-  ? new Stripe(secret as string)
+  ? new Stripe(secret as string, { apiVersion: "2025-08-27.basil" })
   : null;
 
 function requireStripe(): Stripe {
