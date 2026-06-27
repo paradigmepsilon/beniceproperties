@@ -14,7 +14,7 @@
 import "dotenv/config";
 import { storage } from "../server/storage";
 
-type SeedRoom = { name: string; weeklyRent: string; depositAmount: string };
+type SeedRoom = { name: string; roomNumber?: string; weeklyRent: string; depositAmount: string };
 type SeedProperty = {
   name: string;
   location: string;
@@ -40,8 +40,8 @@ const PLACEHOLDER_INVENTORY: SeedProperty[] = [
     type: "COLIVING",
     description: "[PLACEHOLDER] Rent-by-the-room co-living house. Replace with real listing.",
     rooms: [
-      { name: "[PLACEHOLDER] Room A", weeklyRent: "275.00", depositAmount: "275.00" },
-      { name: "[PLACEHOLDER] Room B", weeklyRent: "250.00", depositAmount: "250.00" },
+      { name: "[PLACEHOLDER] Room A", roomNumber: "A", weeklyRent: "275.00", depositAmount: "275.00" },
+      { name: "[PLACEHOLDER] Room B", roomNumber: "B", weeklyRent: "250.00", depositAmount: "250.00" },
     ],
   },
   {
@@ -49,7 +49,7 @@ const PLACEHOLDER_INVENTORY: SeedProperty[] = [
     location: "Atlanta",
     type: "COLIVING",
     description: "[PLACEHOLDER] Rent-by-the-room co-living house. Replace with real listing.",
-    rooms: [{ name: "[PLACEHOLDER] Room 1", weeklyRent: "260.00", depositAmount: "260.00" }],
+    rooms: [{ name: "[PLACEHOLDER] Room 1", roomNumber: "1", weeklyRent: "260.00", depositAmount: "260.00" }],
   },
 ];
 
@@ -77,6 +77,7 @@ async function seed() {
       await storage.createRoom({
         propertyId: property.id,
         name: room.name,
+        roomNumber: room.roomNumber ?? null,
         weeklyRent: room.weeklyRent,
         depositAmount: room.depositAmount,
         status: "AVAILABLE",
