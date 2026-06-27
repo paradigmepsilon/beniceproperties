@@ -117,22 +117,20 @@ export default function LeaseSign() {
           </CardHeader>
           <CardContent className="space-y-4 text-sm">
             <p>
-              Your lease is signed and is now <strong>pending your first payment</strong>. Payment
-              setup is the final step — you'll save a card and pay your first installment to activate
-              the lease.
+              Your lease is signed and is now <strong>pending your first payment</strong>. The final
+              step is to pay your first installment and save your card — this activates your lease.
             </p>
             <div className="flex flex-wrap gap-3">
+              <Button
+                onClick={() => navigate(`/lease/pay?leaseId=${signed.leaseId}`)}
+                data-testid="button-continue-payment"
+              >
+                Continue to payment
+              </Button>
               <a href={signed.documentUrl} target="_blank" rel="noreferrer">
                 <Button variant="outline" data-testid="link-download-lease">Download signed lease</Button>
               </a>
-              <Button onClick={() => navigate("/lookup")} data-testid="button-go-portal">
-                Go to my bookings
-              </Button>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Payment collection is enabled in a later step. You won't be charged until card setup
-              is live.
-            </p>
           </CardContent>
         </Card>
       </Shell>

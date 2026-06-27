@@ -30,11 +30,20 @@ import {
   BookingError,
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
+import {
+  buildStrChargeMetadata,
+  buildLeaseChargeMetadata,
+} from "./lib/paymentMetadata";
 import { createDraftLease, signLease } from "./lib/leaseFlow";
+import {
+  startFirstPayment,
+  finalizeFirstPayment,
+} from "./lib/leasePayments";
 import {
   createDraftLeaseSchema,
   signLeaseSchema,
 } from "@shared/api-types";
+import { stripePublishableConfigured } from "./lib/stripe";
 import {
   isStripeConfigured,
   createCheckoutSession,
@@ -266,6 +275,34 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Start the co-living first payment (Phase 4). Creates a Stripe Customer + a
+  // PaymentIntent that saves the card; returns the client secret for Elements.
+  // Booking becomes ACTIVE only after Stripe confirms success (webhook).
+  app.post("/api/leases/:id/first-payment", async (req, res, next) => {
+    try {
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled yet (Stripe test key not set)." });
+      }
+      const result = await startFirstPayment(req.params.id);
+      res.json({
+        clientSecret: result.clientSecret,
+        amount: result.amount,
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY,
+      });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Expose whether card payments are live (drives the client payment UI).
+  app.get("/api/payments/config", (_req, res) => {
+    res.json({
+      stripeEnabled: isStripeConfigured() && stripePublishableConfigured(),
+      publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY ?? null,
+    });
+  });
+
   // =========================================================================
   // PUBLIC — create booking
   //   STRIPE  → create payment record(s) + Stripe Checkout, return checkoutUrl
@@ -328,6 +365,30 @@ export async function registerRoutes(app: Express): Promise<void> {
           paidAt: null,
         });
 
+        // Full Stripe Metadata Contract on the charge. STR = whole-property;
+        // a (legacy) co-living deposit booking carries its single room.
+        const chargeMetadata =
+          resolved.model === "COLIVING" && resolved.room
+            ? buildLeaseChargeMetadata({
+                entity: resolved.property.entity,
+                property: resolved.property,
+                lease: { id: "" }, // legacy deposit path has no lease row
+                rooms: [
+                  {
+                    roomId: resolved.room.id,
+                    roomNameSnapshot: resolved.room.name,
+                    roomNumberSnapshot: resolved.room.roomNumber ?? null,
+                  },
+                ],
+                paymentKind: "BOOKING_DEPOSIT",
+                scheduleSeq: null,
+              })
+            : buildStrChargeMetadata({
+                entity: resolved.property.entity,
+                property: resolved.property,
+                paymentKind: "BOOKING_DEPOSIT",
+              });
+
         const session = await createCheckoutSession({
           amount: dueNow,
           description:
@@ -338,6 +399,7 @@ export async function registerRoutes(app: Express): Promise<void> {
           guestEmail: guest.email,
           successUrl: appUrl(req, `/confirmation/${reference}`),
           cancelUrl: appUrl(req, `/property/${resolved.property.id}`),
+          metadata: chargeMetadata,
         });
         await storage.updatePayment(payment.id, { stripeRef: session.id });
         response.checkoutUrl = session.url ?? undefined;
@@ -667,6 +729,54 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
       const sub = event.data.object as import("stripe").Stripe.Subscription;
       const local = await storage.getSubscriptionByStripeId(sub.id);
       if (local) await storage.updateSubscription(local.id, { status: sub.status });
+      break;
+    }
+
+    // --- Phase 4: co-living lease PaymentIntents (saved-card model) ---
+    case "payment_intent.succeeded": {
+      const pi = event.data.object as import("stripe").Stripe.PaymentIntent;
+      const kind = pi.metadata?.payment_kind;
+      if (kind === "FIRST_PAYMENT") {
+        // Source of truth for lease activation.
+        await finalizeFirstPayment(pi.id);
+      } else if (kind === "SCHEDULED_RENT") {
+        // Settle the installment by (lease_id, schedule_seq) from metadata. The
+        // sweep usually already marked it PAID; this is the authoritative confirm
+        // and covers the requires_action → succeeded async case. Idempotent.
+        const leaseId = pi.metadata?.lease_id;
+        const seq = parseInt(pi.metadata?.schedule_seq ?? "", 10);
+        if (leaseId && Number.isFinite(seq)) {
+          const rows = await storage.getScheduleByLease(leaseId);
+          const row = rows.find((r) => r.scheduleSeq === seq);
+          if (row && row.status !== "PAID") {
+            await storage.updateScheduleRow(row.id, {
+              status: "PAID",
+              paidAt: new Date(),
+              stripePaymentIntentId: pi.id,
+            });
+          }
+        }
+      }
+      log(`payment_intent.succeeded (${kind ?? "untagged"}) ${pi.id}`, "stripe");
+      break;
+    }
+
+    case "payment_intent.payment_failed": {
+      const pi = event.data.object as import("stripe").Stripe.PaymentIntent;
+      const kind = pi.metadata?.payment_kind;
+      if (kind === "SCHEDULED_RENT") {
+        const leaseId = pi.metadata?.lease_id;
+        const seq = parseInt(pi.metadata?.schedule_seq ?? "", 10);
+        if (leaseId && Number.isFinite(seq)) {
+          const rows = await storage.getScheduleByLease(leaseId);
+          const row = rows.find((r) => r.scheduleSeq === seq);
+          // Don't clobber a PAID row; mark a still-open one FAILED (Phase 5 dunning).
+          if (row && row.status !== "PAID" && row.status !== "WAIVED") {
+            await storage.updateScheduleRow(row.id, { status: "FAILED", stripePaymentIntentId: pi.id });
+          }
+        }
+      }
+      log(`payment_intent.payment_failed (${kind ?? "untagged"}) ${pi.id}`, "stripe");
       break;
     }
 

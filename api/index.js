@@ -25,7 +25,7 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 
 // server/storage.ts
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 
 // server/db.ts
 import { neon } from "@neondatabase/serverless";
@@ -36,11 +36,21 @@ var schema_exports = {};
 __export(schema_exports, {
   BOOKING_MODELS: () => BOOKING_MODELS,
   BOOKING_STATUSES: () => BOOKING_STATUSES,
+  CADENCE_DAYS: () => CADENCE_DAYS,
+  CADENCE_WEEKS: () => CADENCE_WEEKS,
+  LATE_FEE_PER_DAY: () => LATE_FEE_PER_DAY,
+  LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
+  LEASE_STATUSES: () => LEASE_STATUSES,
+  MAX_LEASE_DAYS: () => MAX_LEASE_DAYS,
+  PAYMENT_CADENCES: () => PAYMENT_CADENCES,
   PAYMENT_METHODS: () => PAYMENT_METHODS,
   PAYMENT_STATUSES: () => PAYMENT_STATUSES,
   PAYMENT_TYPES: () => PAYMENT_TYPES,
+  PROPERTY_ENTITIES: () => PROPERTY_ENTITIES,
   PROPERTY_TYPES: () => PROPERTY_TYPES,
   ROOM_STATUSES: () => ROOM_STATUSES,
+  SCHEDULE_PAYMENT_METHODS: () => SCHEDULE_PAYMENT_METHODS,
+  SCHEDULE_STATUSES: () => SCHEDULE_STATUSES,
   adminUsers: () => adminUsers,
   bookings: () => bookings,
   guests: () => guests,
@@ -48,11 +58,19 @@ __export(schema_exports, {
   insertBookingSchema: () => insertBookingSchema,
   insertGuestSchema: () => insertGuestSchema,
   insertKpiSnapshotSchema: () => insertKpiSnapshotSchema,
+  insertLateFeeSchema: () => insertLateFeeSchema,
+  insertLeaseRoomSchema: () => insertLeaseRoomSchema,
+  insertLeaseSchema: () => insertLeaseSchema,
+  insertPaymentScheduleSchema: () => insertPaymentScheduleSchema,
   insertPaymentSchema: () => insertPaymentSchema,
   insertPropertySchema: () => insertPropertySchema,
   insertRoomSchema: () => insertRoomSchema,
   insertSubscriptionSchema: () => insertSubscriptionSchema,
   kpiSnapshots: () => kpiSnapshots,
+  lateFees: () => lateFees,
+  leaseRooms: () => leaseRooms,
+  leases: () => leases,
+  paymentSchedule: () => paymentSchedule,
   payments: () => payments,
   properties: () => properties,
   rooms: () => rooms,
@@ -86,6 +104,51 @@ var BOOKING_STATUSES = [
 var PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"];
 var PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"];
 var PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED"];
+var PROPERTY_ENTITIES = ["TRAD", "BNP"];
+var PAYMENT_CADENCES = ["WEEKLY", "BIWEEKLY", "MONTHLY"];
+var LEASE_STATUSES = [
+  "DRAFT",
+  // created, not yet signed
+  "PENDING_SIGNATURE",
+  // presented to guest for signature
+  "PENDING_FIRST_PAYMENT",
+  // signed; awaiting schedule_seq 1
+  "ACTIVE",
+  // signed AND first payment succeeded
+  "COMPLETED",
+  // term finished, fully paid
+  "TERMINATED",
+  // ended early
+  "DEFAULTED"
+  // unpaid past the default threshold
+];
+var SCHEDULE_STATUSES = [
+  "SCHEDULED",
+  // future, not yet due
+  "DUE",
+  // due today / past due, not yet charged
+  "PAID",
+  "FAILED",
+  // card-on-file charge declined
+  "LATE",
+  // past due with accruing late fees
+  "WAIVED"
+  // admin waived this installment
+];
+var SCHEDULE_PAYMENT_METHODS = ["CARD_ON_FILE", "MANUAL"];
+var LATE_FEE_STATUSES = ["ACCRUED", "BILLED", "PAID", "WAIVED"];
+var CADENCE_WEEKS = {
+  WEEKLY: 1,
+  BIWEEKLY: 2,
+  MONTHLY: 4
+};
+var CADENCE_DAYS = {
+  WEEKLY: 7,
+  BIWEEKLY: 14,
+  MONTHLY: 28
+};
+var MAX_LEASE_DAYS = 90;
+var LATE_FEE_PER_DAY = 25;
 var properties = pgTable("properties", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
@@ -94,6 +157,9 @@ var properties = pgTable("properties", {
   location: text("location").notNull(),
   // "STR" (book the whole place) | "COLIVING" (book a room within it).
   type: text("type").notNull().default("STR"),
+  // Owning entity: "TRAD" | "BNP". Sources the Stripe metadata `entity` field.
+  // Defaults to BNP; TRAD properties set it explicitly. Additive column.
+  entity: text("entity").notNull().default("BNP"),
   description: text("description"),
   // string[] of photo URLs.
   photos: jsonb("photos").$type().default(sql`'[]'::jsonb`),
@@ -108,6 +174,7 @@ var properties = pgTable("properties", {
 });
 var insertPropertySchema = createInsertSchema(properties, {
   type: z.enum(PROPERTY_TYPES),
+  entity: z.enum(PROPERTY_ENTITIES).optional(),
   photos: z.array(z.string()).optional(),
   amenities: z.array(z.string()).optional()
 }).omit({ id: true, createdAt: true, updatedAt: true });
@@ -117,6 +184,9 @@ var rooms = pgTable(
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
     propertyId: varchar("property_id").notNull().references(() => properties.id),
     name: text("name").notNull(),
+    // Human room number/label used in the Stripe metadata contract (room_number),
+    // e.g. "2". Optional so STR conversions and legacy rows don't break. Additive.
+    roomNumber: text("room_number"),
     description: text("description"),
     photos: jsonb("photos").$type().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
@@ -284,6 +354,134 @@ var adminUsers = pgTable("admin_users", {
 var insertAdminUserSchema = createInsertSchema(adminUsers, {
   email: z.string().email()
 }).omit({ id: true, createdAt: true, updatedAt: true });
+var leases = pgTable(
+  "leases",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    propertyId: varchar("property_id").notNull().references(() => properties.id),
+    guestId: varchar("guest_id").notNull().references(() => guests.id),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    // term ≤ 90 days, enforced in storage
+    // "WEEKLY" | "BIWEEKLY" | "MONTHLY" — locked at booking, immutable for the term.
+    paymentCadence: text("payment_cadence").notNull(),
+    // Frozen weekly rate (sum across included rooms) at booking time.
+    weeklyRateSnapshot: decimal("weekly_rate_snapshot", { precision: 10, scale: 2 }).notNull(),
+    // Sum of all scheduled rent installments (rent only; excludes late fees).
+    totalLeaseValue: decimal("total_lease_value", { precision: 12, scale: 2 }).notNull(),
+    // Human-friendly note describing the final-installment proration, if any.
+    prorationNote: text("proration_note"),
+    // "DRAFT" | "PENDING_SIGNATURE" | "PENDING_FIRST_PAYMENT" | "ACTIVE" |
+    // "COMPLETED" | "TERMINATED" | "DEFAULTED"
+    status: text("status").notNull().default("DRAFT"),
+    // --- E-signature capture (Phase 3) ---
+    signedName: text("signed_name"),
+    signedAt: timestamp("signed_at"),
+    signedIp: text("signed_ip"),
+    // URL the guest re-downloads their signed agreement from (the serve route).
+    signedPdfUrl: text("signed_pdf_url"),
+    // The rendered signed agreement (self-contained, print-to-PDF HTML), frozen
+    // at signing time with the signature block, timestamp, and IP. Stored inline
+    // (no external blob store wired yet). Reference-only; contains no card data.
+    signedDocumentHtml: text("signed_document_html"),
+    // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
+    stripeCustomerId: text("stripe_customer_id"),
+    stripePaymentMethodId: text("stripe_payment_method_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    propertyIdx: index("leases_property_idx").on(table.propertyId),
+    guestIdx: index("leases_guest_idx").on(table.guestId),
+    statusIdx: index("leases_status_idx").on(table.status)
+  })
+);
+var insertLeaseSchema = createInsertSchema(leases, {
+  paymentCadence: z.enum(PAYMENT_CADENCES),
+  status: z.enum(LEASE_STATUSES).optional()
+}).omit({ id: true, createdAt: true, updatedAt: true });
+var leaseRooms = pgTable(
+  "lease_rooms",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull().references(() => leases.id),
+    roomId: varchar("room_id").notNull().references(() => rooms.id),
+    roomNumberSnapshot: text("room_number_snapshot"),
+    roomNameSnapshot: text("room_name_snapshot").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("lease_rooms_lease_idx").on(table.leaseId),
+    roomIdx: index("lease_rooms_room_idx").on(table.roomId)
+  })
+);
+var insertLeaseRoomSchema = createInsertSchema(leaseRooms).omit({
+  id: true,
+  createdAt: true
+});
+var paymentSchedule = pgTable(
+  "payment_schedule",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull().references(() => leases.id),
+    scheduleSeq: integer("schedule_seq").notNull(),
+    // 1-based
+    dueDate: date("due_date").notNull(),
+    amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+    // "SCHEDULED" | "DUE" | "PAID" | "FAILED" | "LATE" | "WAIVED"
+    status: text("status").notNull().default("SCHEDULED"),
+    paidAt: timestamp("paid_at"),
+    // "CARD_ON_FILE" | "MANUAL". CARD_ON_FILE rows are auto-charged by the
+    // scheduler (Phase 4); MANUAL rows are settled by an admin "Mark Paid".
+    paymentMethod: text("payment_method").notNull().default("CARD_ON_FILE"),
+    // Stripe PaymentIntent id for this installment. Reference only, never a card.
+    stripePaymentIntentId: text("stripe_payment_intent_id"),
+    // Free-text note for manual reconciliation (Zelle/CashApp/cash settlement).
+    manualNote: text("manual_note"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("payment_schedule_lease_idx").on(table.leaseId),
+    statusIdx: index("payment_schedule_status_idx").on(table.status),
+    dueDateIdx: index("payment_schedule_due_date_idx").on(table.dueDate)
+  })
+);
+var insertPaymentScheduleSchema = createInsertSchema(paymentSchedule, {
+  status: z.enum(SCHEDULE_STATUSES).optional(),
+  paymentMethod: z.enum(SCHEDULE_PAYMENT_METHODS).optional()
+}).omit({ id: true, createdAt: true, updatedAt: true });
+var lateFees = pgTable(
+  "late_fees",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull().references(() => leases.id),
+    scheduleSeq: integer("schedule_seq").notNull(),
+    // the installment it attaches to
+    accrualDate: date("accrual_date").notNull(),
+    // the day this fee accrued for
+    amount: decimal("amount", { precision: 10, scale: 2 }).notNull().default("25.00"),
+    // "ACCRUED" | "BILLED" | "PAID" | "WAIVED"
+    status: text("status").notNull().default("ACCRUED"),
+    stripePaymentIntentId: text("stripe_payment_intent_id"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("late_fees_lease_idx").on(table.leaseId),
+    statusIdx: index("late_fees_status_idx").on(table.status),
+    // One late-fee row per (lease, installment, day) — guards the scheduler
+    // against double-accruing on re-runs (idempotency, Phase 5/9).
+    uniqueAccrual: index("late_fees_unique_accrual_idx").on(
+      table.leaseId,
+      table.scheduleSeq,
+      table.accrualDate
+    )
+  })
+);
+var insertLateFeeSchema = createInsertSchema(lateFees, {
+  status: z.enum(LATE_FEE_STATUSES).optional()
+}).omit({ id: true, createdAt: true, updatedAt: true });
 
 // server/db.ts
 var databaseUrl = process.env.DATABASE_URL;
@@ -295,7 +493,92 @@ if (!databaseUrl) {
 var sql2 = neon(databaseUrl);
 var db = drizzle({ client: sql2, schema: schema_exports });
 
+// shared/leaseSchedule.ts
+var ScheduleError = class extends Error {
+};
+var roundCurrency = (v) => Math.round(v * 100) / 100;
+var MS_PER_DAY = 24 * 60 * 60 * 1e3;
+function parseYmd(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) throw new ScheduleError(`Invalid date (expected YYYY-MM-DD): ${ymd}`);
+  return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+}
+function toYmd(d) {
+  return d.toISOString().slice(0, 10);
+}
+function addDays(ymd, days) {
+  return toYmd(new Date(parseYmd(ymd).getTime() + days * MS_PER_DAY));
+}
+function inclusiveDays(startDate, endDate) {
+  const diff = Math.round((parseYmd(endDate).getTime() - parseYmd(startDate).getTime()) / MS_PER_DAY);
+  return diff + 1;
+}
+function generateSchedule(input) {
+  const { startDate, endDate, cadence, weeklyRate, roomCount } = input;
+  if (!(roomCount >= 1)) throw new ScheduleError("roomCount must be at least 1");
+  if (!(weeklyRate > 0)) throw new ScheduleError("weeklyRate must be positive");
+  const start = parseYmd(startDate);
+  const end = parseYmd(endDate);
+  if (end.getTime() < start.getTime()) {
+    throw new ScheduleError("endDate must be on or after startDate");
+  }
+  const totalDays = inclusiveDays(startDate, endDate);
+  if (totalDays > MAX_LEASE_DAYS) {
+    throw new ScheduleError(`Lease term ${totalDays} days exceeds the ${MAX_LEASE_DAYS}-day maximum`);
+  }
+  const periodDays = CADENCE_DAYS[cadence];
+  const fullPeriodAmount = roundCurrency(weeklyRate * CADENCE_WEEKS[cadence] * roomCount);
+  const perDayRate = weeklyRate * roomCount / 7;
+  const installments = [];
+  let seq = 1;
+  let cursor = startDate;
+  let remainingDays = totalDays;
+  while (remainingDays > 0) {
+    if (remainingDays >= periodDays) {
+      installments.push({
+        seq,
+        dueDate: cursor,
+        amount: fullPeriodAmount,
+        prorated: false,
+        daysCovered: periodDays
+      });
+      remainingDays -= periodDays;
+      cursor = addDays(cursor, periodDays);
+    } else {
+      installments.push({
+        seq,
+        dueDate: cursor,
+        amount: roundCurrency(perDayRate * remainingDays),
+        prorated: true,
+        daysCovered: remainingDays
+      });
+      remainingDays = 0;
+    }
+    seq += 1;
+  }
+  const totalLeaseValue = roundCurrency(
+    installments.reduce((sum, i) => sum + i.amount, 0)
+  );
+  const fullCount = installments.filter((i) => !i.prorated).length;
+  const finalProrated = installments.find((i) => i.prorated);
+  const prorationNote = finalProrated ? `${fullCount} full ${cadence.toLowerCase()} installment(s) of $${fullPeriodAmount.toFixed(2)}, plus a final prorated installment of $${finalProrated.amount.toFixed(2)} covering ${finalProrated.daysCovered} day(s). First payment due on the booking date.` : `${fullCount} ${cadence.toLowerCase()} installment(s) of $${fullPeriodAmount.toFixed(2)}, no proration. First payment due on the booking date.`;
+  return { installments, totalLeaseValue, prorationNote, totalDays };
+}
+
 // server/storage.ts
+var ROOM_BLOCKING_LEASE_STATUSES = [
+  "DRAFT",
+  "PENDING_SIGNATURE",
+  "PENDING_FIRST_PAYMENT",
+  "ACTIVE"
+];
+var StorageError = class extends Error {
+  status;
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+};
 var Storage = class {
   // --- Properties ---
   async getProperties(opts) {
@@ -436,6 +719,97 @@ var Storage = class {
   async createAdmin(data) {
     const [row] = await db.insert(adminUsers).values(data).returning();
     return row;
+  }
+  // --- Leases ---
+  async getLease(id) {
+    const [row] = await db.select().from(leases).where(eq(leases.id, id));
+    return row;
+  }
+  async getLeases(opts) {
+    const filters = [];
+    if (opts?.status) filters.push(eq(leases.status, opts.status));
+    if (opts?.guestId) filters.push(eq(leases.guestId, opts.guestId));
+    if (opts?.propertyId) filters.push(eq(leases.propertyId, opts.propertyId));
+    const q = db.select().from(leases).orderBy(desc(leases.createdAt));
+    return filters.length ? q.where(and(...filters)) : q;
+  }
+  async createLeaseWithSchedule(args) {
+    if (args.rooms.length < 1) {
+      throw new StorageError("A lease must include at least one room");
+    }
+    const days = inclusiveDays(args.lease.startDate, args.lease.endDate);
+    if (days > MAX_LEASE_DAYS) {
+      throw new StorageError(
+        `Lease term ${days} days exceeds the ${MAX_LEASE_DAYS}-day maximum`,
+        422
+      );
+    }
+    for (const lr of args.rooms) {
+      const free = await this.isRoomAvailableForRange({
+        roomId: lr.roomId,
+        startDate: args.lease.startDate,
+        endDate: args.lease.endDate
+      });
+      if (!free) {
+        throw new StorageError(
+          `Room ${lr.roomNameSnapshot} is already booked for an overlapping date range`,
+          409
+        );
+      }
+    }
+    const [lease] = await db.insert(leases).values(args.lease).returning();
+    if (args.rooms.length) {
+      await db.insert(leaseRooms).values(args.rooms.map((r) => ({ ...r, leaseId: lease.id })));
+    }
+    if (args.schedule.length) {
+      await db.insert(paymentSchedule).values(args.schedule.map((s) => ({ ...s, leaseId: lease.id })));
+    }
+    return lease;
+  }
+  async updateLease(id, updates) {
+    const [row] = await db.update(leases).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(leases.id, id)).returning();
+    return row;
+  }
+  async getLeaseRooms(leaseId) {
+    return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+  // --- Payment schedule ---
+  async getScheduleByLease(leaseId) {
+    return db.select().from(paymentSchedule).where(eq(paymentSchedule.leaseId, leaseId)).orderBy(asc(paymentSchedule.scheduleSeq));
+  }
+  async getScheduleRow(id) {
+    const [row] = await db.select().from(paymentSchedule).where(eq(paymentSchedule.id, id));
+    return row;
+  }
+  async updateScheduleRow(id, updates) {
+    const [row] = await db.update(paymentSchedule).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(paymentSchedule.id, id)).returning();
+    return row;
+  }
+  // --- Late fees ---
+  async getLateFeesByLease(leaseId) {
+    return db.select().from(lateFees).where(eq(lateFees.leaseId, leaseId)).orderBy(asc(lateFees.accrualDate));
+  }
+  async createLateFee(data) {
+    const [row] = await db.insert(lateFees).values(data).returning();
+    return row;
+  }
+  async updateLateFee(id, updates) {
+    const [row] = await db.update(lateFees).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(lateFees.id, id)).returning();
+    return row;
+  }
+  async isRoomAvailableForRange(args) {
+    const links = await db.select({ leaseId: leaseRooms.leaseId }).from(leaseRooms).where(eq(leaseRooms.roomId, args.roomId));
+    const leaseIds = links.map((l) => l.leaseId).filter((id) => id !== args.excludeLeaseId);
+    if (leaseIds.length === 0) return true;
+    const blocking = await db.select().from(leases).where(
+      and(
+        inArray(leases.id, leaseIds),
+        inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES])
+      )
+    );
+    return !blocking.some(
+      (l) => args.startDate <= l.endDate && l.startDate <= args.endDate
+    );
   }
   // --- Aggregates ---
   async getKpiAggregates() {
@@ -589,6 +963,33 @@ var createBookingSchema = z2.object({
 }).refine((d) => d.roomId || d.checkIn && d.checkOut, {
   message: "STR bookings need checkIn+checkOut; co-living needs a roomId"
 });
+var leaseQuoteRequestSchema = z2.object({
+  propertyId: z2.string().min(1),
+  // One or more rooms in the same property (co-living can rent multiple rooms).
+  roomIds: z2.array(z2.string().min(1)).min(1, "Select at least one room"),
+  startDate: z2.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Start date is required"),
+  endDate: z2.string().regex(/^\d{4}-\d{2}-\d{2}$/, "End date is required"),
+  cadence: z2.enum(PAYMENT_CADENCES)
+});
+var createDraftLeaseSchema = z2.object({
+  propertyId: z2.string().min(1),
+  roomIds: z2.array(z2.string().min(1)).min(1, "Select at least one room"),
+  startDate: z2.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  endDate: z2.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  cadence: z2.enum(PAYMENT_CADENCES),
+  guest: z2.object({
+    name: z2.string().min(1, "Name required"),
+    email: z2.string().email("Valid email required"),
+    phone: z2.string().optional()
+  })
+});
+var signLeaseSchema = z2.object({
+  leaseId: z2.string().min(1),
+  signedName: z2.string().min(2, "Type your full legal name"),
+  affirmed: z2.literal(true, {
+    errorMap: () => ({ message: "You must affirm the agreement to sign" })
+  })
+});
 
 // server/lib/booking.ts
 import { customAlphabet } from "nanoid";
@@ -598,7 +999,7 @@ import { differenceInCalendarDays, parseISO } from "date-fns";
 var CREDIT_CARD_RATE = 0.035;
 var TAX_RATE = 0;
 var DEFAULT_CLEANING_FEE = 0;
-var roundCurrency = (v) => Math.round(v * 100) / 100;
+var roundCurrency2 = (v) => Math.round(v * 100) / 100;
 var calculateBreakdown = ({
   baseAmount,
   cleaningFee = DEFAULT_CLEANING_FEE,
@@ -606,15 +1007,15 @@ var calculateBreakdown = ({
   promoDiscount = 0,
   paymentMethod
 }) => {
-  const cf = roundCurrency(cleaningFee);
-  const extras = roundCurrency(extrasTotal);
-  const discount = roundCurrency(Math.max(0, promoDiscount));
-  const subtotal = roundCurrency(Math.max(0, baseAmount + cf + extras - discount));
-  const tax = roundCurrency(subtotal * TAX_RATE);
-  const surcharge = paymentMethod === "STRIPE" ? roundCurrency((subtotal + tax) * CREDIT_CARD_RATE) : 0;
-  const total = roundCurrency(subtotal + tax + surcharge);
+  const cf = roundCurrency2(cleaningFee);
+  const extras = roundCurrency2(extrasTotal);
+  const discount = roundCurrency2(Math.max(0, promoDiscount));
+  const subtotal = roundCurrency2(Math.max(0, baseAmount + cf + extras - discount));
+  const tax = roundCurrency2(subtotal * TAX_RATE);
+  const surcharge = paymentMethod === "STRIPE" ? roundCurrency2((subtotal + tax) * CREDIT_CARD_RATE) : 0;
+  const total = roundCurrency2(subtotal + tax + surcharge);
   return {
-    baseAmount: roundCurrency(baseAmount),
+    baseAmount: roundCurrency2(baseAmount),
     cleaningFee: cf,
     extrasTotal: extras,
     discount,
@@ -744,6 +1145,383 @@ function buildQuote(resolved, paymentMethod) {
   };
 }
 
+// server/lib/lease.ts
+var LeaseError = class extends Error {
+  status;
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+};
+async function buildLeaseQuote(input) {
+  const property = await storage.getProperty(input.propertyId);
+  if (!property) throw new LeaseError("Property not found", 404);
+  if (!property.active) throw new LeaseError("Property is not available", 409);
+  if (property.type !== "COLIVING") {
+    throw new LeaseError("Leases are for co-living properties; use the nightly flow for this stay", 400);
+  }
+  const roomIds = Array.from(new Set(input.roomIds));
+  if (roomIds.length === 0) throw new LeaseError("Select at least one room");
+  const rooms2 = [];
+  for (const id of roomIds) {
+    const room = await storage.getRoom(id);
+    if (!room || room.propertyId !== property.id) {
+      throw new LeaseError("One of the selected rooms was not found in this property", 404);
+    }
+    if (room.status !== "AVAILABLE") {
+      throw new LeaseError(`Room ${room.name} is no longer available`, 409);
+    }
+    rooms2.push(room);
+  }
+  const termDays = inclusiveDays(input.startDate, input.endDate);
+  if (termDays > MAX_LEASE_DAYS) {
+    throw new LeaseError(`Lease term cannot exceed ${MAX_LEASE_DAYS} days`, 422);
+  }
+  for (const room of rooms2) {
+    const free = await storage.isRoomAvailableForRange({
+      roomId: room.id,
+      startDate: input.startDate,
+      endDate: input.endDate
+    });
+    if (!free) {
+      throw new LeaseError(`Room ${room.name} is already booked for an overlapping range`, 409);
+    }
+  }
+  const weeklyRateTotal = Math.round(rooms2.reduce((sum, r) => sum + parseFloat(r.weeklyRent), 0) * 100) / 100;
+  let generated;
+  try {
+    generated = generateSchedule({
+      startDate: input.startDate,
+      endDate: input.endDate,
+      cadence: input.cadence,
+      weeklyRate: weeklyRateTotal,
+      roomCount: 1
+      // weeklyRateTotal already sums all rooms
+    });
+  } catch (err) {
+    if (err instanceof ScheduleError) throw new LeaseError(err.message, 422);
+    throw err;
+  }
+  const schedule = generated.installments.map((i) => ({
+    seq: i.seq,
+    dueDate: i.dueDate,
+    amount: i.amount,
+    prorated: i.prorated,
+    daysCovered: i.daysCovered,
+    dueOnBooking: i.seq === 1
+  }));
+  return {
+    propertyId: property.id,
+    propertyName: property.name,
+    rooms: rooms2.map((r) => ({
+      id: r.id,
+      name: r.name,
+      roomNumber: r.roomNumber ?? null,
+      weeklyRent: parseFloat(r.weeklyRent)
+    })),
+    startDate: input.startDate,
+    endDate: input.endDate,
+    cadence: input.cadence,
+    weeklyRateTotal,
+    termDays: generated.totalDays,
+    schedule,
+    totalLeaseValue: generated.totalLeaseValue,
+    prorationNote: generated.prorationNote,
+    dueToday: schedule[0]?.amount ?? 0
+  };
+}
+
+// server/lib/paymentMetadata.ts
+var NULL = "null";
+var str = (v) => v === null || v === void 0 || v === "" ? NULL : String(v);
+function buildLeaseChargeMetadata(args) {
+  const roomIds = args.rooms.map((r) => r.roomId).join(",");
+  const roomNames = args.rooms.map((r) => r.roomNameSnapshot).join(",");
+  const roomNumbers = args.rooms.map((r) => r.roomNumberSnapshot ?? "").join(",");
+  return {
+    entity: str(args.entity),
+    product_type: "COLIVING_ROOM",
+    property_id: str(args.property.id),
+    property_name: str(args.property.name),
+    room_id: str(roomIds),
+    room_name: str(roomNames),
+    room_number: str(roomNumbers),
+    lease_id: str(args.lease.id),
+    payment_kind: args.paymentKind,
+    schedule_seq: str(args.scheduleSeq)
+  };
+}
+function buildStrChargeMetadata(args) {
+  return {
+    entity: str(args.entity),
+    product_type: "STR_WHOLE",
+    property_id: str(args.property.id),
+    property_name: str(args.property.name),
+    room_id: NULL,
+    room_name: NULL,
+    room_number: NULL,
+    lease_id: NULL,
+    payment_kind: args.paymentKind,
+    schedule_seq: NULL
+  };
+}
+var REQUIRED_METADATA_KEYS = [
+  "entity",
+  "product_type",
+  "property_id",
+  "property_name",
+  "room_id",
+  "room_name",
+  "room_number",
+  "lease_id",
+  "payment_kind",
+  "schedule_seq"
+];
+function assertCompleteMetadata(meta) {
+  const missing = REQUIRED_METADATA_KEYS.filter(
+    (k) => meta[k] === void 0 || meta[k] === ""
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `Stripe metadata contract incomplete \u2014 missing/empty: ${missing.join(", ")}`
+    );
+  }
+}
+
+// server/lib/leaseDocument.ts
+var CADENCE_LABEL = {
+  WEEKLY: "weekly",
+  BIWEEKLY: "bi-weekly",
+  MONTHLY: "monthly (every 4 weeks)"
+};
+var DEFAULT_LEASE_TEMPLATE = {
+  title: "Room Rental Agreement",
+  intro: "This Room Rental Agreement (the \u201CAgreement\u201D) is entered into between Be Nice Properties (\u201CLandlord\u201D) and {{guestName}} (\u201CResident\u201D) for the room(s) and term described below at {{propertyName}}, {{propertyLocation}}.",
+  sections: [
+    {
+      heading: "1. Premises",
+      body: "The Landlord rents to the Resident the following room(s) at {{propertyName}}: {{roomList}}. The Resident has the non-exclusive right to use shared common areas of the property in common with other residents."
+    },
+    {
+      heading: "2. Term",
+      body: "The lease term runs from {{startDate}} through {{endDate}} ({{termDays}} days). This is a fixed-term arrangement and does not exceed 90 days."
+    },
+    {
+      heading: "3. Rent & Payment Schedule",
+      body: "Rent is billed on a {{cadenceLabel}} basis at a combined rate of {{weeklyRateLabel}} per week across all rented room(s). The first payment is due on the start date. The complete schedule of payments and amounts appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}"
+    },
+    {
+      heading: "4. Late Fees",
+      body: "If a scheduled payment is not received by its due date, a late fee of {{lateFeePerDay}} per day accrues beginning the day after the due date and continues to accrue daily until the balance is paid. Accrued late fees are billed as a separate charge from rent."
+    },
+    {
+      heading: "5. House Rules",
+      body: "The Resident agrees to: keep shared spaces clean; respect quiet hours and other residents; not sublet or assign the room; not engage in illegal activity on the premises; and follow any posted property-specific house rules. Repeated or serious violations may result in termination of this Agreement."
+    },
+    {
+      heading: "6. Payment Authorization",
+      body: "The Resident authorizes Be Nice Properties to charge the saved payment method on file for each scheduled payment and for any accrued late fees, on or after each due date."
+    }
+  ],
+  signatureStatement: "By typing my full legal name below and submitting this Agreement, I acknowledge that I have read and agree to its terms, and I intend my typed name to be my legally binding electronic signature under the U.S. E-SIGN Act and UETA."
+};
+var fmtMoney = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+function esc(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function inclusiveDays2(startDate, endDate) {
+  const ms = 24 * 60 * 60 * 1e3;
+  const s = (/* @__PURE__ */ new Date(`${startDate}T00:00:00Z`)).getTime();
+  const e = (/* @__PURE__ */ new Date(`${endDate}T00:00:00Z`)).getTime();
+  return Math.round((e - s) / ms) + 1;
+}
+function tokenMap(data) {
+  const roomList = data.rooms.map((r) => r.roomNumber ? `${r.name} (#${r.roomNumber})` : r.name).join(", ");
+  return {
+    guestName: data.guestName,
+    propertyName: data.propertyName,
+    propertyLocation: data.propertyLocation,
+    roomList,
+    startDate: data.startDate,
+    endDate: data.endDate,
+    termDays: String(inclusiveDays2(data.startDate, data.endDate)),
+    cadenceLabel: CADENCE_LABEL[data.cadence],
+    weeklyRateLabel: fmtMoney(data.weeklyRateTotal),
+    totalLeaseValue: fmtMoney(data.totalLeaseValue),
+    prorationNote: data.prorationNote,
+    lateFeePerDay: fmtMoney(LATE_FEE_PER_DAY)
+  };
+}
+function fill(text2, tokens) {
+  return text2.replace(
+    /\{\{(\w+)\}\}/g,
+    (_m, key) => key in tokens ? tokens[key] : `{{${key}}}`
+  );
+}
+function scheduleTableHtml(schedule) {
+  const rows = schedule.map(
+    (r) => `<tr><td>${r.seq}</td><td>${esc(r.dueDate)}${r.seq === 1 ? " <strong>(due on start)</strong>" : ""}${r.prorated ? " <em>(prorated)</em>" : ""}</td><td style="text-align:right">${fmtMoney(
+      r.amount
+    )}</td></tr>`
+  ).join("");
+  return `<table style="width:100%;border-collapse:collapse" cellpadding="6"><thead><tr style="border-bottom:1px solid #ccc;text-align:left"><th>#</th><th>Due date</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function bodyHtml(data, template) {
+  const tokens = tokenMap(data);
+  const sections = template.sections.map(
+    (s) => `<section><h2 style="font-size:15px;margin:18px 0 6px">${esc(s.heading)}</h2><p style="margin:0;line-height:1.5">${esc(fill(s.body, tokens))}</p></section>`
+  ).join("");
+  return `<h1 style="font-size:20px;margin:0 0 4px">${esc(template.title)}</h1><p style="color:#555;margin:0 0 16px;line-height:1.5">${esc(fill(template.intro, tokens))}</p>` + sections + `<section><h2 style="font-size:15px;margin:18px 0 6px">Payment Schedule</h2>` + scheduleTableHtml(data.schedule) + `</section>`;
+}
+var PAGE = (inner) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Room Rental Agreement</title><style>body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:32px auto;padding:0 20px;color:#1a1a1a}@media print{body{margin:0}}</style></head><body>${inner}</body></html>`;
+function renderLeaseHtml(data, template = DEFAULT_LEASE_TEMPLATE) {
+  const unsigned = bodyHtml(data, template) + `<section style="margin-top:24px"><p style="line-height:1.5">${esc(
+    template.signatureStatement
+  )}</p><p style="color:#777">\u2014 Awaiting signature \u2014</p></section>`;
+  return PAGE(unsigned);
+}
+function renderSignedLeaseHtml(data, signature, template = DEFAULT_LEASE_TEMPLATE) {
+  const signed = bodyHtml(data, template) + `<section style="margin-top:24px;border-top:2px solid #1a1a1a;padding-top:16px"><p style="line-height:1.5">${esc(template.signatureStatement)}</p><div style="margin-top:12px;font-size:14px"><div><strong>Signed by:</strong> ${esc(signature.signedName)}</div><div><strong>Date &amp; time:</strong> ${esc(signature.signedAt.toISOString())}</div><div><strong>IP address:</strong> ${esc(signature.signedIp)}</div><div style="margin-top:8px;color:#555">Electronically signed under the E-SIGN Act / UETA.</div></div></section>`;
+  return PAGE(signed);
+}
+
+// server/lib/leaseFlow.ts
+function docDataFrom(leaseId, quote, guest, location) {
+  return {
+    leaseId,
+    guestName: guest.name,
+    guestEmail: guest.email,
+    propertyName: quote.propertyName,
+    propertyLocation: location,
+    rooms: quote.rooms.map((r) => ({
+      name: r.name,
+      roomNumber: r.roomNumber,
+      weeklyRent: r.weeklyRent
+    })),
+    startDate: quote.startDate,
+    endDate: quote.endDate,
+    cadence: quote.cadence,
+    weeklyRateTotal: quote.weeklyRateTotal,
+    totalLeaseValue: quote.totalLeaseValue,
+    prorationNote: quote.prorationNote,
+    schedule: quote.schedule.map((s) => ({
+      seq: s.seq,
+      dueDate: s.dueDate,
+      amount: s.amount,
+      prorated: s.prorated
+    }))
+  };
+}
+async function createDraftLease(input) {
+  const quote = await buildLeaseQuote({
+    propertyId: input.propertyId,
+    roomIds: input.roomIds,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    cadence: input.cadence
+  });
+  const property = await storage.getProperty(input.propertyId);
+  if (!property) throw new LeaseError("Property not found", 404);
+  const guest = await storage.upsertGuestByEmail({
+    name: input.guest.name,
+    email: input.guest.email,
+    phone: input.guest.phone ?? null
+  });
+  const lease = await storage.createLeaseWithSchedule({
+    lease: {
+      propertyId: property.id,
+      guestId: guest.id,
+      startDate: quote.startDate,
+      endDate: quote.endDate,
+      paymentCadence: quote.cadence,
+      weeklyRateSnapshot: String(quote.weeklyRateTotal),
+      totalLeaseValue: String(quote.totalLeaseValue),
+      prorationNote: quote.prorationNote,
+      status: "PENDING_SIGNATURE"
+    },
+    rooms: quote.rooms.map((r) => ({
+      // leaseId is filled in by storage.createLeaseWithSchedule.
+      leaseId: "",
+      roomId: r.id,
+      roomNumberSnapshot: r.roomNumber,
+      roomNameSnapshot: r.name
+    })),
+    schedule: quote.schedule.map((s) => ({
+      leaseId: "",
+      scheduleSeq: s.seq,
+      dueDate: s.dueDate,
+      amount: String(s.amount),
+      status: "SCHEDULED",
+      // Default to card-on-file; a guest who chooses manual flips this in Phase 4.
+      paymentMethod: "CARD_ON_FILE"
+    }))
+  });
+  const documentHtml = renderLeaseHtml(
+    docDataFrom(lease.id, quote, input.guest, property.location)
+  );
+  return { lease, documentHtml };
+}
+async function signLease(input) {
+  const lease = await storage.getLease(input.leaseId);
+  if (!lease) throw new LeaseError("Lease not found", 404);
+  if (lease.signedAt) {
+    return { lease, documentUrl: lease.signedPdfUrl ?? `/api/leases/${lease.id}/document` };
+  }
+  if (lease.status !== "PENDING_SIGNATURE" && lease.status !== "DRAFT") {
+    throw new LeaseError(`Lease cannot be signed from status ${lease.status}`, 409);
+  }
+  const name = input.signedName.trim();
+  if (name.length < 2) throw new LeaseError("A full legal name is required to sign");
+  if (!input.affirmed) throw new LeaseError("You must affirm the agreement to sign");
+  const property = await storage.getProperty(lease.propertyId);
+  const guest = await storage.getGuest(lease.guestId);
+  const leaseRooms2 = await storage.getLeaseRooms(lease.id);
+  const schedule = await storage.getScheduleByLease(lease.id);
+  if (!property || !guest) throw new LeaseError("Lease data incomplete", 500);
+  const docData = {
+    leaseId: lease.id,
+    guestName: guest.name,
+    guestEmail: guest.email,
+    propertyName: property.name,
+    propertyLocation: property.location,
+    rooms: leaseRooms2.map((lr) => ({
+      name: lr.roomNameSnapshot,
+      roomNumber: lr.roomNumberSnapshot,
+      weeklyRent: 0
+      // not shown per-room in the doc body; rate total is on the lease
+    })),
+    startDate: lease.startDate,
+    endDate: lease.endDate,
+    cadence: lease.paymentCadence,
+    weeklyRateTotal: parseFloat(lease.weeklyRateSnapshot),
+    totalLeaseValue: parseFloat(lease.totalLeaseValue),
+    prorationNote: lease.prorationNote ?? "",
+    schedule: schedule.map((s) => ({
+      seq: s.scheduleSeq,
+      dueDate: s.dueDate,
+      amount: parseFloat(s.amount),
+      prorated: false
+    }))
+  };
+  const signedAt = input.signedAt ?? /* @__PURE__ */ new Date();
+  const signedDocumentHtml = renderSignedLeaseHtml(docData, {
+    signedName: name,
+    signedAt,
+    signedIp: input.ip
+  });
+  const documentUrl = `/api/leases/${lease.id}/document`;
+  const updated = await storage.updateLease(lease.id, {
+    signedName: name,
+    signedAt,
+    signedIp: input.ip,
+    signedPdfUrl: documentUrl,
+    signedDocumentHtml,
+    // Signed, but NOT active — first payment (Phase 4) gates ACTIVE.
+    status: "PENDING_FIRST_PAYMENT"
+  });
+  return { lease: updated ?? lease, documentUrl };
+}
+
 // server/lib/stripe.ts
 import Stripe from "stripe";
 var secret = process.env.STRIPE_SECRET_KEY;
@@ -763,6 +1541,8 @@ function requireStripe() {
 var toCents = (dollars) => Math.round(dollars * 100);
 async function createCheckoutSession(opts) {
   const s = requireStripe();
+  assertCompleteMetadata(opts.metadata);
+  const sessionMetadata = { ...opts.metadata, reference: opts.reference, kind: "one_time" };
   return s.checkout.sessions.create({
     mode: "payment",
     customer_email: opts.guestEmail,
@@ -777,7 +1557,10 @@ async function createCheckoutSession(opts) {
       }
     ],
     client_reference_id: opts.reference,
-    metadata: { reference: opts.reference, kind: "one_time" },
+    metadata: sessionMetadata,
+    // The contract must live on the PaymentIntent itself (the charge), not only
+    // the session, so reconciliation by metadata works against the charge.
+    payment_intent_data: { metadata: opts.metadata },
     success_url: opts.successUrl,
     cancel_url: opts.cancelUrl
   });
@@ -790,6 +1573,32 @@ function constructWebhookEvent(rawBody, signature) {
   }
   return s.webhooks.constructEvent(rawBody, signature, whSecret);
 }
+async function ensureCustomer(opts) {
+  const s = requireStripe();
+  if (opts.existingCustomerId) return opts.existingCustomerId;
+  const customer = await s.customers.create({ email: opts.email, name: opts.name });
+  return customer.id;
+}
+async function createFirstPaymentIntent(opts) {
+  const s = requireStripe();
+  assertCompleteMetadata(opts.metadata);
+  return s.paymentIntents.create(
+    {
+      amount: toCents(opts.amount),
+      currency: "usd",
+      customer: opts.customerId,
+      // Save the card for later off-session scheduled rent.
+      setup_future_usage: "off_session",
+      automatic_payment_methods: { enabled: true },
+      metadata: opts.metadata
+    },
+    { idempotencyKey: opts.idempotencyKey }
+  );
+}
+async function retrievePaymentIntent(id) {
+  return requireStripe().paymentIntents.retrieve(id);
+}
+var stripePublishableConfigured = () => Boolean(process.env.VITE_STRIPE_PUBLIC_KEY?.startsWith("pk_"));
 
 // server/server-log.ts
 function log(message, source = "express") {
@@ -800,6 +1609,103 @@ function log(message, source = "express") {
     hour12: true
   });
   console.log(`${time} [${source}] ${message}`);
+}
+
+// server/lib/leasePayments.ts
+async function loadLeaseContext(leaseId) {
+  const lease = await storage.getLease(leaseId);
+  if (!lease) throw new LeaseError("Lease not found", 404);
+  const property = await storage.getProperty(lease.propertyId);
+  if (!property) throw new LeaseError("Lease property not found", 500);
+  const rooms2 = await storage.getLeaseRooms(lease.id);
+  return { lease, property, rooms: rooms2 };
+}
+function chargeTotalFor(rentAmount) {
+  return calculateBreakdown({ baseAmount: rentAmount, paymentMethod: "STRIPE" }).total;
+}
+async function startFirstPayment(leaseId) {
+  const { lease, property, rooms: rooms2 } = await loadLeaseContext(leaseId);
+  if (lease.status !== "PENDING_FIRST_PAYMENT") {
+    throw new LeaseError(
+      `First payment can only be taken once the lease is signed (status is ${lease.status})`,
+      409
+    );
+  }
+  const schedule = await storage.getScheduleByLease(lease.id);
+  const first = schedule.find((s) => s.scheduleSeq === 1);
+  if (!first) throw new LeaseError("Lease has no first installment", 500);
+  if (first.status === "PAID") throw new LeaseError("First payment is already paid", 409);
+  const guest = await storage.getGuest(lease.guestId);
+  if (!guest) throw new LeaseError("Lease guest not found", 500);
+  const customerId = await ensureCustomer({
+    existingCustomerId: lease.stripeCustomerId,
+    email: guest.email,
+    name: guest.name
+  });
+  if (customerId !== lease.stripeCustomerId) {
+    await storage.updateLease(lease.id, { stripeCustomerId: customerId });
+  }
+  const amount = chargeTotalFor(parseFloat(first.amount));
+  const metadata = buildLeaseChargeMetadata({
+    entity: property.entity,
+    property,
+    lease,
+    rooms: rooms2,
+    paymentKind: "FIRST_PAYMENT",
+    scheduleSeq: 1
+  });
+  const pi = await createFirstPaymentIntent({
+    amount,
+    customerId,
+    metadata,
+    // Stable per-lease first-payment key: retrying startFirstPayment reuses the
+    // same PI instead of creating duplicates.
+    idempotencyKey: `lease-first-${lease.id}`
+  });
+  await storage.updateScheduleRow(first.id, { stripePaymentIntentId: pi.id });
+  if (!pi.client_secret) throw new LeaseError("Stripe did not return a client secret", 502);
+  return { clientSecret: pi.client_secret, paymentIntentId: pi.id, amount };
+}
+async function finalizeFirstPayment(paymentIntentId) {
+  const lease = await findLeaseByFirstPaymentIntent(paymentIntentId);
+  if (!lease) return;
+  if (lease.status === "ACTIVE") return;
+  const schedule = await storage.getScheduleByLease(lease.id);
+  const first = schedule.find((s) => s.scheduleSeq === 1);
+  if (!first) return;
+  let savedPaymentMethodId = lease.stripePaymentMethodId ?? null;
+  try {
+    const pi = await retrievePaymentIntent(paymentIntentId);
+    if (typeof pi.payment_method === "string") savedPaymentMethodId = pi.payment_method;
+    else if (pi.payment_method && "id" in pi.payment_method) savedPaymentMethodId = pi.payment_method.id;
+  } catch (err) {
+    log(`could not read saved payment method for ${paymentIntentId}: ${err.message}`, "stripe");
+  }
+  if (first.status !== "PAID") {
+    await storage.updateScheduleRow(first.id, {
+      status: "PAID",
+      paidAt: /* @__PURE__ */ new Date(),
+      stripePaymentIntentId: paymentIntentId
+    });
+  }
+  await storage.updateLease(lease.id, {
+    status: "ACTIVE",
+    stripePaymentMethodId: savedPaymentMethodId ?? void 0
+  });
+  const rooms2 = await storage.getLeaseRooms(lease.id);
+  for (const lr of rooms2) {
+    await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
+  }
+  log(`lease ${lease.id} ACTIVE via first payment ${paymentIntentId}`, "stripe");
+}
+async function findLeaseByFirstPaymentIntent(piId) {
+  const leases2 = await storage.getLeases();
+  for (const lease of leases2) {
+    const schedule = await storage.getScheduleByLease(lease.id);
+    const first = schedule.find((s) => s.scheduleSeq === 1);
+    if (first?.stripePaymentIntentId === piId) return lease;
+  }
+  return void 0;
 }
 
 // server/integrations/unifiedOps.ts
@@ -971,6 +1877,120 @@ async function registerRoutes(app) {
       next(err);
     }
   });
+  app.post("/api/lease-quote", async (req, res, next) => {
+    try {
+      const parsed = leaseQuoteRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid lease quote request" });
+      }
+      res.json(await buildLeaseQuote(parsed.data));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/leases", async (req, res, next) => {
+    try {
+      const parsed = createDraftLeaseSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid lease request" });
+      }
+      const { lease, documentHtml } = await createDraftLease(parsed.data);
+      res.status(201).json({ leaseId: lease.id, status: lease.status, documentHtml });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/leases/:id", async (req, res, next) => {
+    try {
+      const lease = await storage.getLease(req.params.id);
+      if (!lease) return res.status(404).json({ message: "Lease not found" });
+      const leaseRooms2 = await storage.getLeaseRooms(lease.id);
+      const schedule = await storage.getScheduleByLease(lease.id);
+      const guest = await storage.getGuest(lease.guestId);
+      res.json({
+        lease: {
+          id: lease.id,
+          status: lease.status,
+          startDate: lease.startDate,
+          endDate: lease.endDate,
+          paymentCadence: lease.paymentCadence,
+          weeklyRateSnapshot: lease.weeklyRateSnapshot,
+          totalLeaseValue: lease.totalLeaseValue,
+          prorationNote: lease.prorationNote,
+          signedAt: lease.signedAt,
+          signedName: lease.signedName,
+          signedPdfUrl: lease.signedPdfUrl
+        },
+        rooms: leaseRooms2.map((lr) => ({ name: lr.roomNameSnapshot, roomNumber: lr.roomNumberSnapshot })),
+        schedule: schedule.map((s) => ({
+          seq: s.scheduleSeq,
+          dueDate: s.dueDate,
+          amount: s.amount,
+          status: s.status
+        })),
+        guest: guest ? { name: guest.name, email: guest.email } : null
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/leases/:id/sign", async (req, res, next) => {
+    try {
+      const parsed = signLeaseSchema.safeParse({ ...req.body, leaseId: req.params.id });
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid signature" });
+      }
+      const fwd = req.headers["x-forwarded-for"];
+      const ip = (typeof fwd === "string" ? fwd.split(",")[0]?.trim() : void 0) || req.socket.remoteAddress || "unknown";
+      const { lease, documentUrl } = await signLease({
+        leaseId: parsed.data.leaseId,
+        signedName: parsed.data.signedName,
+        affirmed: parsed.data.affirmed,
+        ip
+      });
+      res.json({ leaseId: lease.id, status: lease.status, documentUrl });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/leases/:id/document", async (req, res, next) => {
+    try {
+      const lease = await storage.getLease(req.params.id);
+      if (!lease) return res.status(404).json({ message: "Lease not found" });
+      if (!lease.signedDocumentHtml) {
+        return res.status(409).json({ message: "Lease has not been signed yet" });
+      }
+      res.setHeader("Content-Type", "text/html; charset=utf-8");
+      res.send(lease.signedDocumentHtml);
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/leases/:id/first-payment", async (req, res, next) => {
+    try {
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled yet (Stripe test key not set)." });
+      }
+      const result = await startFirstPayment(req.params.id);
+      res.json({
+        clientSecret: result.clientSecret,
+        amount: result.amount,
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY
+      });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/payments/config", (_req, res) => {
+    res.json({
+      stripeEnabled: isStripeConfigured() && stripePublishableConfigured(),
+      publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY ?? null
+    });
+  });
   app.post("/api/bookings", async (req, res, next) => {
     try {
       const parsed = createBookingSchema.safeParse(req.body);
@@ -1020,13 +2040,33 @@ async function registerRoutes(app) {
           confirmedBy: null,
           paidAt: null
         });
+        const chargeMetadata = resolved.model === "COLIVING" && resolved.room ? buildLeaseChargeMetadata({
+          entity: resolved.property.entity,
+          property: resolved.property,
+          lease: { id: "" },
+          // legacy deposit path has no lease row
+          rooms: [
+            {
+              roomId: resolved.room.id,
+              roomNameSnapshot: resolved.room.name,
+              roomNumberSnapshot: resolved.room.roomNumber ?? null
+            }
+          ],
+          paymentKind: "BOOKING_DEPOSIT",
+          scheduleSeq: null
+        }) : buildStrChargeMetadata({
+          entity: resolved.property.entity,
+          property: resolved.property,
+          paymentKind: "BOOKING_DEPOSIT"
+        });
         const session2 = await createCheckoutSession({
           amount: dueNow,
           description: resolved.model === "COLIVING" ? `Deposit \u2014 ${resolved.room.name} @ ${resolved.property.name}` : `Stay \u2014 ${resolved.property.name}`,
           reference,
           guestEmail: guest.email,
           successUrl: appUrl(req, `/confirmation/${reference}`),
-          cancelUrl: appUrl(req, `/property/${resolved.property.id}`)
+          cancelUrl: appUrl(req, `/property/${resolved.property.id}`),
+          metadata: chargeMetadata
         });
         await storage.updatePayment(payment.id, { stripeRef: session2.id });
         response.checkoutUrl = session2.url ?? void 0;
@@ -1299,6 +2339,47 @@ async function handleStripeEvent(event) {
       const sub = event.data.object;
       const local = await storage.getSubscriptionByStripeId(sub.id);
       if (local) await storage.updateSubscription(local.id, { status: sub.status });
+      break;
+    }
+    // --- Phase 4: co-living lease PaymentIntents (saved-card model) ---
+    case "payment_intent.succeeded": {
+      const pi = event.data.object;
+      const kind = pi.metadata?.payment_kind;
+      if (kind === "FIRST_PAYMENT") {
+        await finalizeFirstPayment(pi.id);
+      } else if (kind === "SCHEDULED_RENT") {
+        const leaseId = pi.metadata?.lease_id;
+        const seq = parseInt(pi.metadata?.schedule_seq ?? "", 10);
+        if (leaseId && Number.isFinite(seq)) {
+          const rows = await storage.getScheduleByLease(leaseId);
+          const row = rows.find((r) => r.scheduleSeq === seq);
+          if (row && row.status !== "PAID") {
+            await storage.updateScheduleRow(row.id, {
+              status: "PAID",
+              paidAt: /* @__PURE__ */ new Date(),
+              stripePaymentIntentId: pi.id
+            });
+          }
+        }
+      }
+      log(`payment_intent.succeeded (${kind ?? "untagged"}) ${pi.id}`, "stripe");
+      break;
+    }
+    case "payment_intent.payment_failed": {
+      const pi = event.data.object;
+      const kind = pi.metadata?.payment_kind;
+      if (kind === "SCHEDULED_RENT") {
+        const leaseId = pi.metadata?.lease_id;
+        const seq = parseInt(pi.metadata?.schedule_seq ?? "", 10);
+        if (leaseId && Number.isFinite(seq)) {
+          const rows = await storage.getScheduleByLease(leaseId);
+          const row = rows.find((r) => r.scheduleSeq === seq);
+          if (row && row.status !== "PAID" && row.status !== "WAIVED") {
+            await storage.updateScheduleRow(row.id, { status: "FAILED", stripePaymentIntentId: pi.id });
+          }
+        }
+      }
+      log(`payment_intent.payment_failed (${kind ?? "untagged"}) ${pi.id}`, "stripe");
       break;
     }
     default:

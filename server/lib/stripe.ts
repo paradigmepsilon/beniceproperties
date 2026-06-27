@@ -12,6 +12,8 @@
 
 import Stripe from "stripe";
 import { CREDIT_CARD_RATE } from "@shared/pricing";
+import type { StripeChargeMetadata } from "./paymentMetadata";
+import { assertCompleteMetadata } from "./paymentMetadata";
 
 const secret = process.env.STRIPE_SECRET_KEY;
 
@@ -51,8 +53,14 @@ export async function createCheckoutSession(opts: {
   guestEmail: string;
   successUrl: string;
   cancelUrl: string;
+  // Full Stripe Metadata Contract — stamped on BOTH the session and the
+  // underlying PaymentIntent so reconciliation can map the charge by metadata.
+  metadata: StripeChargeMetadata;
 }): Promise<Stripe.Checkout.Session> {
   const s = requireStripe();
+  assertCompleteMetadata(opts.metadata);
+  // Carry the booking reference alongside the contract for the session lookup.
+  const sessionMetadata = { ...opts.metadata, reference: opts.reference, kind: "one_time" };
   return s.checkout.sessions.create({
     mode: "payment",
     customer_email: opts.guestEmail,
@@ -67,7 +75,10 @@ export async function createCheckoutSession(opts: {
       },
     ],
     client_reference_id: opts.reference,
-    metadata: { reference: opts.reference, kind: "one_time" },
+    metadata: sessionMetadata,
+    // The contract must live on the PaymentIntent itself (the charge), not only
+    // the session, so reconciliation by metadata works against the charge.
+    payment_intent_data: { metadata: opts.metadata },
     success_url: opts.successUrl,
     cancel_url: opts.cancelUrl,
   });
@@ -121,3 +132,88 @@ export function constructWebhookEvent(rawBody: Buffer, signature: string): Strip
   }
   return s.webhooks.constructEvent(rawBody, signature, whSecret);
 }
+
+// =============================================================================
+// PHASE 4 — saved-card-on-file PaymentIntents (co-living lease payments). We use
+// PaymentIntents + a Stripe Customer (NOT Stripe Subscriptions, per the locked
+// decision) so our own scheduler drives recurring rent. Card data never touches
+// our server — the client collects it with Stripe Elements (PaymentElement),
+// and `setup_future_usage` saves it to the Customer for off-session charges.
+// =============================================================================
+
+/** Get or create the Stripe Customer for a guest. Reference only — no card data. */
+export async function ensureCustomer(opts: {
+  existingCustomerId?: string | null;
+  email: string;
+  name: string;
+}): Promise<string> {
+  const s = requireStripe();
+  if (opts.existingCustomerId) return opts.existingCustomerId;
+  const customer = await s.customers.create({ email: opts.email, name: opts.name });
+  return customer.id;
+}
+
+/**
+ * Create the FIRST-PAYMENT PaymentIntent for a co-living lease: charges the
+ * amount now AND saves the card to the Customer for future off-session rent
+ * (`setup_future_usage: "off_session"`). Returns the PI (client confirms it with
+ * Elements using the client_secret). Full metadata is enforced.
+ */
+export async function createFirstPaymentIntent(opts: {
+  amount: number; // final charged total in dollars (already includes surcharge)
+  customerId: string;
+  metadata: StripeChargeMetadata;
+  idempotencyKey: string;
+}): Promise<Stripe.PaymentIntent> {
+  const s = requireStripe();
+  assertCompleteMetadata(opts.metadata);
+  return s.paymentIntents.create(
+    {
+      amount: toCents(opts.amount),
+      currency: "usd",
+      customer: opts.customerId,
+      // Save the card for later off-session scheduled rent.
+      setup_future_usage: "off_session",
+      automatic_payment_methods: { enabled: true },
+      metadata: opts.metadata,
+    },
+    { idempotencyKey: opts.idempotencyKey },
+  );
+}
+
+/**
+ * Charge a saved card OFF-SESSION for a scheduled rent installment or a late fee.
+ * Uses the customer's default saved payment method. Throws on decline (caller
+ * maps that to the FAILED path). Idempotency key prevents double-charging on
+ * scheduler re-runs.
+ */
+export async function chargeSavedCard(opts: {
+  amount: number;
+  customerId: string;
+  paymentMethodId: string;
+  metadata: StripeChargeMetadata;
+  idempotencyKey: string;
+}): Promise<Stripe.PaymentIntent> {
+  const s = requireStripe();
+  assertCompleteMetadata(opts.metadata);
+  return s.paymentIntents.create(
+    {
+      amount: toCents(opts.amount),
+      currency: "usd",
+      customer: opts.customerId,
+      payment_method: opts.paymentMethodId,
+      off_session: true,
+      confirm: true, // charge immediately
+      metadata: opts.metadata,
+    },
+    { idempotencyKey: opts.idempotencyKey },
+  );
+}
+
+/** Retrieve a PaymentIntent (e.g. to read the saved payment_method after first pay). */
+export async function retrievePaymentIntent(id: string): Promise<Stripe.PaymentIntent> {
+  return requireStripe().paymentIntents.retrieve(id);
+}
+
+export const stripePublishableConfigured = (): boolean =>
+  Boolean(process.env.VITE_STRIPE_PUBLIC_KEY?.startsWith("pk_"));

@@ -12,6 +12,7 @@ import RoomDetail from "@/pages/room-detail";
 import Checkout from "@/pages/checkout";
 import LeaseBooking from "@/pages/lease-booking";
 import LeaseSign from "@/pages/lease-sign";
+import LeasePay from "@/pages/lease-pay";
 import Confirmation from "@/pages/confirmation";
 import BookingLookup from "@/pages/booking-lookup";
 import AdminLogin from "@/pages/admin/login";
@@ -27,6 +28,7 @@ function Router() {
       <Route path="/checkout" component={Checkout} />
       <Route path="/lease" component={LeaseBooking} />
       <Route path="/lease/sign" component={LeaseSign} />
+      <Route path="/lease/pay" component={LeasePay} />
       <Route path="/confirmation/:reference" component={Confirmation} />
       <Route path="/lookup" component={BookingLookup} />
       <Route path="/admin/login" component={AdminLogin} />

@@ -258,3 +258,114 @@ The DB is now ready for Phase 4 to write real lease/schedule rows. (The
 artifact; the script is the applied delta.)
 
 ---
+
+## PHASE 4 — Payments: First Payment, Saved Card, Scheduled Charges  🛑 GATE (built; awaiting review)
+
+> Stripe was in **TEST mode** for all of this (user swapped `.env` to `sk_test_`/
+> `pk_test_` before "go"). No live charge was executed. The live-key flip remains a
+> manual human step.
+
+**What was built**
+- `server/lib/paymentMetadata.ts` — THE single builder of the Stripe Metadata
+  Contract. `buildLeaseChargeMetadata` (co-living; comma-joins multi-room fields)
+  and `buildStrChargeMetadata` (whole-property), plus `assertCompleteMetadata`
+  which throws if any of the 10 contract keys is missing/empty. Maps the DB type
+  `STR`/`COLIVING` → contract `STR_WHOLE`/`COLIVING_ROOM`. Null serialized as the
+  string `"null"` so a key is never silently absent.
+- `server/lib/stripe.ts` — added the saved-card primitives (NOT Stripe
+  Subscriptions): `ensureCustomer`, `createFirstPaymentIntent`
+  (`setup_future_usage: off_session`), `chargeSavedCard` (off-session, `confirm:
+  true`, per-installment idempotency key), `retrievePaymentIntent`. Every PI
+  creation runs `assertCompleteMetadata` first. `createCheckoutSession` now
+  requires + stamps full metadata on the **PaymentIntent** (via
+  `payment_intent_data.metadata`), so STR charges reconcile by metadata too.
+- `server/lib/leasePayments.ts`:
+  - `startFirstPayment()` — gated to `PENDING_FIRST_PAYMENT`; creates/【reuses】 the
+    Customer, builds a `FIRST_PAYMENT` PI that saves the card, records the PI id on
+    installment 1, returns the client secret. Idempotency key `lease-first-<id>`.
+  - `finalizeFirstPayment()` (webhook-driven) — marks seq 1 PAID, persists the
+    saved `payment_method` + customer on the lease, moves lease → **ACTIVE**, and
+    occupies the rooms. Idempotent (no-ops if already ACTIVE / untracked PI).
+  - `runScheduledRentSweep()` — the scheduler job. Charges every **due
+    CARD_ON_FILE** installment off-session against the saved card. Success → PAID;
+    decline → FAILED (Phase 5 owns dunning). Idempotent: skips first-payment,
+    manual rows, not-yet-due rows, non-chargeable statuses, and any row already
+    carrying a PI id; Stripe idempotency key `lease-rent-<id>-seq-<n>`. Surcharge
+    is added at charge time via the canonical breakdown (stored amount is rent
+    only).
+- `server/routes.ts` — `POST /api/leases/:id/first-payment` (returns client
+  secret + publishable key), `GET /api/payments/config`, and webhook handling for
+  `payment_intent.succeeded` / `payment_intent.payment_failed` routed by
+  `metadata.payment_kind` (FIRST_PAYMENT → finalize; SCHEDULED_RENT → settle the
+  installment by lease_id+schedule_seq). STR booking route now builds + passes full
+  metadata.
+- Scheduler spines both call the sweep: in-process `server/scheduler.ts`
+  (`weeklyRentRun` → `runScheduledRentSweep`, replacing the old Subscriptions
+  stub) and the Vercel cron `api-src/cron/sweep.ts`.
+- `client/src/pages/lease-pay.tsx` + `/lease/pay` route — Stripe Elements
+  (`PaymentElement`) first-payment page; confirms the PI, then routes to the
+  portal (lease activates server-side via webhook). `lease-sign` success now routes
+  to `/lease/pay`.
+- Rebuilt the committed Vercel API bundle (`npm run build:api`) so the serverless
+  functions carry the new code.
+
+**Files touched**
+- `server/lib/paymentMetadata.ts` (new), `server/lib/leasePayments.ts` (new),
+  `server/lib/stripe.ts`, `server/routes.ts`, `server/scheduler.ts`,
+  `api-src/cron/sweep.ts`, `client/src/pages/lease-pay.tsx` (new),
+  `client/src/pages/lease-sign.tsx`, `client/src/App.tsx`,
+  `server/lib/paymentMetadata.test.ts` (new), `server/lib/leasePayments.test.ts`
+  (new), `scripts/phase4-stripe-proof.mjs` (new), bundled `api/index.js` +
+  `api/cron/sweep.js`
+
+**How money flow was tested (TEST-MODE evidence)**
+- Unit: `npm test` → **56 passed** (+17 Phase 4: 10 metadata-contract, 10 payment
+  flow — incl. idempotency skips, decline→FAILED, surcharge, finalize→ACTIVE).
+- Live test-mode end-to-end via `scripts/phase4-stripe-proof.mjs` (hard-refuses any
+  non-`sk_test_` key):
+  - First-payment PI `pi_3Tn3yZ…` → **succeeded**, card saved
+    (`pm_1Tn3yZ…`), full 10-key metadata present.
+  - Off-session scheduled-rent PI `pi_3Tn3ya…` → **succeeded**
+    (`payment_kind=SCHEDULED_RENT`, `schedule_seq=2`).
+  - Idempotency: re-running the same idempotency key returned the **same PI id**
+    (no double charge).
+- `npx tsc` → 0. `npm run build` → 0. `npm run build:api` → 0.
+
+**Sample PaymentIntent metadata (the contract, fully populated):**
+```json
+{ "entity":"BNP","product_type":"COLIVING_ROOM","property_id":"prop-test-1",
+  "property_name":"Old Bill Cook","room_id":"room-test-2","room_name":"Room 2 - Garden",
+  "room_number":"2","lease_id":"lease-test-1","payment_kind":"FIRST_PAYMENT","schedule_seq":"1" }
+```
+
+**Payment-schedule state machine (as built)**
+- `SCHEDULED` → (due & charged ok) `PAID` · → (due & declined) `FAILED` · seq 1
+  via first-payment flow only. Sweep transitions only `SCHEDULED`/`DUE` rows; a row
+  with a PI id is never re-charged. `requires_action`/processing → left `DUE` with
+  PI recorded, settled by webhook. `LATE`/`WAIVED` are Phase 5.
+- Lease: `PENDING_FIRST_PAYMENT` → (first PI succeeds, webhook) `ACTIVE`. Cannot
+  reach ACTIVE without a successful first payment.
+
+**Things I was unsure about → choice made**
+- *Vercel cron granularity*: `vercel.json` runs the sweep **daily** (08:00 UTC),
+  not every 15 min (the spec's example). Vercel Hobby/standard cron is coarse; the
+  in-process scheduler (self-host) runs hourly. Daily is sufficient for
+  rent that's due on calendar dates and the charge is idempotent. **Left as daily**;
+  flagged here — bump the cron expression if you want finer granularity.
+- *Surcharge on rent*: stored installment `amount` is rent only; the 3.5% card
+  surcharge is added at charge time (consistent with the booking quote, which shows
+  the weekly surcharge). So a $250 weekly installment charges $258.75.
+- *Legacy co-living deposit path*: the old `/api/bookings` Stripe-Checkout deposit
+  for co-living still exists but is superseded by the lease flow; it now carries a
+  `BOOKING_DEPOSIT` metadata block too. Not removed (reversible).
+
+**Deferred / suggested**
+- Manual (Zelle/CashApp) rent settlement → UO "Mark Paid" write-back is Phase 8;
+  MANUAL schedule rows are already excluded from auto-charge.
+- Reminders / failure dunning / late-fee accrual / defaults → **Phase 5** (the next
+  gate). The FAILED transition is in place for Phase 5 to build on.
+- A true reconciliation report is Phase 9 (metadata is in place to power it).
+
+**PHASE 4: BUILT — test-mode green — awaiting "go" review (no live charge run)**
+
+---

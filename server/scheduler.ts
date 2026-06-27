@@ -13,6 +13,7 @@
 import { log } from "./server-log";
 import { storage } from "./storage";
 import { buildAndPushSnapshot } from "./integrations/kpiRollup";
+import { runScheduledRentSweep } from "./lib/leasePayments";
 
 interface SchedulerConfig {
   /** How often to run the recurring sweep. Default: 1h. */
@@ -66,12 +67,10 @@ class BackgroundScheduler {
   // ---- Recurring jobs ----
 
   private async weeklyRentRun(): Promise<void> {
-    // Stripe Subscriptions handle the actual weekly billing automatically; this
-    // job is a safety sweep that logs any active subscription whose next charge
-    // looks stale, for an admin to investigate. Real reconciliation is webhook-
-    // driven (invoice.paid / invoice.payment_failed).
-    const stale = (await storage.getBookings({ status: "ACTIVE" })).length;
-    if (stale > 0) log(`weeklyRentRun: ${stale} active co-living booking(s) checked`, "scheduler");
+    // Phase 4: OUR OWN scheduler drives recurring rent (not Stripe Subscriptions).
+    // Charge every due CARD_ON_FILE installment against the saved card. Idempotent
+    // — safe to run on every sweep; already-charged rows are skipped.
+    await runScheduledRentSweep();
   }
 
   private async paymentStatusCheck(): Promise<void> {

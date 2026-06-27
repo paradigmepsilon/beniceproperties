@@ -10,6 +10,7 @@ import "dotenv/config";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { storage } from "../../server/storage";
 import { buildAndPushSnapshot } from "../../server/integrations/kpiRollup";
+import { runScheduledRentSweep } from "../../server/lib/leasePayments";
 import { log } from "../../server/server-log";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -20,6 +21,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    // Phase 4: charge due CARD_ON_FILE rent installments (idempotent).
+    const rent = await runScheduledRentSweep();
+
     const active = (await storage.getBookings({ status: "ACTIVE" })).length;
     if (active > 0) log(`weeklyRentRun: ${active} active co-living booking(s) checked`, "cron");
 
@@ -29,7 +33,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const snapshot = await buildAndPushSnapshot();
-    return res.json({ ok: true, active, pending: pending.length, snapshot });
+    return res.json({ ok: true, rent, active, pending: pending.length, snapshot });
   } catch (err) {
     log(`sweep error: ${(err as Error).message}`, "cron");
     return res.status(500).json({ ok: false, message: (err as Error).message });
