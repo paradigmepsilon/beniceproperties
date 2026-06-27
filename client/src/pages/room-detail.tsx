@@ -35,8 +35,10 @@ export default function RoomDetail() {
 
   const { room, property } = data;
   function reserve() {
+    // Co-living rooms go through the lease flow (term + cadence + full payment
+    // schedule preview), not the one-time STR checkout.
     const params = new URLSearchParams({ propertyId: room.propertyId, roomId: room.id });
-    navigate(`/checkout?${params.toString()}`);
+    navigate(`/lease?${params.toString()}`);
   }
 
   return (

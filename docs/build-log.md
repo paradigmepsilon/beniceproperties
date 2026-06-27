@@ -102,3 +102,59 @@ rejects ("Saved card + own scheduler, not Stripe Subscriptions").
 **PHASE 1: COMPLETE — tests green**
 
 ---
+
+## PHASE 2 — Guest-Facing Booking Flow (both product types)
+
+**What was built**
+- STR path was already complete in the repo (dates → `/api/quote` → `/api/bookings`
+  → Stripe Checkout / manual instructions). Left intact; no payment processing
+  added (Phase 4 owns money).
+- Co-living LEASE path (new), to the "ready to pay" state:
+  - `shared/api-types.ts` — `leaseQuoteRequestSchema` + `LeaseQuoteResponse`
+    (full schedule preview contract: per-installment due date/amount/proration,
+    `dueOnBooking` flag, total lease value, proration note, dueToday).
+  - `server/lib/lease.ts` — `buildLeaseQuote()` validates the selection (property
+    is COLIVING + active, every room belongs + is AVAILABLE, term ≤ 90 days, each
+    room free via the overlap guard) and shapes the preview from the SAME shared
+    `generateSchedule()` the server will persist + charge with. Multi-room rents
+    are summed. Creates nothing, charges nothing. `LeaseError` carries HTTP status.
+  - `server/routes.ts` — `POST /api/lease-quote` (public, read-only preview).
+  - `client/src/pages/lease-booking.tsx` — co-living flow: confirmed room(s) →
+    term date pickers (≤ 90 days) → cadence selector (Weekly/Bi-weekly/Monthly) →
+    live schedule preview (first payment highlighted "Due today", per-row prorated
+    badge, total lease value, proration note) → guest identity → "Review & sign
+    lease" hand-off to `/lease/sign` (Phase 3). Mobile-first, shared shadcn cards.
+  - `client/src/App.tsx` — `/lease` route registered.
+  - `client/src/pages/room-detail.tsx` — "Reserve" now routes co-living rooms to
+    `/lease` (the schedule-preview flow) instead of the one-time STR checkout.
+
+**Files touched**
+- `shared/api-types.ts`, `server/lib/lease.ts` (new), `server/routes.ts`,
+  `client/src/pages/lease-booking.tsx` (new), `client/src/App.tsx`,
+  `client/src/pages/room-detail.tsx`, `server/lib/lease.test.ts` (new)
+
+**Tests run + results**
+- `npm test` → **24 passed** (added 7 lease-quote builder tests over a mocked
+  storage: multi-room sum, dueToday = seq 1, single dueOnBooking, and guards for
+  non-co-living / unavailable / overlapping / >90-day / wrong-property).
+- `npx tsc` → exit 0.  `npm run build` → exit 0.
+
+**Decisions**
+- The lease preview is computed server-side via the shared generator so the guest
+  sees exactly what will be persisted + charged (same contract as `pricing.ts`).
+  The client never invents a schedule.
+- Co-living supports multiple rooms on one lease (spec: room fields comma-join in
+  metadata). `buildLeaseQuote` sums per-room weekly rents and passes the sum with
+  `roomCount: 1` to the generator, which correctly handles rooms at different rates.
+- The old room-detail → deposit-checkout path is superseded for co-living by the
+  lease flow. The legacy `/checkout` deposit path and `subscriptions` table remain
+  for back-compat but are not used by the new co-living flow.
+
+**Deferred / suggested**
+- `/lease/sign` page + lease creation land in Phase 3 (this phase hands off to it).
+- An end-to-end browser test of the booking flow is deferred (no DB wired locally);
+  the builder is covered by unit tests.
+
+**PHASE 2: COMPLETE — tests green**
+
+---

@@ -16,6 +16,7 @@ import { storage } from "./storage";
 import {
   quoteRequestSchema,
   createBookingSchema,
+  leaseQuoteRequestSchema,
   type CreateBookingResponse,
 } from "@shared/api-types";
 import {
@@ -28,6 +29,7 @@ import {
   generateReference,
   BookingError,
 } from "./lib/booking";
+import { buildLeaseQuote, LeaseError } from "./lib/lease";
 import {
   isStripeConfigured,
   createCheckoutSession,
@@ -138,6 +140,26 @@ export async function registerRoutes(app: Express): Promise<void> {
       res.json(buildQuote(resolved, paymentMethod));
     } catch (err) {
       if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // =========================================================================
+  // PUBLIC — co-living lease quote (full payment-schedule preview, Phase 2)
+  // Creates nothing, charges nothing. Returns the schedule the guest will sign
+  // (Phase 3) and pay (Phase 4), computed by the shared canonical generator.
+  // =========================================================================
+  app.post("/api/lease-quote", async (req, res, next) => {
+    try {
+      const parsed = leaseQuoteRequestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ message: parsed.error.errors[0]?.message ?? "Invalid lease quote request" });
+      }
+      res.json(await buildLeaseQuote(parsed.data));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
     }
   });

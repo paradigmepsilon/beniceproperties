@@ -10,6 +10,7 @@ import Home from "@/pages/home";
 import PropertyDetail from "@/pages/property-detail";
 import RoomDetail from "@/pages/room-detail";
 import Checkout from "@/pages/checkout";
+import LeaseBooking from "@/pages/lease-booking";
 import Confirmation from "@/pages/confirmation";
 import BookingLookup from "@/pages/booking-lookup";
 import AdminLogin from "@/pages/admin/login";
@@ -23,6 +24,7 @@ function Router() {
       <Route path="/property/:id" component={PropertyDetail} />
       <Route path="/room/:id" component={RoomDetail} />
       <Route path="/checkout" component={Checkout} />
+      <Route path="/lease" component={LeaseBooking} />
       <Route path="/confirmation/:reference" component={Confirmation} />
       <Route path="/lookup" component={BookingLookup} />
       <Route path="/admin/login" component={AdminLogin} />
