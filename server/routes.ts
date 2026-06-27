@@ -9,7 +9,6 @@
 // the canonical breakdown (see server/lib/booking.ts).
 // =============================================================================
 
-import { createServer, type Server } from "http";
 import express, { type Express } from "express";
 import { z } from "zod";
 import { setupAuth, requireAdmin } from "./auth";
@@ -44,7 +43,7 @@ function appUrl(req: express.Request, path: string): string {
   return `${proto}://${host}${path}`;
 }
 
-export async function registerRoutes(app: Express): Promise<Server> {
+export async function registerRoutes(app: Express): Promise<void> {
   // -------------------------------------------------------------------------
   // Stripe webhook MUST receive the raw body for signature verification, so it
   // is registered BEFORE express.json() (mounted in index.ts). We use a
@@ -440,8 +439,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
       next(err);
     }
   });
-
-  return createServer(app);
 }
 
 // ===========================================================================

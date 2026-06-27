@@ -1,12 +1,15 @@
 // server/index.ts
-// Express entry point. Mirrors the TRAD app: security headers, compression,
-// JSON body parsing, request logging, route registration, Vite (dev) or static
-// (prod), then start the server + background scheduler with graceful shutdown.
+// Local dev / self-hosted entry point. Builds the shared Express app, then adds
+// Vite (dev) or static serving (prod node), binds a port, and starts the
+// background scheduler with graceful shutdown.
+//
+// On Vercel this file is NOT used — api/index.ts wraps the same app as a
+// serverless function and Vercel Cron drives the scheduler (api/cron/sweep.ts).
 
 import "dotenv/config";
 import express, { type Request, type Response, type NextFunction } from "express";
-import compression from "compression";
-import helmet from "helmet";
+import { createServer } from "http";
+import { applyBaseMiddleware } from "./app";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic } from "./vite";
 import { log } from "./server-log";
@@ -15,50 +18,11 @@ import { backgroundScheduler } from "./scheduler";
 const app = express();
 const isDev = process.env.NODE_ENV !== "production";
 
-app.set("trust proxy", 1);
-app.use(compression());
-
-// Security headers. CSP allows Stripe (js + frames + api) since checkout/elements
-// load from js.stripe.com. Disabled in dev for easier local network access.
-app.use(
-  helmet({
-    contentSecurityPolicy: isDev
-      ? false
-      : {
-          directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "https://js.stripe.com"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-            fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
-            imgSrc: ["'self'", "data:", "blob:", "https:"],
-            connectSrc: ["'self'", "https://api.stripe.com", "https://*.stripe.com"],
-            frameSrc: ["'self'", "https://js.stripe.com", "https://hooks.stripe.com"],
-            objectSrc: ["'none'"],
-            baseUri: ["'self'"],
-            formAction: ["'self'"],
-          },
-        },
-    crossOriginEmbedderPolicy: false,
-  }),
-);
-
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: false, limit: "10mb" }));
-
-// Concise /api request logging.
-app.use((req, res, next) => {
-  const start = Date.now();
-  res.on("finish", () => {
-    if (!req.path.startsWith("/api")) return;
-    let line = `${req.method} ${req.path} ${res.statusCode} in ${Date.now() - start}ms`;
-    if (line.length > 80) line = line.slice(0, 79) + "…";
-    log(line);
-  });
-  next();
-});
+applyBaseMiddleware(app);
 
 (async () => {
-  const server = await registerRoutes(app);
+  await registerRoutes(app);
+  const server = createServer(app);
 
   // Centralized error handler.
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

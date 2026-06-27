@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "vite build",
+  "outputDirectory": "dist/public",
+  "framework": null,
+  "crons": [
+    {
+      "path": "/api/cron/sweep",
+      "schedule": "0 8 * * *"
+    }
+  ],
+  "rewrites": [
+    { "source": "/api/cron/(.*)", "destination": "/api/cron/$1" },
+    { "source": "/api/(.*)", "destination": "/api/index" },
+    { "source": "/((?!assets/|.*\\..*).*)", "destination": "/index.html" }
+  ],
+  "headers": [
+    {
+      "source": "/(sw.js|workbox-(.*).js|manifest.webmanifest)",
+      "headers": [{ "key": "Cache-Control", "value": "no-cache" }]
+    }
+  ]
+}
