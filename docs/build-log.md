@@ -567,3 +567,59 @@ artifact; the script is the applied delta.)
 **PHASE 7: COMPLETE — tests green**
 
 ---
+
+## PHASE 8 — UO Integration: Read API + Write-Back Actions
+
+**What was built** — BNP **exposes** an authenticated API; UO **consumes** it. BNP
+stays the system of record; UO never writes BNP's DB directly (no UO-DB writes —
+architectural rule honored).
+- `server/lib/serviceAuth.ts` (new) — `requireServiceToken`: `Authorization:
+  Bearer <UO_BNP_API_TOKEN>`, constant-time compare, **fail-closed** (503 if the
+  token is unset — the surface is disabled, never open). Mirrors UO's
+  `isInternalRelay`.
+- `server/lib/uoApi.ts` (new):
+  - **Reads**: `listPropertiesWithRooms`, `listLeases`/`getLeaseDetail` (schedule
+    + signature + payment status), `listPaymentsWithMetadata` (every rent + late-fee
+    row with the **full Stripe Metadata Contract** built from the DB — powers
+    per-entity/property/room economics without a Stripe round-trip),
+    `listGuestMessageThreads`, `listEscalations`.
+  - **Write-backs** (constrained, idempotent): `markPaid` (MANUAL rows only →
+    writes MANUAL_RECONCILE note + metadata, resolves the matching OPEN
+    escalation), `approveLease` (DRAFT → PENDING_SIGNATURE; no-op otherwise),
+    `respondToMessage` (STAFF reply → thread ANSWERED, surfaces in the portal),
+    `resolveEscalation`, `waiveLateFees` (ACCRUED → WAIVED + reason note).
+- Routes under `/api/uo/*`, all behind `requireServiceToken`.
+- `.env.example` — added `UO_BNP_API_TOKEN` (named-only, nothing committed) plus
+  the email/SMS env names for Phases 5/7.
+
+**Files touched**
+- `server/lib/serviceAuth.ts` (new), `server/lib/uoApi.ts` (new),
+  `server/routes.ts` (+`/api/uo/*`), `.env.example`,
+  `server/lib/serviceAuth.test.ts` (new), `server/lib/uoApi.test.ts` (new),
+  bundled `api/*`
+
+**Tests + results**
+- `npm test` → **100 passed** (+13: serviceAuth fail-closed/401/next; mark-paid
+  MANUAL-only + idempotent + escalation-resolve; approve idempotent; respond
+  STAFF+ANSWERED; waive WAIVED+note; payments-with-metadata contract complete).
+- `tsc` 0 · `build` 0 · `build:api` 0. No schema change (uses existing tables) —
+  no DB push needed.
+
+**Decisions**
+- Fail-closed auth: unset token ⇒ 503 (disabled), not open. Matches the
+  Stripe/webhook gating posture.
+- Payments-with-metadata is derived from the DB (lease + room snapshots) so it
+  matches what was/will be sent to Stripe, and works even for rows not yet charged.
+- `markPaid` is restricted to MANUAL installments (card rows settle via Stripe),
+  and resolves the matching OPEN escalation so the dunning loop closes.
+- Mapping to UO models (`BnpProperty`/`BnpBooking`/`BnpPayment`/`OpsIssue`) is the
+  consumer's (UO's) job; this side exposes the data + the metadata breakdown UO
+  maps from. **SBA note honored**: no WSH/BFT data, no federal cross-entity rollup.
+
+**Deferred / suggested**
+- UO-side consumption + model mapping (built in the UO repo, not here).
+- Optional: pagination on the list endpoints if lease volume grows.
+
+**PHASE 8: COMPLETE — tests green**
+
+---

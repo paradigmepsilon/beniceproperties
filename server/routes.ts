@@ -47,6 +47,8 @@ import {
   replyToThread,
   getThread,
 } from "./lib/portal";
+import { requireServiceToken } from "./lib/serviceAuth";
+import * as uo from "./lib/uoApi";
 import {
   createDraftLeaseSchema,
   signLeaseSchema,
@@ -581,6 +583,87 @@ export async function registerRoutes(app: Express): Promise<void> {
     } catch (err) {
       next(err);
     }
+  });
+
+  // =========================================================================
+  // UO INTEGRATION (Phase 8) — service-token auth. BNP exposes; UO consumes.
+  // Reads + constrained, idempotent write-backs. BNP owns its data.
+  // =========================================================================
+  const uoErr = (err: unknown, res: express.Response, next: express.NextFunction) => {
+    if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+    next(err);
+  };
+
+  // --- Reads ---
+  app.get("/api/uo/properties", requireServiceToken, async (_req, res, next) => {
+    try { res.json(await uo.listPropertiesWithRooms()); } catch (e) { uoErr(e, res, next); }
+  });
+  app.get("/api/uo/leases", requireServiceToken, async (req, res, next) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      res.json(await uo.listLeases(status));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.get("/api/uo/leases/:id", requireServiceToken, async (req, res, next) => {
+    try { res.json(await uo.getLeaseDetail(req.params.id)); } catch (e) { uoErr(e, res, next); }
+  });
+  app.get("/api/uo/payments", requireServiceToken, async (req, res, next) => {
+    try {
+      const leaseId = typeof req.query.leaseId === "string" ? req.query.leaseId : undefined;
+      res.json(await uo.listPaymentsWithMetadata({ leaseId }));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.get("/api/uo/messages", requireServiceToken, async (req, res, next) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      res.json(await uo.listGuestMessageThreads(status));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.get("/api/uo/escalations", requireServiceToken, async (req, res, next) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status : undefined;
+      res.json(await uo.listEscalations(status));
+    } catch (e) { uoErr(e, res, next); }
+  });
+
+  // --- Write-backs (constrained, idempotent) ---
+  app.post("/api/uo/leases/:id/mark-paid", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ scheduleSeq: z.number().int(), note: z.string().min(1), actor: z.string().min(1) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await uo.markPaid({ leaseId: req.params.id, ...parsed.data }));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.post("/api/uo/leases/:id/approve", requireServiceToken, async (req, res, next) => {
+    try {
+      const actor = typeof req.body?.actor === "string" ? req.body.actor : "uo";
+      res.json(await uo.approveLease(req.params.id, actor));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.post("/api/uo/messages/:threadId/respond", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ body: z.string().min(1), actor: z.string().min(1) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await uo.respondToMessage({ threadId: req.params.threadId, ...parsed.data }));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.post("/api/uo/escalations/:id/resolve", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ actor: z.string().min(1), status: z.enum(["ACKNOWLEDGED", "RESOLVED"]).optional() });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await uo.resolveEscalation({ escalationId: req.params.id, ...parsed.data }));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.post("/api/uo/leases/:id/waive-late-fee", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ scheduleSeq: z.number().int(), reason: z.string().min(1), actor: z.string().min(1) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await uo.waiveLateFees({ leaseId: req.params.id, ...parsed.data }));
+    } catch (e) { uoErr(e, res, next); }
   });
 
   // =========================================================================
