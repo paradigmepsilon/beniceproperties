@@ -28,6 +28,7 @@ import {
   appSettings,
   uoEscalations,
   guestMessages,
+  lifecycleEvents,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -60,6 +61,8 @@ import {
   type InsertUoEscalation,
   type GuestMessage,
   type InsertGuestMessage,
+  type LifecycleEvent,
+  type InsertLifecycleEvent,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -153,6 +156,10 @@ export interface IStorage {
   getMessage(id: string): Promise<GuestMessage | undefined>;
   createMessage(data: InsertGuestMessage): Promise<GuestMessage>;
   updateMessage(id: string, updates: Partial<InsertGuestMessage>): Promise<GuestMessage | undefined>;
+
+  // --- Lifecycle events (idempotent send log) ---
+  hasLifecycleEvent(leaseId: string, eventType: string, scheduleSeq: number | null): Promise<boolean>;
+  recordLifecycleEvent(data: InsertLifecycleEvent): Promise<LifecycleEvent>;
 
   // --- Payment schedule ---
   getScheduleByLease(leaseId: string): Promise<PaymentScheduleRow[]>;
@@ -571,6 +578,24 @@ class Storage implements IStorage {
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(guestMessages.id, id))
       .returning();
+    return row;
+  }
+
+  // --- Lifecycle events ---
+  async hasLifecycleEvent(
+    leaseId: string,
+    eventType: string,
+    scheduleSeq: number | null,
+  ): Promise<boolean> {
+    const rows = await db
+      .select()
+      .from(lifecycleEvents)
+      .where(and(eq(lifecycleEvents.leaseId, leaseId), eq(lifecycleEvents.eventType, eventType)));
+    return rows.some((r) => (r.scheduleSeq ?? null) === scheduleSeq);
+  }
+
+  async recordLifecycleEvent(data: InsertLifecycleEvent): Promise<LifecycleEvent> {
+    const [row] = await db.insert(lifecycleEvents).values(data).returning();
     return row;
   }
 

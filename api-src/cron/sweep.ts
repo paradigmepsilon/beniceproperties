@@ -12,6 +12,7 @@ import { storage } from "../../server/storage";
 import { buildAndPushSnapshot } from "../../server/integrations/kpiRollup";
 import { runScheduledRentSweep } from "../../server/lib/leasePayments";
 import { runDunningSweep } from "../../server/lib/dunning";
+import { runLeaseEndingNotices } from "../../server/lib/lifecycle";
 import { log } from "../../server/server-log";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -26,6 +27,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rent = await runScheduledRentSweep();
     // Phase 5: reminders, overdue messaging, late fees, defaults (idempotent/day).
     const dunning = await runDunningSweep();
+    // Phase 7: lease-ending notices ~14 days out (idempotent).
+    const endingNotices = await runLeaseEndingNotices();
 
     const active = (await storage.getBookings({ status: "ACTIVE" })).length;
     if (active > 0) log(`weeklyRentRun: ${active} active co-living booking(s) checked`, "cron");
@@ -36,7 +39,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const snapshot = await buildAndPushSnapshot();
-    return res.json({ ok: true, rent, dunning, active, pending: pending.length, snapshot });
+    return res.json({ ok: true, rent, dunning, endingNotices, active, pending: pending.length, snapshot });
   } catch (err) {
     log(`sweep error: ${(err as Error).message}`, "cron");
     return res.status(500).json({ ok: false, message: (err as Error).message });

@@ -36,6 +36,7 @@ import { buildLeaseChargeMetadata } from "./paymentMetadata";
 import { calculateBreakdown } from "@shared/pricing";
 import { LeaseError } from "./lease";
 import { handleChargeFailure, billAccruedLateFees } from "./dunning";
+import { onLeaseActivated, onPaymentReceived } from "./lifecycle";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow } from "@shared/schema";
 
@@ -175,6 +176,19 @@ export async function finalizeFirstPayment(paymentIntentId: string): Promise<voi
     await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
   }
   log(`lease ${lease.id} ACTIVE via first payment ${paymentIntentId}`, "stripe");
+
+  // Fire activation lifecycle (welcome + schedule recap + admin notice). The
+  // first installment's receipt is also sent (idempotent). Non-fatal on error.
+  try {
+    await onLeaseActivated(lease.id);
+    const property = await storage.getProperty(lease.propertyId);
+    const guest = await storage.getGuest(lease.guestId);
+    if (property && guest) {
+      await onPaymentReceived({ lease, property, guest, scheduleRow: { scheduleSeq: 1, amount: first.amount } });
+    }
+  } catch (err) {
+    log(`lifecycle activation error lease ${lease.id}: ${(err as Error).message}`, "stripe");
+  }
 }
 
 async function findLeaseByFirstPaymentIntent(piId: string): Promise<Lease | undefined> {
@@ -286,6 +300,15 @@ async function chargeInstallment(
         await billAccruedLateFees({ lease, property, rooms, scheduleSeq: row.scheduleSeq });
       } catch (feeErr) {
         log(`late-fee billing failed lease ${lease.id} seq ${row.scheduleSeq}: ${(feeErr as Error).message}`, "scheduler");
+      }
+      // Payment-received receipt (idempotent per installment).
+      try {
+        const guest = await storage.getGuest(lease.guestId);
+        if (guest) {
+          await onPaymentReceived({ lease, property, guest, scheduleRow: { scheduleSeq: row.scheduleSeq, amount: row.amount } });
+        }
+      } catch (rcptErr) {
+        log(`receipt error lease ${lease.id} seq ${row.scheduleSeq}: ${(rcptErr as Error).message}`, "scheduler");
       }
     } else {
       // requires_action / processing etc. — record the PI, leave as DUE so the

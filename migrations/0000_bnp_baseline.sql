@@ -111,6 +111,17 @@ CREATE TABLE "leases" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "lifecycle_events" (
+	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"lease_id" varchar NOT NULL,
+	"event_type" text NOT NULL,
+	"schedule_seq" integer,
+	"status" text DEFAULT 'SENT' NOT NULL,
+	"email_sent" boolean DEFAULT false NOT NULL,
+	"sms_sent" boolean DEFAULT false NOT NULL,
+	"created_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "notification_log" (
 	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"lease_id" varchar NOT NULL,
@@ -238,6 +249,8 @@ CREATE INDEX "lease_rooms_room_idx" ON "lease_rooms" USING btree ("room_id");-->
 CREATE INDEX "leases_property_idx" ON "leases" USING btree ("property_id");--> statement-breakpoint
 CREATE INDEX "leases_guest_idx" ON "leases" USING btree ("guest_id");--> statement-breakpoint
 CREATE INDEX "leases_status_idx" ON "leases" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "lifecycle_events_lease_idx" ON "lifecycle_events" USING btree ("lease_id");--> statement-breakpoint
+CREATE INDEX "lifecycle_events_dedupe_idx" ON "lifecycle_events" USING btree ("lease_id","event_type","schedule_seq");--> statement-breakpoint
 CREATE INDEX "notification_log_lease_idx" ON "notification_log" USING btree ("lease_id");--> statement-breakpoint
 CREATE INDEX "notification_log_dedupe_idx" ON "notification_log" USING btree ("lease_id","schedule_seq","kind","send_date");--> statement-breakpoint
 CREATE INDEX "payment_schedule_lease_idx" ON "payment_schedule" USING btree ("lease_id");--> statement-breakpoint

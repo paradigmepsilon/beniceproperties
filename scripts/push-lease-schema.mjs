@@ -164,6 +164,20 @@ const statements = [
   `CREATE INDEX IF NOT EXISTS "guest_messages_lease_idx" ON "guest_messages" ("lease_id")`,
   `CREATE INDEX IF NOT EXISTS "guest_messages_thread_idx" ON "guest_messages" ("thread_id")`,
   `CREATE INDEX IF NOT EXISTS "guest_messages_status_idx" ON "guest_messages" ("status")`,
+
+  // --- Phase 7: lifecycle_events ---
+  `CREATE TABLE IF NOT EXISTS "lifecycle_events" (
+    "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    "lease_id" varchar NOT NULL,
+    "event_type" text NOT NULL,
+    "schedule_seq" integer,
+    "status" text NOT NULL DEFAULT 'SENT',
+    "email_sent" boolean NOT NULL DEFAULT false,
+    "sms_sent" boolean NOT NULL DEFAULT false,
+    "created_at" timestamp DEFAULT now() NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS "lifecycle_events_lease_idx" ON "lifecycle_events" ("lease_id")`,
+  `CREATE INDEX IF NOT EXISTS "lifecycle_events_dedupe_idx" ON "lifecycle_events" ("lease_id","event_type","schedule_seq")`,
 ];
 
 async function run() {

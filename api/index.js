@@ -44,7 +44,10 @@ __export(schema_exports, {
   ESCALATION_STATUSES: () => ESCALATION_STATUSES,
   LATE_FEE_PER_DAY: () => LATE_FEE_PER_DAY,
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
+  LEASE_ENDING_NOTICE_DAYS: () => LEASE_ENDING_NOTICE_DAYS,
   LEASE_STATUSES: () => LEASE_STATUSES,
+  LIFECYCLE_EVENT_TYPES: () => LIFECYCLE_EVENT_TYPES,
+  LIFECYCLE_SEND_STATUSES: () => LIFECYCLE_SEND_STATUSES,
   MAX_LEASE_DAYS: () => MAX_LEASE_DAYS,
   MESSAGE_AUTHOR_ROLES: () => MESSAGE_AUTHOR_ROLES,
   MESSAGE_CATEGORIES: () => MESSAGE_CATEGORIES,
@@ -74,6 +77,7 @@ __export(schema_exports, {
   insertLateFeeSchema: () => insertLateFeeSchema,
   insertLeaseRoomSchema: () => insertLeaseRoomSchema,
   insertLeaseSchema: () => insertLeaseSchema,
+  insertLifecycleEventSchema: () => insertLifecycleEventSchema,
   insertNotificationLogSchema: () => insertNotificationLogSchema,
   insertPaymentScheduleSchema: () => insertPaymentScheduleSchema,
   insertPaymentSchema: () => insertPaymentSchema,
@@ -85,6 +89,7 @@ __export(schema_exports, {
   lateFees: () => lateFees,
   leaseRooms: () => leaseRooms,
   leases: () => leases,
+  lifecycleEvents: () => lifecycleEvents,
   notificationLog: () => notificationLog,
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
@@ -628,6 +633,48 @@ var insertGuestMessageSchema = createInsertSchema(guestMessages, {
   category: z.enum(MESSAGE_CATEGORIES).optional(),
   status: z.enum(MESSAGE_STATUSES).optional()
 }).omit({ id: true, createdAt: true, updatedAt: true });
+var LIFECYCLE_EVENT_TYPES = [
+  "COLIVING_WELCOME",
+  // on lease activation (guest)
+  "COLIVING_SCHEDULE_RECAP",
+  // on activation (guest) — full schedule
+  "COLIVING_ADMIN_NEW_LEASE",
+  // on activation (admin)
+  "PAYMENT_RECEIPT",
+  // per successful rent charge (uses schedule_seq)
+  "LEASE_ENDING_SOON"
+  // ~14 days before end_date
+];
+var LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"];
+var LEASE_ENDING_NOTICE_DAYS = 14;
+var lifecycleEvents = pgTable(
+  "lifecycle_events",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    // One of LIFECYCLE_EVENT_TYPES.
+    eventType: text("event_type").notNull(),
+    // For per-installment events (PAYMENT_RECEIPT); null otherwise.
+    scheduleSeq: integer("schedule_seq"),
+    // SENT | SKIPPED | FAILED
+    status: text("status").notNull().default("SENT"),
+    emailSent: boolean("email_sent").notNull().default(false),
+    smsSent: boolean("sms_sent").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("lifecycle_events_lease_idx").on(table.leaseId),
+    dedupeIdx: index("lifecycle_events_dedupe_idx").on(
+      table.leaseId,
+      table.eventType,
+      table.scheduleSeq
+    )
+  })
+);
+var insertLifecycleEventSchema = createInsertSchema(lifecycleEvents).omit({
+  id: true,
+  createdAt: true
+});
 
 // server/db.ts
 var databaseUrl = process.env.DATABASE_URL;
@@ -946,6 +993,15 @@ var Storage = class {
   }
   async updateMessage(id, updates) {
     const [row] = await db.update(guestMessages).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(guestMessages.id, id)).returning();
+    return row;
+  }
+  // --- Lifecycle events ---
+  async hasLifecycleEvent(leaseId, eventType, scheduleSeq) {
+    const rows = await db.select().from(lifecycleEvents).where(and(eq(lifecycleEvents.leaseId, leaseId), eq(lifecycleEvents.eventType, eventType)));
+    return rows.some((r) => (r.scheduleSeq ?? null) === scheduleSeq);
+  }
+  async recordLifecycleEvent(data) {
+    const [row] = await db.insert(lifecycleEvents).values(data).returning();
     return row;
   }
   // --- Payment schedule ---
@@ -2068,6 +2124,121 @@ function publicBaseUrl() {
   return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
 }
 
+// server/lib/lifecycle.ts
+var MS_PER_DAY3 = 24 * 60 * 60 * 1e3;
+var fmtMoney2 = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+var LIFECYCLE_TEMPLATES = {
+  welcome: (v) => ({
+    subject: `Welcome to ${v.property} \u{1F389}`,
+    body: `Hi ${v.name}, welcome! Your lease at ${v.property} is active and your move-in date is ${v.start}. We're glad to have you. Your full payment schedule and signed lease are in your guest portal. Reach out anytime through the portal with questions or maintenance requests.`
+  }),
+  scheduleRecap: (v) => ({
+    subject: "Your lease payment schedule",
+    body: `Hi ${v.name}, here is your full payment schedule (total ${v.total}):
+
+${v.rows}
+
+Payments on a saved card are charged automatically on each due date. Manage everything in your portal: ${v.portalUrl}`
+  }),
+  adminNewLease: (v) => ({
+    subject: `New co-living lease \u2014 ${v.property}`,
+    body: `New lease activated at ${v.property}. Guest: ${v.guest}. Term: ${v.start} \u2192 ${v.end}. Total lease value: ${v.total}.`
+  }),
+  paymentReceipt: (v) => ({
+    subject: `Payment received \u2014 ${v.property}`,
+    body: `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ${v.property}. Thank you! A record is available in your portal.`
+  }),
+  leaseEnding: (v) => ({
+    subject: `Your lease ends in ${v.days} days`,
+    body: `Hi ${v.name}, your lease at ${v.property} ends on ${v.end} (${v.days} days away). If you'd like to renew or extend, reply or reach out through your portal: ${v.portalUrl}. We'd love to have you stay.`
+  })
+};
+function portalUrl(lease) {
+  return lease.portalToken ? `${publicBaseUrl2()}/portal/${lease.portalToken}` : `${publicBaseUrl2()}/lookup`;
+}
+async function onLeaseActivated(leaseId) {
+  const lease = await storage.getLease(leaseId);
+  if (!lease) return;
+  const [property, guest, schedule] = await Promise.all([
+    storage.getProperty(lease.propertyId),
+    storage.getGuest(lease.guestId),
+    storage.getScheduleByLease(lease.id)
+  ]);
+  if (!property || !guest) return;
+  if (!await storage.hasLifecycleEvent(lease.id, "COLIVING_WELCOME", null)) {
+    const tpl = LIFECYCLE_TEMPLATES.welcome({ name: guest.name, property: property.name, start: lease.startDate });
+    const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+    await storage.recordLifecycleEvent({
+      leaseId: lease.id,
+      eventType: "COLIVING_WELCOME",
+      scheduleSeq: null,
+      status: sent.email.sent || sent.sms.sent ? "SENT" : "SKIPPED",
+      emailSent: sent.email.sent,
+      smsSent: sent.sms.sent
+    });
+  }
+  if (!await storage.hasLifecycleEvent(lease.id, "COLIVING_SCHEDULE_RECAP", null)) {
+    const rows = schedule.map((s) => `  #${s.scheduleSeq}  ${s.dueDate}  ${fmtMoney2(parseFloat(s.amount))}`).join("\n");
+    const tpl = LIFECYCLE_TEMPLATES.scheduleRecap({
+      name: guest.name,
+      total: fmtMoney2(parseFloat(lease.totalLeaseValue)),
+      rows,
+      portalUrl: portalUrl(lease)
+    });
+    const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+    await storage.recordLifecycleEvent({
+      leaseId: lease.id,
+      eventType: "COLIVING_SCHEDULE_RECAP",
+      scheduleSeq: null,
+      status: sent.email.sent ? "SENT" : "SKIPPED",
+      emailSent: sent.email.sent,
+      smsSent: sent.sms.sent
+    });
+  }
+  if (!await storage.hasLifecycleEvent(lease.id, "COLIVING_ADMIN_NEW_LEASE", null)) {
+    const tpl = LIFECYCLE_TEMPLATES.adminNewLease({
+      property: property.name,
+      guest: guest.name,
+      start: lease.startDate,
+      end: lease.endDate,
+      total: fmtMoney2(parseFloat(lease.totalLeaseValue))
+    });
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const res = adminEmail ? await sendEmail({ to: adminEmail, subject: tpl.subject, text: tpl.body }) : { sent: false };
+    await storage.recordLifecycleEvent({
+      leaseId: lease.id,
+      eventType: "COLIVING_ADMIN_NEW_LEASE",
+      scheduleSeq: null,
+      status: res.sent ? "SENT" : "SKIPPED",
+      emailSent: res.sent,
+      smsSent: false
+    });
+  }
+  log(`lifecycle: activation emails processed for lease ${lease.id}`, "lifecycle");
+}
+async function onPaymentReceived(args) {
+  const { lease, property, guest, scheduleRow } = args;
+  if (await storage.hasLifecycleEvent(lease.id, "PAYMENT_RECEIPT", scheduleRow.scheduleSeq)) return;
+  const tpl = LIFECYCLE_TEMPLATES.paymentReceipt({
+    name: guest.name,
+    amount: fmtMoney2(parseFloat(scheduleRow.amount)),
+    seq: scheduleRow.scheduleSeq,
+    property: property.name
+  });
+  const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+  await storage.recordLifecycleEvent({
+    leaseId: lease.id,
+    eventType: "PAYMENT_RECEIPT",
+    scheduleSeq: scheduleRow.scheduleSeq,
+    status: sent.email.sent ? "SENT" : "SKIPPED",
+    emailSent: sent.email.sent,
+    smsSent: sent.sms.sent
+  });
+}
+function publicBaseUrl2() {
+  return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
+}
+
 // server/lib/leasePayments.ts
 async function loadLeaseContext(leaseId) {
   const lease = await storage.getLease(leaseId);
@@ -2159,6 +2330,16 @@ async function finalizeFirstPayment(paymentIntentId) {
     await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
   }
   log(`lease ${lease.id} ACTIVE via first payment ${paymentIntentId}`, "stripe");
+  try {
+    await onLeaseActivated(lease.id);
+    const property = await storage.getProperty(lease.propertyId);
+    const guest = await storage.getGuest(lease.guestId);
+    if (property && guest) {
+      await onPaymentReceived({ lease, property, guest, scheduleRow: { scheduleSeq: 1, amount: first.amount } });
+    }
+  } catch (err) {
+    log(`lifecycle activation error lease ${lease.id}: ${err.message}`, "stripe");
+  }
 }
 async function findLeaseByFirstPaymentIntent(piId) {
   const leases2 = await storage.getLeases();

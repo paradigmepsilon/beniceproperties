@@ -15,6 +15,7 @@ import { storage } from "./storage";
 import { buildAndPushSnapshot } from "./integrations/kpiRollup";
 import { runScheduledRentSweep } from "./lib/leasePayments";
 import { runDunningSweep } from "./lib/dunning";
+import { runLeaseEndingNotices } from "./lib/lifecycle";
 
 interface SchedulerConfig {
   /** How often to run the recurring sweep. Default: 1h. */
@@ -57,6 +58,7 @@ class BackgroundScheduler {
     try {
       await this.weeklyRentRun();
       await this.dunningRun();
+      await this.lifecycleRun();
       await this.paymentStatusCheck();
       await this.dailyKpiRollupAndPush();
     } catch (err) {
@@ -79,6 +81,11 @@ class BackgroundScheduler {
     // Phase 5: reminders, overdue messaging, late-fee accrual, default detection.
     // Idempotent per day via notification_log + the unique late-fee accrual guard.
     await runDunningSweep();
+  }
+
+  private async lifecycleRun(): Promise<void> {
+    // Phase 7: lease-ending notices (~14 days out). Idempotent via lifecycle_events.
+    await runLeaseEndingNotices();
   }
 
   private async paymentStatusCheck(): Promise<void> {

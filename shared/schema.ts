@@ -767,3 +767,56 @@ export const insertGuestMessageSchema = createInsertSchema(guestMessages, {
 
 export type GuestMessage = typeof guestMessages.$inferSelect;
 export type InsertGuestMessage = z.infer<typeof insertGuestMessageSchema>;
+
+// =============================================================================
+// lifecycle_events — the email_sends-equivalent spine (Phase 7). One row per
+// lifecycle email per lease (+ schedule_seq for per-installment receipts), making
+// every send idempotent: a given (lease, event_type, ref) is sent at most once.
+// Mirrors TRAD's bookingEmailCoordinator record-keeping.
+// =============================================================================
+
+export const LIFECYCLE_EVENT_TYPES = [
+  "COLIVING_WELCOME", // on lease activation (guest)
+  "COLIVING_SCHEDULE_RECAP", // on activation (guest) — full schedule
+  "COLIVING_ADMIN_NEW_LEASE", // on activation (admin)
+  "PAYMENT_RECEIPT", // per successful rent charge (uses schedule_seq)
+  "LEASE_ENDING_SOON", // ~14 days before end_date
+] as const;
+
+export const LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"] as const;
+
+/** Days before end_date to send the lease-ending notice (spec: ~14). */
+export const LEASE_ENDING_NOTICE_DAYS = 14;
+
+export const lifecycleEvents = pgTable(
+  "lifecycle_events",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    // One of LIFECYCLE_EVENT_TYPES.
+    eventType: text("event_type").notNull(),
+    // For per-installment events (PAYMENT_RECEIPT); null otherwise.
+    scheduleSeq: integer("schedule_seq"),
+    // SENT | SKIPPED | FAILED
+    status: text("status").notNull().default("SENT"),
+    emailSent: boolean("email_sent").notNull().default(false),
+    smsSent: boolean("sms_sent").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    leaseIdx: index("lifecycle_events_lease_idx").on(table.leaseId),
+    dedupeIdx: index("lifecycle_events_dedupe_idx").on(
+      table.leaseId,
+      table.eventType,
+      table.scheduleSeq,
+    ),
+  }),
+);
+
+export const insertLifecycleEventSchema = createInsertSchema(lifecycleEvents).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type LifecycleEvent = typeof lifecycleEvents.$inferSelect;
+export type InsertLifecycleEvent = z.infer<typeof insertLifecycleEventSchema>;

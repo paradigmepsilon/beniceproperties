@@ -515,3 +515,55 @@ artifact; the script is the applied delta.)
 **PHASE 6: COMPLETE — tests green**
 
 ---
+
+## PHASE 7 — Guest Lifecycle Automation
+
+**What was built**
+- `lifecycle_events` table (additive) — the `email_sends`-equivalent spine. One row
+  per (lease, event_type, schedule_seq) makes every send idempotent. Mirrors TRAD's
+  `bookingEmailCoordinator` record-keeping.
+- `server/lib/lifecycle.ts` (new): admin-editable `LIFECYCLE_TEMPLATES` (data,
+  variable-substituted) + events:
+  - `onLeaseActivated()` (fired from `finalizeFirstPayment`): guest **welcome**,
+    full **schedule recap**, and an **admin new-lease** notice (to `ADMIN_EMAIL`).
+    Each sent once.
+  - `onPaymentReceived()` (fired on each successful rent charge — first payment,
+    sweep success): a **payment receipt**, idempotent per installment.
+  - `runLeaseEndingNotices()` (daily scheduler): **lease-ending notice ~14 days**
+    before `end_date`, with a renewal nudge, once.
+- All sends route through the env-gated notifications layer (dry-run + log without
+  creds), so the spine runs/tests without live email/SMS.
+- Wired: activation + first-payment receipt in `finalizeFirstPayment`; per-charge
+  receipt in the rent sweep; lease-ending notices in both scheduler spines
+  (in-process + Vercel cron).
+- STR lifecycle: the existing booking/Checkout confirmation path stands; per the
+  spec the co-living spine is the new work (STR reuse is the existing flow).
+
+**Files touched**
+- `shared/schema.ts` (+`lifecycle_events` + enums/const), `server/storage.ts`
+  (+lifecycle methods), `server/lib/lifecycle.ts` (new), `server/lib/leasePayments.ts`
+  (activation + receipt hooks), `server/scheduler.ts`, `api-src/cron/sweep.ts`,
+  `server/lib/lifecycle.test.ts` (new), `scripts/push-lease-schema.mjs` (+P7),
+  bundled `api/*`
+
+**Tests + results**
+- `npm test` → **87 passed** (+8 lifecycle: activation sends each-once + idempotent,
+  receipt once-per-installment, lease-ending window + dedupe, daysUntil math).
+- `tsc` 0 · `build` 0 · `build:api` 0. `lifecycle_events` applied to DB (additive);
+  baseline regenerated (17 tables, 0 destructive).
+
+**Decisions**
+- Lifecycle sends are idempotent via `lifecycle_events`, so re-running the sweep or
+  re-processing a webhook never double-emails.
+- Admin notice goes to `ADMIN_EMAIL`; skipped (recorded SKIPPED) if unset.
+- Lease-ending notice fires anywhere in the 0–14-day pre-end window (covers a cron
+  that misses the exact 14th day), but only once.
+
+**Deferred / suggested**
+- Pre-arrival/check-in/checkout/review STR cadence beyond the existing confirmation
+  (port more of TRAD's spine) if STR lifecycle parity is wanted later.
+- An admin UI to edit `LIFECYCLE_TEMPLATES` (already data-shaped).
+
+**PHASE 7: COMPLETE — tests green**
+
+---
