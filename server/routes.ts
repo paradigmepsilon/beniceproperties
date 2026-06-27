@@ -39,6 +39,7 @@ import {
   startFirstPayment,
   finalizeFirstPayment,
 } from "./lib/leasePayments";
+import { billAccruedLateFees, handleChargeFailure } from "./lib/dunning";
 import {
   createDraftLeaseSchema,
   signLeaseSchema,
@@ -301,6 +302,39 @@ export async function registerRoutes(app: Express): Promise<void> {
       stripeEnabled: isStripeConfigured() && stripePublishableConfigured(),
       publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY ?? null,
     });
+  });
+
+  // Admin: read/update the DEFAULTED threshold (days unpaid → lease DEFAULTED).
+  // Admin-configurable per the spec — not a magic number.
+  app.get("/api/admin/settings/default-threshold", requireAdmin, async (_req, res, next) => {
+    try {
+      const days = await storage.getSettingNumber("defaulted_threshold_days", 7);
+      res.json({ defaultedThresholdDays: days });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.put("/api/admin/settings/default-threshold", requireAdmin, async (req, res, next) => {
+    try {
+      const schema = z.object({ days: z.number().int().min(1).max(120) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "days must be an integer 1–120" });
+      await storage.setSetting("defaulted_threshold_days", String(parsed.data.days));
+      res.json({ defaultedThresholdDays: parsed.data.days });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Admin: open escalations raised by this app (Phase 8 UO consumes/resolves).
+  app.get("/api/admin/escalations", requireAdmin, async (req, res, next) => {
+    try {
+      const status = typeof req.query.status === "string" ? req.query.status : "OPEN";
+      res.json(await storage.getEscalations({ status }));
+    } catch (err) {
+      next(err);
+    }
   });
 
   // =========================================================================
@@ -754,6 +788,17 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
               paidAt: new Date(),
               stripePaymentIntentId: pi.id,
             });
+            // Bill any accrued late fees for this installment as a separate charge.
+            const lease = await storage.getLease(leaseId);
+            const property = lease ? await storage.getProperty(lease.propertyId) : null;
+            if (lease && property) {
+              const leaseRooms = await storage.getLeaseRooms(lease.id);
+              try {
+                await billAccruedLateFees({ lease, property, rooms: leaseRooms, scheduleSeq: seq });
+              } catch (feeErr) {
+                log(`webhook late-fee billing failed ${leaseId} seq ${seq}: ${(feeErr as Error).message}`, "stripe");
+              }
+            }
           }
         }
       }
@@ -770,9 +815,18 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
         if (leaseId && Number.isFinite(seq)) {
           const rows = await storage.getScheduleByLease(leaseId);
           const row = rows.find((r) => r.scheduleSeq === seq);
-          // Don't clobber a PAID row; mark a still-open one FAILED (Phase 5 dunning).
+          // Don't clobber a PAID row; mark a still-open one FAILED + run dunning.
           if (row && row.status !== "PAID" && row.status !== "WAIVED") {
-            await storage.updateScheduleRow(row.id, { status: "FAILED", stripePaymentIntentId: pi.id });
+            const failed = (await storage.updateScheduleRow(row.id, { status: "FAILED", stripePaymentIntentId: pi.id })) ?? row;
+            const lease = await storage.getLease(leaseId);
+            const guest = lease ? await storage.getGuest(lease.guestId) : null;
+            if (lease && guest) {
+              try {
+                await handleChargeFailure({ lease, guest, scheduleRow: failed, reason: pi.last_payment_error?.message });
+              } catch (dErr) {
+                log(`webhook failure-path error ${leaseId} seq ${seq}: ${(dErr as Error).message}`, "stripe");
+              }
+            }
           }
         }
       }

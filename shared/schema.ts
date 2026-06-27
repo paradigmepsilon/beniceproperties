@@ -105,6 +105,35 @@ export const MAX_LEASE_DAYS = 90;
 /** Flat daily late fee, in dollars (spec: $25/day, no cap). */
 export const LATE_FEE_PER_DAY = 25.0;
 
+// --- Phase 5: dunning / reminders / escalations ---
+
+/** Notification kinds, used to dedupe sends in notification_log. */
+export const NOTIFICATION_KINDS = [
+  "REMINDER_7D", // 7 days before due
+  "REMINDER_3D", // 3 days before due
+  "REMINDER_DUE", // day of
+  "PAYMENT_FAILED", // card-on-file decline → fix-card link
+  "OVERDUE_1", // day after due, day 1 of 3
+  "OVERDUE_2",
+  "OVERDUE_3",
+  "LATE_FEE_BILLED",
+  "DEFAULTED",
+] as const;
+
+export const ESCALATION_KINDS = ["PAYMENT_FAILED", "PAYMENT_OVERDUE", "LEASE_DEFAULTED"] as const;
+export const ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"] as const;
+export const ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"] as const;
+
+/**
+ * Default DEFAULTED threshold (days a payment may sit unpaid past its due date
+ * before the lease flips to DEFAULTED). Admin-configurable via app_settings;
+ * this constant is only the fallback. Locked default: 7 (Alex, Phase 5).
+ */
+export const DEFAULT_DEFAULTED_THRESHOLD_DAYS = 7;
+
+/** How many consecutive days to message an overdue guest (spec: 3). */
+export const OVERDUE_MESSAGE_DAYS = 3;
+
 // =============================================================================
 // properties — whole-property (STR) and co-living parent properties
 // =============================================================================
@@ -585,3 +614,106 @@ export const insertLateFeeSchema = createInsertSchema(lateFees, {
 
 export type LateFee = typeof lateFees.$inferSelect;
 export type InsertLateFee = z.infer<typeof insertLateFeeSchema>;
+
+// =============================================================================
+// notification_log — one row per notification SENT, keyed so the dunning
+// scheduler is idempotent: a (lease, schedule_seq, kind, send_date) is sent at
+// most once. Re-running the sweep on the same day never double-messages a guest.
+// =============================================================================
+
+export const notificationLog = pgTable(
+  "notification_log",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    scheduleSeq: integer("schedule_seq"), // null for lease-level (e.g. DEFAULTED)
+    // One of NOTIFICATION_KINDS.
+    kind: text("kind").notNull(),
+    // The calendar day (YYYY-MM-DD) this notification was sent for — part of the
+    // dedupe key so daily messages send once per day but can repeat across days.
+    sendDate: date("send_date").notNull(),
+    emailSent: boolean("email_sent").notNull().default(false),
+    smsSent: boolean("sms_sent").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    leaseIdx: index("notification_log_lease_idx").on(table.leaseId),
+    dedupeIdx: index("notification_log_dedupe_idx").on(
+      table.leaseId,
+      table.scheduleSeq,
+      table.kind,
+      table.sendDate,
+    ),
+  }),
+);
+
+export const insertNotificationLogSchema = createInsertSchema(notificationLog).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type NotificationLogRow = typeof notificationLog.$inferSelect;
+export type InsertNotificationLogRow = z.infer<typeof insertNotificationLogSchema>;
+
+// =============================================================================
+// app_settings — small key/value store for admin-configurable values (e.g. the
+// DEFAULTED threshold, manual-payment handles). Avoids magic numbers in code.
+// =============================================================================
+
+export const appSettings = pgTable("app_settings", {
+  key: varchar("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ updatedAt: true });
+
+export type AppSetting = typeof appSettings.$inferSelect;
+export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;
+
+// =============================================================================
+// uo_escalations — operational issues this app raises (failed payment, overdue,
+// lease default) for Unified Ops to surface + resolve (Phase 8 write-backs). BNP
+// owns the row; UO reads it and posts resolutions back over the API. No PII
+// beyond the lease/guest linkage already in this DB.
+// =============================================================================
+
+export const uoEscalations = pgTable(
+  "uo_escalations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    scheduleSeq: integer("schedule_seq"),
+    // One of ESCALATION_KINDS.
+    kind: text("kind").notNull(),
+    // LOW | MEDIUM | HIGH
+    severity: text("severity").notNull().default("MEDIUM"),
+    // OPEN | ACKNOWLEDGED | RESOLVED
+    status: text("status").notNull().default("OPEN"),
+    detail: text("detail"),
+    resolvedAt: timestamp("resolved_at"),
+    resolvedBy: text("resolved_by"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    leaseIdx: index("uo_escalations_lease_idx").on(table.leaseId),
+    statusIdx: index("uo_escalations_status_idx").on(table.status),
+    // Dedupe open escalations of the same kind for the same installment.
+    openKindIdx: index("uo_escalations_open_kind_idx").on(
+      table.leaseId,
+      table.scheduleSeq,
+      table.kind,
+      table.status,
+    ),
+  }),
+);
+
+export const insertUoEscalationSchema = createInsertSchema(uoEscalations, {
+  kind: z.enum(ESCALATION_KINDS),
+  severity: z.enum(ESCALATION_SEVERITIES).optional(),
+  status: z.enum(ESCALATION_STATUSES).optional(),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+
+export type UoEscalation = typeof uoEscalations.$inferSelect;
+export type InsertUoEscalation = z.infer<typeof insertUoEscalationSchema>;

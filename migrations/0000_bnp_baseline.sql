@@ -8,6 +8,12 @@ CREATE TABLE "admin_users" (
 	CONSTRAINT "admin_users_email_unique" UNIQUE("email")
 );
 --> statement-breakpoint
+CREATE TABLE "app_settings" (
+	"key" varchar PRIMARY KEY NOT NULL,
+	"value" text NOT NULL,
+	"updated_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "bookings" (
 	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"property_id" varchar NOT NULL,
@@ -90,6 +96,17 @@ CREATE TABLE "leases" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "notification_log" (
+	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"lease_id" varchar NOT NULL,
+	"schedule_seq" integer,
+	"kind" text NOT NULL,
+	"send_date" date NOT NULL,
+	"email_sent" boolean DEFAULT false NOT NULL,
+	"sms_sent" boolean DEFAULT false NOT NULL,
+	"created_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 CREATE TABLE "payment_schedule" (
 	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"lease_id" varchar NOT NULL,
@@ -161,6 +178,20 @@ CREATE TABLE "subscriptions" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE TABLE "uo_escalations" (
+	"id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"lease_id" varchar NOT NULL,
+	"schedule_seq" integer,
+	"kind" text NOT NULL,
+	"severity" text DEFAULT 'MEDIUM' NOT NULL,
+	"status" text DEFAULT 'OPEN' NOT NULL,
+	"detail" text,
+	"resolved_at" timestamp,
+	"resolved_by" text,
+	"created_at" timestamp DEFAULT now() NOT NULL,
+	"updated_at" timestamp DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 ALTER TABLE "bookings" ADD CONSTRAINT "bookings_property_id_properties_id_fk" FOREIGN KEY ("property_id") REFERENCES "public"."properties"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bookings" ADD CONSTRAINT "bookings_room_id_rooms_id_fk" FOREIGN KEY ("room_id") REFERENCES "public"."rooms"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "bookings" ADD CONSTRAINT "bookings_guest_id_guests_id_fk" FOREIGN KEY ("guest_id") REFERENCES "public"."guests"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -189,6 +220,8 @@ CREATE INDEX "lease_rooms_room_idx" ON "lease_rooms" USING btree ("room_id");-->
 CREATE INDEX "leases_property_idx" ON "leases" USING btree ("property_id");--> statement-breakpoint
 CREATE INDEX "leases_guest_idx" ON "leases" USING btree ("guest_id");--> statement-breakpoint
 CREATE INDEX "leases_status_idx" ON "leases" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "notification_log_lease_idx" ON "notification_log" USING btree ("lease_id");--> statement-breakpoint
+CREATE INDEX "notification_log_dedupe_idx" ON "notification_log" USING btree ("lease_id","schedule_seq","kind","send_date");--> statement-breakpoint
 CREATE INDEX "payment_schedule_lease_idx" ON "payment_schedule" USING btree ("lease_id");--> statement-breakpoint
 CREATE INDEX "payment_schedule_status_idx" ON "payment_schedule" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "payment_schedule_due_date_idx" ON "payment_schedule" USING btree ("due_date");--> statement-breakpoint
@@ -198,4 +231,7 @@ CREATE INDEX "payments_stripe_ref_idx" ON "payments" USING btree ("stripe_ref");
 CREATE INDEX "rooms_property_idx" ON "rooms" USING btree ("property_id");--> statement-breakpoint
 CREATE INDEX "rooms_status_idx" ON "rooms" USING btree ("status");--> statement-breakpoint
 CREATE INDEX "subscriptions_booking_idx" ON "subscriptions" USING btree ("booking_id");--> statement-breakpoint
-CREATE INDEX "subscriptions_stripe_sub_idx" ON "subscriptions" USING btree ("stripe_subscription_id");
+CREATE INDEX "subscriptions_stripe_sub_idx" ON "subscriptions" USING btree ("stripe_subscription_id");--> statement-breakpoint
+CREATE INDEX "uo_escalations_lease_idx" ON "uo_escalations" USING btree ("lease_id");--> statement-breakpoint
+CREATE INDEX "uo_escalations_status_idx" ON "uo_escalations" USING btree ("status");--> statement-breakpoint
+CREATE INDEX "uo_escalations_open_kind_idx" ON "uo_escalations" USING btree ("lease_id","schedule_seq","kind","status");

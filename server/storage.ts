@@ -24,6 +24,9 @@ import {
   leaseRooms,
   paymentSchedule,
   lateFees,
+  notificationLog,
+  appSettings,
+  uoEscalations,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -49,6 +52,11 @@ import {
   type InsertPaymentScheduleRow,
   type LateFee,
   type InsertLateFee,
+  type NotificationLogRow,
+  type InsertNotificationLogRow,
+  type AppSetting,
+  type UoEscalation,
+  type InsertUoEscalation,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -147,6 +155,28 @@ export interface IStorage {
   getLateFeesByLease(leaseId: string): Promise<LateFee[]>;
   createLateFee(data: InsertLateFee): Promise<LateFee>;
   updateLateFee(id: string, updates: Partial<InsertLateFee>): Promise<LateFee | undefined>;
+  /**
+   * Idempotently accrue ONE late-fee row for (lease, schedule_seq, accrual day).
+   * Returns the created row, or null if one already exists for that day (the
+   * unique-accrual guard) — so re-running the sweep never double-accrues.
+   */
+  accrueLateFeeOnce(args: { leaseId: string; scheduleSeq: number; accrualDate: string; amount: number }): Promise<LateFee | null>;
+  getAccruedLateFeesForSchedule(leaseId: string, scheduleSeq: number): Promise<LateFee[]>;
+
+  // --- Notification log (idempotent dunning sends) ---
+  hasNotification(args: { leaseId: string; scheduleSeq: number | null; kind: string; sendDate: string }): Promise<boolean>;
+  recordNotification(data: InsertNotificationLogRow): Promise<NotificationLogRow>;
+
+  // --- App settings (admin-configurable, no magic numbers) ---
+  getSetting(key: string): Promise<AppSetting | undefined>;
+  getSettingNumber(key: string, fallback: number): Promise<number>;
+  setSetting(key: string, value: string): Promise<AppSetting>;
+
+  // --- UO escalations (raised here, surfaced/resolved by UO in Phase 8) ---
+  getEscalations(opts?: { status?: string; leaseId?: string }): Promise<UoEscalation[]>;
+  /** Create an escalation only if no OPEN one of the same (lease, seq, kind) exists. */
+  raiseEscalationOnce(data: InsertUoEscalation): Promise<UoEscalation | null>;
+  updateEscalation(id: string, updates: Partial<InsertUoEscalation>): Promise<UoEscalation | undefined>;
 
   /**
    * Is `roomId` free for [startDate, endDate]? False if any room-blocking lease
@@ -517,6 +547,149 @@ class Storage implements IStorage {
       .update(lateFees)
       .set({ ...updates, updatedAt: new Date() })
       .where(eq(lateFees.id, id))
+      .returning();
+    return row;
+  }
+
+  async accrueLateFeeOnce(args: {
+    leaseId: string;
+    scheduleSeq: number;
+    accrualDate: string;
+    amount: number;
+  }): Promise<LateFee | null> {
+    // Idempotency guard: one fee per (lease, seq, day).
+    const [existing] = await db
+      .select()
+      .from(lateFees)
+      .where(
+        and(
+          eq(lateFees.leaseId, args.leaseId),
+          eq(lateFees.scheduleSeq, args.scheduleSeq),
+          eq(lateFees.accrualDate, args.accrualDate),
+        ),
+      );
+    if (existing) return null;
+    const [row] = await db
+      .insert(lateFees)
+      .values({
+        leaseId: args.leaseId,
+        scheduleSeq: args.scheduleSeq,
+        accrualDate: args.accrualDate,
+        amount: String(args.amount),
+        status: "ACCRUED",
+      })
+      .returning();
+    return row;
+  }
+
+  async getAccruedLateFeesForSchedule(leaseId: string, scheduleSeq: number): Promise<LateFee[]> {
+    return db
+      .select()
+      .from(lateFees)
+      .where(
+        and(
+          eq(lateFees.leaseId, leaseId),
+          eq(lateFees.scheduleSeq, scheduleSeq),
+          eq(lateFees.status, "ACCRUED"),
+        ),
+      );
+  }
+
+  // --- Notification log ---
+  async hasNotification(args: {
+    leaseId: string;
+    scheduleSeq: number | null;
+    kind: string;
+    sendDate: string;
+  }): Promise<boolean> {
+    const conds = [
+      eq(notificationLog.leaseId, args.leaseId),
+      eq(notificationLog.kind, args.kind),
+      eq(notificationLog.sendDate, args.sendDate),
+    ];
+    if (args.scheduleSeq === null) {
+      // lease-level notification
+      const rows = await db
+        .select()
+        .from(notificationLog)
+        .where(and(...conds));
+      return rows.some((r) => r.scheduleSeq === null);
+    }
+    conds.push(eq(notificationLog.scheduleSeq, args.scheduleSeq));
+    const rows = await db
+      .select()
+      .from(notificationLog)
+      .where(and(...conds));
+    return rows.length > 0;
+  }
+
+  async recordNotification(data: InsertNotificationLogRow): Promise<NotificationLogRow> {
+    const [row] = await db.insert(notificationLog).values(data).returning();
+    return row;
+  }
+
+  // --- App settings ---
+  async getSetting(key: string): Promise<AppSetting | undefined> {
+    const [row] = await db.select().from(appSettings).where(eq(appSettings.key, key));
+    return row;
+  }
+
+  async getSettingNumber(key: string, fallback: number): Promise<number> {
+    const row = await this.getSetting(key);
+    if (!row) return fallback;
+    const n = parseInt(row.value, 10);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  async setSetting(key: string, value: string): Promise<AppSetting> {
+    const existing = await this.getSetting(key);
+    if (existing) {
+      const [row] = await db
+        .update(appSettings)
+        .set({ value, updatedAt: new Date() })
+        .where(eq(appSettings.key, key))
+        .returning();
+      return row;
+    }
+    const [row] = await db.insert(appSettings).values({ key, value }).returning();
+    return row;
+  }
+
+  // --- UO escalations ---
+  async getEscalations(opts?: { status?: string; leaseId?: string }): Promise<UoEscalation[]> {
+    const filters = [];
+    if (opts?.status) filters.push(eq(uoEscalations.status, opts.status));
+    if (opts?.leaseId) filters.push(eq(uoEscalations.leaseId, opts.leaseId));
+    const q = db.select().from(uoEscalations).orderBy(desc(uoEscalations.createdAt));
+    return filters.length ? q.where(and(...filters)) : q;
+  }
+
+  async raiseEscalationOnce(data: InsertUoEscalation): Promise<UoEscalation | null> {
+    // Dedupe: don't open a second escalation of the same kind for the same
+    // installment while one is still OPEN.
+    const conds = [
+      eq(uoEscalations.leaseId, data.leaseId),
+      eq(uoEscalations.kind, data.kind),
+      eq(uoEscalations.status, "OPEN"),
+    ];
+    const open = await db
+      .select()
+      .from(uoEscalations)
+      .where(and(...conds));
+    const seq = data.scheduleSeq ?? null;
+    if (open.some((e) => (e.scheduleSeq ?? null) === seq)) return null;
+    const [row] = await db.insert(uoEscalations).values(data).returning();
+    return row;
+  }
+
+  async updateEscalation(
+    id: string,
+    updates: Partial<InsertUoEscalation>,
+  ): Promise<UoEscalation | undefined> {
+    const [row] = await db
+      .update(uoEscalations)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(uoEscalations.id, id))
       .returning();
     return row;
   }

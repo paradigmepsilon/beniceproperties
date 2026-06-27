@@ -35,6 +35,7 @@ import {
 import { buildLeaseChargeMetadata } from "./paymentMetadata";
 import { calculateBreakdown } from "@shared/pricing";
 import { LeaseError } from "./lease";
+import { handleChargeFailure, billAccruedLateFees } from "./dunning";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow } from "@shared/schema";
 
@@ -273,6 +274,13 @@ async function chargeInstallment(
         stripePaymentIntentId: pi.id,
       });
       result.charged += 1;
+      // Any late fees accrued against this installment are now billed as a
+      // SEPARATE charge (never folded into rent).
+      try {
+        await billAccruedLateFees({ lease, property, rooms, scheduleSeq: row.scheduleSeq });
+      } catch (feeErr) {
+        log(`late-fee billing failed lease ${lease.id} seq ${row.scheduleSeq}: ${(feeErr as Error).message}`, "scheduler");
+      }
     } else {
       // requires_action / processing etc. — record the PI, leave as DUE so the
       // webhook can settle it; do not double-charge next sweep (PI id set).
@@ -283,14 +291,29 @@ async function chargeInstallment(
       result.skipped += 1;
     }
   } catch (err) {
-    // Decline / card error → FAILED. Phase 5 turns this into the dunning path.
+    // Decline / card error → FAILED, then the dunning failure path (UO flag +
+    // fix-card message).
     const piId = (err as { raw?: { payment_intent?: { id?: string } } })?.raw?.payment_intent?.id;
-    await storage.updateScheduleRow(row.id, {
-      status: "FAILED",
-      stripePaymentIntentId: piId ?? row.stripePaymentIntentId ?? null,
-    });
+    const failedRow =
+      (await storage.updateScheduleRow(row.id, {
+        status: "FAILED",
+        stripePaymentIntentId: piId ?? row.stripePaymentIntentId ?? null,
+      })) ?? row;
     result.failed += 1;
     log(`rent charge FAILED lease ${lease.id} seq ${row.scheduleSeq}: ${(err as Error).message}`, "scheduler");
+    try {
+      const guest = await storage.getGuest(lease.guestId);
+      if (guest) {
+        await handleChargeFailure({
+          lease,
+          guest,
+          scheduleRow: failedRow,
+          reason: (err as Error).message,
+        });
+      }
+    } catch (notifyErr) {
+      log(`failure-path error lease ${lease.id} seq ${row.scheduleSeq}: ${(notifyErr as Error).message}`, "scheduler");
+    }
   }
 }
 

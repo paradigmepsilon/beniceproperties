@@ -14,6 +14,7 @@ import { log } from "./server-log";
 import { storage } from "./storage";
 import { buildAndPushSnapshot } from "./integrations/kpiRollup";
 import { runScheduledRentSweep } from "./lib/leasePayments";
+import { runDunningSweep } from "./lib/dunning";
 
 interface SchedulerConfig {
   /** How often to run the recurring sweep. Default: 1h. */
@@ -55,6 +56,7 @@ class BackgroundScheduler {
     this.isRunning = true;
     try {
       await this.weeklyRentRun();
+      await this.dunningRun();
       await this.paymentStatusCheck();
       await this.dailyKpiRollupAndPush();
     } catch (err) {
@@ -71,6 +73,12 @@ class BackgroundScheduler {
     // Charge every due CARD_ON_FILE installment against the saved card. Idempotent
     // — safe to run on every sweep; already-charged rows are skipped.
     await runScheduledRentSweep();
+  }
+
+  private async dunningRun(): Promise<void> {
+    // Phase 5: reminders, overdue messaging, late-fee accrual, default detection.
+    // Idempotent per day via notification_log + the unique late-fee accrual guard.
+    await runDunningSweep();
   }
 
   private async paymentStatusCheck(): Promise<void> {

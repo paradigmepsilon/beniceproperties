@@ -1,11 +1,12 @@
-// scripts/phase4-stripe-proof.mjs
-// TEST-MODE proof that Phase 4 PaymentIntents carry the full Stripe Metadata
-// Contract and that the saved-card + off-session charge path works end to end.
+// scripts/stripe-payments-proof.mjs
+// TEST-MODE proof that the BNP PaymentIntents (Phase 4 + 5) carry the full Stripe
+// Metadata Contract and that the saved-card flows work end to end: first payment,
+// off-session scheduled rent, idempotency, and a separate LATE_FEE charge.
 //
 // HARD SAFETY: refuses to run unless STRIPE_SECRET_KEY starts with "sk_test_".
 // Never run against a live key. Creates only test-mode objects.
 //
-//   node scripts/phase4-stripe-proof.mjs
+//   node scripts/stripe-payments-proof.mjs
 
 import "dotenv/config";
 import Stripe from "stripe";
@@ -16,6 +17,10 @@ if (!key || !key.startsWith("sk_test_")) {
   process.exit(1);
 }
 const stripe = new Stripe(key, { apiVersion: "2025-08-27.basil" });
+
+// Unique per run so idempotency keys never collide across proof runs (Stripe
+// idempotency keys are account-global).
+const RUN = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 const META = {
   entity: "BNP",
@@ -65,7 +70,7 @@ async function main() {
       confirm: true,
       metadata: { ...META, payment_kind: "SCHEDULED_RENT", schedule_seq: "2" },
     },
-    { idempotencyKey: "proof-rent-lease-test-1-seq-2" },
+    { idempotencyKey: `proof-rent-${RUN}` },
   );
 
   console.log("\n=== SCHEDULED RENT (off-session, saved card) ===");
@@ -83,12 +88,30 @@ async function main() {
       confirm: true,
       metadata: { ...META, payment_kind: "SCHEDULED_RENT", schedule_seq: "2" },
     },
-    { idempotencyKey: "proof-rent-lease-test-1-seq-2" },
+    { idempotencyKey: `proof-rent-${RUN}` },
   );
   console.log("\n=== IDEMPOTENCY ===");
   console.log("re-run same key → same PI id:", rentAgain.id === rent.id, `(${rentAgain.id})`);
 
-  console.log("\nALL GREEN — test-mode money flow + full metadata verified.");
+  // 5) Phase 5: late fees billed as a SEPARATE LATE_FEE charge (never folded
+  //    into rent). Two days @ $25 = $50.
+  const lateFee = await stripe.paymentIntents.create(
+    {
+      amount: 5000, // $50.00
+      currency: "usd",
+      customer: customer.id,
+      payment_method: savedPm,
+      off_session: true,
+      confirm: true,
+      metadata: { ...META, payment_kind: "LATE_FEE", schedule_seq: "2" },
+    },
+    { idempotencyKey: `proof-latefee-${RUN}` },
+  );
+  console.log("\n=== LATE FEE (separate line item) ===");
+  console.log("PI:", lateFee.id, "status:", lateFee.status, "amount:", lateFee.amount);
+  console.log("metadata.payment_kind:", lateFee.metadata.payment_kind);
+
+  console.log("\nALL GREEN — test-mode money flow + full metadata verified (incl. late fee).");
 }
 
 main()

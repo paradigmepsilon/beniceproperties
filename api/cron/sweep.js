@@ -21,10 +21,16 @@ __export(schema_exports, {
   BOOKING_STATUSES: () => BOOKING_STATUSES,
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
+  DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
+  ESCALATION_KINDS: () => ESCALATION_KINDS,
+  ESCALATION_SEVERITIES: () => ESCALATION_SEVERITIES,
+  ESCALATION_STATUSES: () => ESCALATION_STATUSES,
   LATE_FEE_PER_DAY: () => LATE_FEE_PER_DAY,
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
   LEASE_STATUSES: () => LEASE_STATUSES,
   MAX_LEASE_DAYS: () => MAX_LEASE_DAYS,
+  NOTIFICATION_KINDS: () => NOTIFICATION_KINDS,
+  OVERDUE_MESSAGE_DAYS: () => OVERDUE_MESSAGE_DAYS,
   PAYMENT_CADENCES: () => PAYMENT_CADENCES,
   PAYMENT_METHODS: () => PAYMENT_METHODS,
   PAYMENT_STATUSES: () => PAYMENT_STATUSES,
@@ -35,29 +41,35 @@ __export(schema_exports, {
   SCHEDULE_PAYMENT_METHODS: () => SCHEDULE_PAYMENT_METHODS,
   SCHEDULE_STATUSES: () => SCHEDULE_STATUSES,
   adminUsers: () => adminUsers,
+  appSettings: () => appSettings,
   bookings: () => bookings,
   guests: () => guests,
   insertAdminUserSchema: () => insertAdminUserSchema,
+  insertAppSettingSchema: () => insertAppSettingSchema,
   insertBookingSchema: () => insertBookingSchema,
   insertGuestSchema: () => insertGuestSchema,
   insertKpiSnapshotSchema: () => insertKpiSnapshotSchema,
   insertLateFeeSchema: () => insertLateFeeSchema,
   insertLeaseRoomSchema: () => insertLeaseRoomSchema,
   insertLeaseSchema: () => insertLeaseSchema,
+  insertNotificationLogSchema: () => insertNotificationLogSchema,
   insertPaymentScheduleSchema: () => insertPaymentScheduleSchema,
   insertPaymentSchema: () => insertPaymentSchema,
   insertPropertySchema: () => insertPropertySchema,
   insertRoomSchema: () => insertRoomSchema,
   insertSubscriptionSchema: () => insertSubscriptionSchema,
+  insertUoEscalationSchema: () => insertUoEscalationSchema,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
   leaseRooms: () => leaseRooms,
   leases: () => leases,
+  notificationLog: () => notificationLog,
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
   properties: () => properties,
   rooms: () => rooms,
-  subscriptions: () => subscriptions
+  subscriptions: () => subscriptions,
+  uoEscalations: () => uoEscalations
 });
 import { sql } from "drizzle-orm";
 import {
@@ -132,6 +144,27 @@ var CADENCE_DAYS = {
 };
 var MAX_LEASE_DAYS = 90;
 var LATE_FEE_PER_DAY = 25;
+var NOTIFICATION_KINDS = [
+  "REMINDER_7D",
+  // 7 days before due
+  "REMINDER_3D",
+  // 3 days before due
+  "REMINDER_DUE",
+  // day of
+  "PAYMENT_FAILED",
+  // card-on-file decline → fix-card link
+  "OVERDUE_1",
+  // day after due, day 1 of 3
+  "OVERDUE_2",
+  "OVERDUE_3",
+  "LATE_FEE_BILLED",
+  "DEFAULTED"
+];
+var ESCALATION_KINDS = ["PAYMENT_FAILED", "PAYMENT_OVERDUE", "LEASE_DEFAULTED"];
+var ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"];
+var ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"];
+var DEFAULT_DEFAULTED_THRESHOLD_DAYS = 7;
+var OVERDUE_MESSAGE_DAYS = 3;
 var properties = pgTable("properties", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
@@ -465,6 +498,77 @@ var lateFees = pgTable(
 var insertLateFeeSchema = createInsertSchema(lateFees, {
   status: z.enum(LATE_FEE_STATUSES).optional()
 }).omit({ id: true, createdAt: true, updatedAt: true });
+var notificationLog = pgTable(
+  "notification_log",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    scheduleSeq: integer("schedule_seq"),
+    // null for lease-level (e.g. DEFAULTED)
+    // One of NOTIFICATION_KINDS.
+    kind: text("kind").notNull(),
+    // The calendar day (YYYY-MM-DD) this notification was sent for — part of the
+    // dedupe key so daily messages send once per day but can repeat across days.
+    sendDate: date("send_date").notNull(),
+    emailSent: boolean("email_sent").notNull().default(false),
+    smsSent: boolean("sms_sent").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("notification_log_lease_idx").on(table.leaseId),
+    dedupeIdx: index("notification_log_dedupe_idx").on(
+      table.leaseId,
+      table.scheduleSeq,
+      table.kind,
+      table.sendDate
+    )
+  })
+);
+var insertNotificationLogSchema = createInsertSchema(notificationLog).omit({
+  id: true,
+  createdAt: true
+});
+var appSettings = pgTable("app_settings", {
+  key: varchar("key").primaryKey(),
+  value: text("value").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull()
+});
+var insertAppSettingSchema = createInsertSchema(appSettings).omit({ updatedAt: true });
+var uoEscalations = pgTable(
+  "uo_escalations",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull(),
+    scheduleSeq: integer("schedule_seq"),
+    // One of ESCALATION_KINDS.
+    kind: text("kind").notNull(),
+    // LOW | MEDIUM | HIGH
+    severity: text("severity").notNull().default("MEDIUM"),
+    // OPEN | ACKNOWLEDGED | RESOLVED
+    status: text("status").notNull().default("OPEN"),
+    detail: text("detail"),
+    resolvedAt: timestamp("resolved_at"),
+    resolvedBy: text("resolved_by"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("uo_escalations_lease_idx").on(table.leaseId),
+    statusIdx: index("uo_escalations_status_idx").on(table.status),
+    // Dedupe open escalations of the same kind for the same installment.
+    openKindIdx: index("uo_escalations_open_kind_idx").on(
+      table.leaseId,
+      table.scheduleSeq,
+      table.kind,
+      table.status
+    )
+  })
+);
+var insertUoEscalationSchema = createInsertSchema(uoEscalations, {
+  kind: z.enum(ESCALATION_KINDS),
+  severity: z.enum(ESCALATION_SEVERITIES).optional(),
+  status: z.enum(ESCALATION_STATUSES).optional()
+}).omit({ id: true, createdAt: true, updatedAt: true });
 
 // server/db.ts
 var databaseUrl = process.env.DATABASE_URL;
@@ -480,9 +584,9 @@ var db = drizzle({ client: sql2, schema: schema_exports });
 var ScheduleError = class extends Error {
 };
 var MS_PER_DAY = 24 * 60 * 60 * 1e3;
-function parseYmd(ymd) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
-  if (!m) throw new ScheduleError(`Invalid date (expected YYYY-MM-DD): ${ymd}`);
+function parseYmd(ymd2) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd2);
+  if (!m) throw new ScheduleError(`Invalid date (expected YYYY-MM-DD): ${ymd2}`);
   return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
 }
 function inclusiveDays(startDate, endDate) {
@@ -720,6 +824,96 @@ var Storage = class {
   }
   async updateLateFee(id, updates) {
     const [row] = await db.update(lateFees).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(lateFees.id, id)).returning();
+    return row;
+  }
+  async accrueLateFeeOnce(args) {
+    const [existing] = await db.select().from(lateFees).where(
+      and(
+        eq(lateFees.leaseId, args.leaseId),
+        eq(lateFees.scheduleSeq, args.scheduleSeq),
+        eq(lateFees.accrualDate, args.accrualDate)
+      )
+    );
+    if (existing) return null;
+    const [row] = await db.insert(lateFees).values({
+      leaseId: args.leaseId,
+      scheduleSeq: args.scheduleSeq,
+      accrualDate: args.accrualDate,
+      amount: String(args.amount),
+      status: "ACCRUED"
+    }).returning();
+    return row;
+  }
+  async getAccruedLateFeesForSchedule(leaseId, scheduleSeq) {
+    return db.select().from(lateFees).where(
+      and(
+        eq(lateFees.leaseId, leaseId),
+        eq(lateFees.scheduleSeq, scheduleSeq),
+        eq(lateFees.status, "ACCRUED")
+      )
+    );
+  }
+  // --- Notification log ---
+  async hasNotification(args) {
+    const conds = [
+      eq(notificationLog.leaseId, args.leaseId),
+      eq(notificationLog.kind, args.kind),
+      eq(notificationLog.sendDate, args.sendDate)
+    ];
+    if (args.scheduleSeq === null) {
+      const rows2 = await db.select().from(notificationLog).where(and(...conds));
+      return rows2.some((r) => r.scheduleSeq === null);
+    }
+    conds.push(eq(notificationLog.scheduleSeq, args.scheduleSeq));
+    const rows = await db.select().from(notificationLog).where(and(...conds));
+    return rows.length > 0;
+  }
+  async recordNotification(data) {
+    const [row] = await db.insert(notificationLog).values(data).returning();
+    return row;
+  }
+  // --- App settings ---
+  async getSetting(key) {
+    const [row] = await db.select().from(appSettings).where(eq(appSettings.key, key));
+    return row;
+  }
+  async getSettingNumber(key, fallback) {
+    const row = await this.getSetting(key);
+    if (!row) return fallback;
+    const n = parseInt(row.value, 10);
+    return Number.isFinite(n) ? n : fallback;
+  }
+  async setSetting(key, value) {
+    const existing = await this.getSetting(key);
+    if (existing) {
+      const [row2] = await db.update(appSettings).set({ value, updatedAt: /* @__PURE__ */ new Date() }).where(eq(appSettings.key, key)).returning();
+      return row2;
+    }
+    const [row] = await db.insert(appSettings).values({ key, value }).returning();
+    return row;
+  }
+  // --- UO escalations ---
+  async getEscalations(opts) {
+    const filters = [];
+    if (opts?.status) filters.push(eq(uoEscalations.status, opts.status));
+    if (opts?.leaseId) filters.push(eq(uoEscalations.leaseId, opts.leaseId));
+    const q = db.select().from(uoEscalations).orderBy(desc(uoEscalations.createdAt));
+    return filters.length ? q.where(and(...filters)) : q;
+  }
+  async raiseEscalationOnce(data) {
+    const conds = [
+      eq(uoEscalations.leaseId, data.leaseId),
+      eq(uoEscalations.kind, data.kind),
+      eq(uoEscalations.status, "OPEN")
+    ];
+    const open = await db.select().from(uoEscalations).where(and(...conds));
+    const seq = data.scheduleSeq ?? null;
+    if (open.some((e) => (e.scheduleSeq ?? null) === seq)) return null;
+    const [row] = await db.insert(uoEscalations).values(data).returning();
+    return row;
+  }
+  async updateEscalation(id, updates) {
+    const [row] = await db.update(uoEscalations).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(uoEscalations.id, id)).returning();
     return row;
   }
   async isRoomAvailableForRange(args) {
@@ -969,6 +1163,329 @@ async function chargeSavedCard(opts) {
   );
 }
 
+// server/lib/notifications.ts
+function isEmailConfigured() {
+  return Boolean(
+    process.env.SENDGRID_API_KEY || process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS
+  );
+}
+function isSmsConfigured() {
+  return Boolean(
+    process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER
+  );
+}
+var mailFrom = () => process.env.MAIL_FROM || process.env.ADMIN_EMAIL || "no-reply@beniceproperties.com";
+var transportPromise = null;
+async function getTransport() {
+  if (!transportPromise) {
+    transportPromise = (async () => {
+      const nodemailer = (await import("nodemailer")).default;
+      if (process.env.SENDGRID_API_KEY) {
+        return nodemailer.createTransport({
+          host: "smtp.sendgrid.net",
+          port: 587,
+          auth: { user: "apikey", pass: process.env.SENDGRID_API_KEY }
+        });
+      }
+      return nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || "587", 10),
+        secure: process.env.SMTP_PORT === "465",
+        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      });
+    })();
+  }
+  return transportPromise;
+}
+async function sendEmail(opts) {
+  if (!isEmailConfigured()) {
+    log(`[dry-run email] to=${opts.to} subject="${opts.subject}" (email not configured)`, "notify");
+    return { sent: false, channel: "email", reason: "not-configured" };
+  }
+  try {
+    const transport = await getTransport();
+    await transport.sendMail({
+      from: mailFrom(),
+      to: opts.to,
+      subject: opts.subject,
+      text: opts.text,
+      html: opts.html ?? `<p>${opts.text}</p>`
+    });
+    log(`email sent to=${opts.to} subject="${opts.subject}"`, "notify");
+    return { sent: true, channel: "email" };
+  } catch (err) {
+    log(`email FAILED to=${opts.to}: ${err.message}`, "notify");
+    return { sent: false, channel: "email", reason: err.message };
+  }
+}
+var twilioClientPromise = null;
+async function getTwilio() {
+  if (!twilioClientPromise) {
+    twilioClientPromise = (async () => {
+      const twilio = (await import("twilio")).default;
+      return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    })();
+  }
+  return twilioClientPromise;
+}
+async function sendSms(opts) {
+  if (!opts.to) {
+    return { sent: false, channel: "sms", reason: "no-phone" };
+  }
+  if (!isSmsConfigured()) {
+    log(`[dry-run sms] to=${opts.to} body="${opts.body.slice(0, 40)}\u2026" (sms not configured)`, "notify");
+    return { sent: false, channel: "sms", reason: "not-configured" };
+  }
+  try {
+    const client = await getTwilio();
+    await client.messages.create({
+      from: process.env.TWILIO_FROM_NUMBER,
+      to: opts.to,
+      body: opts.body
+    });
+    log(`sms sent to=${opts.to}`, "notify");
+    return { sent: true, channel: "sms" };
+  } catch (err) {
+    log(`sms FAILED to=${opts.to}: ${err.message}`, "notify");
+    return { sent: false, channel: "sms", reason: err.message };
+  }
+}
+async function notifyGuest(opts) {
+  const [email, sms] = await Promise.all([
+    sendEmail({ to: opts.email, subject: opts.subject, text: opts.body, html: opts.html }),
+    opts.phone ? sendSms({ to: opts.phone, body: opts.body }) : Promise.resolve({ sent: false, channel: "sms", reason: "no-phone" })
+  ]);
+  return { email, sms };
+}
+
+// server/lib/dunning.ts
+var SETTING_DEFAULT_THRESHOLD = "defaulted_threshold_days";
+var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
+var ymd = (d) => d.toISOString().slice(0, 10);
+function daysPastDue(dueDate, today) {
+  const due = (/* @__PURE__ */ new Date(`${dueDate}T00:00:00Z`)).getTime();
+  const now = (/* @__PURE__ */ new Date(`${today}T00:00:00Z`)).getTime();
+  return Math.round((now - due) / MS_PER_DAY2);
+}
+var OPEN_INSTALLMENT_STATUSES = /* @__PURE__ */ new Set(["SCHEDULED", "DUE", "FAILED", "LATE"]);
+async function runDunningSweep(today = ymd(/* @__PURE__ */ new Date())) {
+  const result = {
+    remindersSent: 0,
+    overdueMessages: 0,
+    lateFeesAccrued: 0,
+    defaultsRaised: 0
+  };
+  const thresholdDays = await storage.getSettingNumber(
+    SETTING_DEFAULT_THRESHOLD,
+    DEFAULT_DEFAULTED_THRESHOLD_DAYS
+  );
+  const leases2 = await storage.getLeases({ status: "ACTIVE" });
+  for (const lease of leases2) {
+    const property = await storage.getProperty(lease.propertyId);
+    const guest = await storage.getGuest(lease.guestId);
+    if (!property || !guest) continue;
+    const rooms2 = await storage.getLeaseRooms(lease.id);
+    const schedule = await storage.getScheduleByLease(lease.id);
+    for (const row of schedule) {
+      if (row.status === "PAID" || row.status === "WAIVED") continue;
+      if (!OPEN_INSTALLMENT_STATUSES.has(row.status)) continue;
+      const past = daysPastDue(row.dueDate, today);
+      if (past <= 0) {
+        await maybeSendReminder(lease, guest, row, past, today, result);
+      } else {
+        await handleOverdue(lease, property, guest, rooms2, row, past, today, thresholdDays, result);
+      }
+    }
+  }
+  if (result.remindersSent || result.overdueMessages || result.lateFeesAccrued || result.defaultsRaised) {
+    log(
+      `dunning: ${result.remindersSent} reminders, ${result.overdueMessages} overdue msgs, ${result.lateFeesAccrued} late fees, ${result.defaultsRaised} defaults`,
+      "scheduler"
+    );
+  }
+  return result;
+}
+async function maybeSendReminder(lease, guest, row, past, today, result) {
+  const daysUntil = -past;
+  let kind = null;
+  if (daysUntil === 7) kind = "REMINDER_7D";
+  else if (daysUntil === 3) kind = "REMINDER_3D";
+  else if (daysUntil === 0) kind = "REMINDER_DUE";
+  if (!kind) return;
+  const already = await storage.hasNotification({
+    leaseId: lease.id,
+    scheduleSeq: row.scheduleSeq,
+    kind,
+    sendDate: today
+  });
+  if (already) return;
+  const when = daysUntil === 0 ? "today" : `in ${daysUntil} day${daysUntil === 1 ? "" : "s"}`;
+  const sent = await notifyGuest({
+    email: guest.email,
+    phone: guest.phone,
+    subject: `Rent reminder \u2014 payment due ${when}`,
+    body: `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} is due ${when} (${row.dueDate}). ` + (row.paymentMethod === "CARD_ON_FILE" ? "It will be charged automatically to your card on file." : "Please send your payment by the due date.")
+  });
+  await storage.recordNotification({
+    leaseId: lease.id,
+    scheduleSeq: row.scheduleSeq,
+    kind,
+    sendDate: today,
+    emailSent: sent.email.sent,
+    smsSent: sent.sms.sent
+  });
+  result.remindersSent += 1;
+}
+async function handleOverdue(lease, property, guest, rooms2, row, past, today, thresholdDays, result) {
+  if (past < 1) return;
+  if (row.status !== "LATE" && row.status !== "FAILED") {
+    await storage.updateScheduleRow(row.id, { status: "LATE" });
+  }
+  const fee = await storage.accrueLateFeeOnce({
+    leaseId: lease.id,
+    scheduleSeq: row.scheduleSeq,
+    accrualDate: today,
+    amount: LATE_FEE_PER_DAY
+  });
+  if (fee) result.lateFeesAccrued += 1;
+  if (past <= OVERDUE_MESSAGE_DAYS) {
+    const kind = `OVERDUE_${past}`;
+    const already = await storage.hasNotification({
+      leaseId: lease.id,
+      scheduleSeq: row.scheduleSeq,
+      kind,
+      sendDate: today
+    });
+    if (!already) {
+      const sent = await notifyGuest({
+        email: guest.email,
+        phone: guest.phone,
+        subject: `Payment overdue \u2014 installment #${row.scheduleSeq}`,
+        body: `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of $${LATE_FEE_PER_DAY.toFixed(2)}/day is accruing. Please pay as soon as possible to stop further fees.`
+      });
+      await storage.recordNotification({
+        leaseId: lease.id,
+        scheduleSeq: row.scheduleSeq,
+        kind,
+        sendDate: today,
+        emailSent: sent.email.sent,
+        smsSent: sent.sms.sent
+      });
+      await storage.raiseEscalationOnce({
+        leaseId: lease.id,
+        scheduleSeq: row.scheduleSeq,
+        kind: "PAYMENT_OVERDUE",
+        severity: "MEDIUM",
+        detail: `Installment #${row.scheduleSeq} ($${row.amount}) overdue since ${row.dueDate}.`
+      });
+      result.overdueMessages += 1;
+    }
+  }
+  if (past >= thresholdDays && lease.status === "ACTIVE") {
+    await storage.updateLease(lease.id, { status: "DEFAULTED" });
+    const raised = await storage.raiseEscalationOnce({
+      leaseId: lease.id,
+      scheduleSeq: row.scheduleSeq,
+      kind: "LEASE_DEFAULTED",
+      severity: "HIGH",
+      detail: `Lease defaulted: installment #${row.scheduleSeq} unpaid ${past} days (threshold ${thresholdDays}).`
+    });
+    if (raised) {
+      const already = await storage.hasNotification({
+        leaseId: lease.id,
+        scheduleSeq: null,
+        kind: "DEFAULTED",
+        sendDate: today
+      });
+      if (!already) {
+        const sent = await notifyGuest({
+          email: guest.email,
+          phone: guest.phone,
+          subject: "Your lease is in default",
+          body: `Hi ${guest.name}, your lease at ${property.name} is now in default due to an unpaid balance past ${thresholdDays} days. Please contact us immediately to resolve this.`
+        });
+        await storage.recordNotification({
+          leaseId: lease.id,
+          scheduleSeq: null,
+          kind: "DEFAULTED",
+          sendDate: today,
+          emailSent: sent.email.sent,
+          smsSent: sent.sms.sent
+        });
+      }
+      result.defaultsRaised += 1;
+    }
+  }
+}
+async function handleChargeFailure(args) {
+  const today = args.today ?? ymd(/* @__PURE__ */ new Date());
+  if (args.scheduleRow.status !== "FAILED") {
+    await storage.updateScheduleRow(args.scheduleRow.id, { status: "FAILED" });
+  }
+  await storage.raiseEscalationOnce({
+    leaseId: args.lease.id,
+    scheduleSeq: args.scheduleRow.scheduleSeq,
+    kind: "PAYMENT_FAILED",
+    severity: "HIGH",
+    detail: `Card-on-file charge FAILED for installment #${args.scheduleRow.scheduleSeq} ($${args.scheduleRow.amount})${args.reason ? `: ${args.reason}` : ""}.`
+  });
+  const already = await storage.hasNotification({
+    leaseId: args.lease.id,
+    scheduleSeq: args.scheduleRow.scheduleSeq,
+    kind: "PAYMENT_FAILED",
+    sendDate: today
+  });
+  if (!already) {
+    const fixUrl = `${publicBaseUrl()}/lease/pay?leaseId=${args.lease.id}`;
+    const sent = await notifyGuest({
+      email: args.guest.email,
+      phone: args.guest.phone,
+      subject: "Action needed \u2014 your rent payment failed",
+      body: `Hi ${args.guest.name}, we couldn't process your rent payment for installment #${args.scheduleRow.scheduleSeq}. Please update your card / retry here: ${fixUrl}`
+    });
+    await storage.recordNotification({
+      leaseId: args.lease.id,
+      scheduleSeq: args.scheduleRow.scheduleSeq,
+      kind: "PAYMENT_FAILED",
+      sendDate: today,
+      emailSent: sent.email.sent,
+      smsSent: sent.sms.sent
+    });
+  }
+}
+async function billAccruedLateFees(args) {
+  const fees = await storage.getAccruedLateFeesForSchedule(args.lease.id, args.scheduleSeq);
+  if (fees.length === 0) return { billed: false, amount: 0 };
+  const total = Math.round(fees.reduce((s, f) => s + parseFloat(f.amount), 0) * 100) / 100;
+  if (total <= 0) return { billed: false, amount: 0 };
+  if (!args.lease.stripeCustomerId || !args.lease.stripePaymentMethodId) {
+    return { billed: false, amount: total };
+  }
+  const metadata = buildLeaseChargeMetadata({
+    entity: args.property.entity,
+    property: args.property,
+    lease: args.lease,
+    rooms: args.rooms,
+    paymentKind: "LATE_FEE",
+    scheduleSeq: args.scheduleSeq
+  });
+  const pi = await chargeSavedCard({
+    amount: total,
+    customerId: args.lease.stripeCustomerId,
+    paymentMethodId: args.lease.stripePaymentMethodId,
+    metadata,
+    idempotencyKey: `lease-latefee-${args.lease.id}-seq-${args.scheduleSeq}`
+  });
+  for (const fee of fees) {
+    await storage.updateLateFee(fee.id, { status: "BILLED", stripePaymentIntentId: pi.id });
+  }
+  log(`billed $${total} late fees for lease ${args.lease.id} seq ${args.scheduleSeq} (${pi.id})`, "scheduler");
+  return { billed: true, amount: total, paymentIntentId: pi.id };
+}
+function publicBaseUrl() {
+  return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
+}
+
 // server/lib/leasePayments.ts
 var CHARGEABLE_STATUSES = /* @__PURE__ */ new Set(["SCHEDULED", "DUE"]);
 function chargeTotalFor(rentAmount) {
@@ -1034,6 +1551,11 @@ async function chargeInstallment(lease, property, rooms2, row, result) {
         stripePaymentIntentId: pi.id
       });
       result.charged += 1;
+      try {
+        await billAccruedLateFees({ lease, property, rooms: rooms2, scheduleSeq: row.scheduleSeq });
+      } catch (feeErr) {
+        log(`late-fee billing failed lease ${lease.id} seq ${row.scheduleSeq}: ${feeErr.message}`, "scheduler");
+      }
     } else {
       await storage.updateScheduleRow(row.id, {
         status: "DUE",
@@ -1043,12 +1565,25 @@ async function chargeInstallment(lease, property, rooms2, row, result) {
     }
   } catch (err) {
     const piId = err?.raw?.payment_intent?.id;
-    await storage.updateScheduleRow(row.id, {
+    const failedRow = await storage.updateScheduleRow(row.id, {
       status: "FAILED",
       stripePaymentIntentId: piId ?? row.stripePaymentIntentId ?? null
-    });
+    }) ?? row;
     result.failed += 1;
     log(`rent charge FAILED lease ${lease.id} seq ${row.scheduleSeq}: ${err.message}`, "scheduler");
+    try {
+      const guest = await storage.getGuest(lease.guestId);
+      if (guest) {
+        await handleChargeFailure({
+          lease,
+          guest,
+          scheduleRow: failedRow,
+          reason: err.message
+        });
+      }
+    } catch (notifyErr) {
+      log(`failure-path error lease ${lease.id} seq ${row.scheduleSeq}: ${notifyErr.message}`, "scheduler");
+    }
   }
 }
 function todayYmd() {
@@ -1063,6 +1598,7 @@ async function handler(req, res) {
   }
   try {
     const rent = await runScheduledRentSweep();
+    const dunning = await runDunningSweep();
     const active = (await storage.getBookings({ status: "ACTIVE" })).length;
     if (active > 0) log(`weeklyRentRun: ${active} active co-living booking(s) checked`, "cron");
     const pending = await storage.getPendingManualPayments();
@@ -1070,7 +1606,7 @@ async function handler(req, res) {
       log(`paymentStatusCheck: ${pending.length} payment(s) awaiting reconciliation`, "cron");
     }
     const snapshot = await buildAndPushSnapshot();
-    return res.json({ ok: true, rent, active, pending: pending.length, snapshot });
+    return res.json({ ok: true, rent, dunning, active, pending: pending.length, snapshot });
   } catch (err) {
     log(`sweep error: ${err.message}`, "cron");
     return res.status(500).json({ ok: false, message: err.message });

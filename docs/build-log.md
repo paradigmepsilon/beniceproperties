@@ -368,4 +368,94 @@ artifact; the script is the applied delta.)
 
 **PHASE 4: BUILT — test-mode green — awaiting "go" review (no live charge run)**
 
+> Phase 4 reviewed; user replied "go". Stripe confirmed in TEST mode before build.
+
+---
+
+## PHASE 5 — Reminders, Failures, Late Fees, Defaults  🛑 GATE (built; awaiting review)
+
+> All TEST mode. No live charge. Default threshold set to **7 days** (Alex).
+
+**What was built**
+- `server/lib/notifications.ts` (new) — email (Nodemailer/SMTP, incl. SendGrid SMTP)
+  + SMS (Twilio), **env-gated exactly like Stripe/UO**: with creds it sends, without
+  them it logs a dry-run and returns `{sent:false}` (never throws). `notifyGuest`
+  fans out to both channels. So the whole dunning machine runs/tests without creds.
+- `server/lib/dunning.ts` (new) — the dunning state machine:
+  - `runDunningSweep(today)` per ACTIVE lease, per open installment:
+    **Reminders** 7d/3d/day-of before due (email+SMS), each sent once
+    (notification_log dedupe), suppressed once PAID. **Overdue** (from day-after-due):
+    marks the row LATE, accrues **$25/day** (one row/day, idempotent via the unique
+    accrual guard, no cap), and for the first 3 days messages the guest daily +
+    raises a MEDIUM UO escalation. **Default**: unpaid ≥ threshold days → lease
+    DEFAULTED + a HIGH UO escalation (once).
+  - `handleChargeFailure()` — card decline: row FAILED, HIGH UO escalation
+    immediately, email+SMS payment-fix link (`/lease/pay?leaseId=`).
+  - `billAccruedLateFees()` — when an installment is PAID, charges all its ACCRUED
+    fees as a **single SEPARATE `LATE_FEE` PaymentIntent** (never folded into rent),
+    marks the fee rows BILLED. Skips manual-pay leases (no saved card) → fees stay
+    ACCRUED for manual settlement.
+- Schema (additive): `notification_log` (idempotent sends), `app_settings`
+  (admin-configurable values), `uo_escalations` (failed-payment/overdue/default
+  flags BNP raises for UO to consume + resolve in Phase 8). Storage methods incl.
+  `accrueLateFeeOnce`, `hasNotification`/`recordNotification`,
+  `getSettingNumber`/`setSetting`, `raiseEscalationOnce`.
+- Wiring: rent sweep now fires `handleChargeFailure` on decline and
+  `billAccruedLateFees` on success; webhook does the same for async
+  succeed/fail. Dunning sweep runs in both scheduler spines (in-process +
+  Vercel cron). Admin routes: GET/PUT default-threshold, GET escalations.
+
+**Files touched**
+- `server/lib/notifications.ts` (new), `server/lib/dunning.ts` (new),
+  `shared/schema.ts` (+3 tables, +enums/consts), `server/storage.ts` (+methods),
+  `server/lib/leasePayments.ts` (failure + late-fee hooks), `server/routes.ts`
+  (webhook + admin routes), `server/scheduler.ts`, `api-src/cron/sweep.ts`,
+  `server/lib/dunning.test.ts` (new), `scripts/push-lease-schema.mjs` (+3 tables),
+  `scripts/stripe-payments-proof.mjs` (renamed; +late-fee), bundled `api/*`,
+  `package.json` (+nodemailer, +twilio, +@types/nodemailer)
+
+**How it was tested (TEST-MODE evidence)**
+- Unit: `npm test` → **71 passed** (+15 dunning: reminder windows + dedupe + PAID
+  suppression, overdue LATE + daily-3 messaging, $25/day accrual + idempotency,
+  default at threshold + custom threshold, failure path, separate late-fee billing).
+- Live test-mode (`scripts/stripe-payments-proof.mjs`): first payment, off-session
+  rent, idempotency (same key → same PI), **and a separate LATE_FEE charge**
+  (`pi_3Tn4EZ…`, $50, `payment_kind=LATE_FEE`) — all succeeded.
+- `tsc` 0 · `build` 0 · `build:api` 0. 3 new tables applied to the DB (additive,
+  verified); drizzle baseline regenerated (15 tables, 0 destructive).
+
+**State machines (as built)**
+- `payment_schedule`: `SCHEDULED`/`DUE` →(charge ok)`PAID` · →(decline)`FAILED`
+  →(failure path) UO flag + fix link · →(day-after-due, sweep)`LATE` (+$25/day
+  accrual) · admin `WAIVED`. PAID/WAIVED are terminal & suppress all dunning.
+- `late_fees`: `ACCRUED` (one/day) →(installment paid, card on file)`BILLED` via a
+  separate PI · `WAIVED` (Phase 8). `PAID` reserved for manual settlement.
+- `uo_escalations`: `OPEN` →(Phase 8 write-back)`ACKNOWLEDGED`/`RESOLVED`. Deduped:
+  one OPEN per (lease, seq, kind).
+- `lease`: `ACTIVE` →(unpaid ≥ threshold)`DEFAULTED` (+HIGH escalation).
+
+**Things I was unsure about → choice made**
+- *Email/SMS deps*: spec says "reuse TRAD's Nodemailer/SendGrid + Twilio," but none
+  were installed and no creds exist. **Installed `nodemailer` + `twilio`**, gated on
+  env (dry-run + log without creds — same pattern as Stripe/UO). Flagged as added
+  deps. Real sends light up when you set creds (see `notifications.ts` header for
+  the env names).
+- *Default threshold*: **7 days** (your answer), stored in `app_settings`
+  (`defaulted_threshold_days`), editable via the admin route — not hard-coded.
+- *Late-fee billing trigger*: billed when the rent installment is PAID (sweep or
+  webhook). For manual-pay leases with no saved card, fees stay ACCRUED for the UO
+  "Mark Paid" flow (Phase 8) to settle.
+- *Cron cadence*: dunning rides the same daily Vercel cron as rent. Reminders are
+  date-window based and the accrual/sends are idempotent per day, so daily is
+  correct; finer cadence is unnecessary.
+
+**Deferred / suggested**
+- Wire real SendGrid + Twilio creds in `.env` before go-live (names in
+  `notifications.ts`). Until then, sends dry-run to the log.
+- UO consumption + resolution of `uo_escalations`, and "Waive late fee" / "Mark
+  Paid" write-backs → **Phase 8**.
+- Guest portal surfacing of schedule/late status → Phase 6.
+
+**PHASE 5: BUILT — test-mode green — awaiting "go" review (no live charge run)**
+
 ---

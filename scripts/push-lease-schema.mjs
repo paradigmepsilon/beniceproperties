@@ -106,6 +106,45 @@ const statements = [
   `CREATE INDEX IF NOT EXISTS "late_fees_lease_idx" ON "late_fees" ("lease_id")`,
   `CREATE INDEX IF NOT EXISTS "late_fees_status_idx" ON "late_fees" ("status")`,
   `CREATE INDEX IF NOT EXISTS "late_fees_unique_accrual_idx" ON "late_fees" ("lease_id","schedule_seq","accrual_date")`,
+
+  // --- Phase 5: notification_log ---
+  `CREATE TABLE IF NOT EXISTS "notification_log" (
+    "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    "lease_id" varchar NOT NULL,
+    "schedule_seq" integer,
+    "kind" text NOT NULL,
+    "send_date" date NOT NULL,
+    "email_sent" boolean NOT NULL DEFAULT false,
+    "sms_sent" boolean NOT NULL DEFAULT false,
+    "created_at" timestamp DEFAULT now() NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS "notification_log_lease_idx" ON "notification_log" ("lease_id")`,
+  `CREATE INDEX IF NOT EXISTS "notification_log_dedupe_idx" ON "notification_log" ("lease_id","schedule_seq","kind","send_date")`,
+
+  // --- Phase 5: app_settings ---
+  `CREATE TABLE IF NOT EXISTS "app_settings" (
+    "key" varchar PRIMARY KEY NOT NULL,
+    "value" text NOT NULL,
+    "updated_at" timestamp DEFAULT now() NOT NULL
+  )`,
+
+  // --- Phase 5: uo_escalations ---
+  `CREATE TABLE IF NOT EXISTS "uo_escalations" (
+    "id" varchar PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+    "lease_id" varchar NOT NULL,
+    "schedule_seq" integer,
+    "kind" text NOT NULL,
+    "severity" text NOT NULL DEFAULT 'MEDIUM',
+    "status" text NOT NULL DEFAULT 'OPEN',
+    "detail" text,
+    "resolved_at" timestamp,
+    "resolved_by" text,
+    "created_at" timestamp DEFAULT now() NOT NULL,
+    "updated_at" timestamp DEFAULT now() NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS "uo_escalations_lease_idx" ON "uo_escalations" ("lease_id")`,
+  `CREATE INDEX IF NOT EXISTS "uo_escalations_status_idx" ON "uo_escalations" ("status")`,
+  `CREATE INDEX IF NOT EXISTS "uo_escalations_open_kind_idx" ON "uo_escalations" ("lease_id","schedule_seq","kind","status")`,
 ];
 
 async function run() {
