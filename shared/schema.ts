@@ -157,6 +157,14 @@ export const properties = pgTable("properties", {
   // STR nightly base price. Null/0 for COLIVING parents (priced per-room).
   basePrice: decimal("base_price", { precision: 10, scale: 2 }),
   cleaningFee: decimal("cleaning_fee", { precision: 10, scale: 2 }).default("0"),
+  // Day/week/month rates (added 2026-06-27, live via additive migration). The
+  // booking flow auto-selects a tier by stay length (>=28 nights monthly, >=7
+  // weekly, else daily) and prorates per night (tierRate / tierDays). Nullable;
+  // chooseRate() falls back to the next shorter tier, and dailyRate falls back to
+  // basePrice for back-compat. See shared/rateSelection.ts.
+  dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
+  weeklyRate: decimal("weekly_rate", { precision: 10, scale: 2 }),
+  monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -191,6 +199,11 @@ export const rooms = pgTable(
     photos: jsonb("photos").$type<string[]>().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
     depositAmount: decimal("deposit_amount", { precision: 10, scale: 2 }).notNull(),
+    // Day/month rates (added 2026-06-27). weekly_rent is the weekly value used by
+    // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
+    // next shorter tier. See shared/rateSelection.ts.
+    dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
+    monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
     // "AVAILABLE" | "OCCUPIED" | "HOLD"
     status: text("status").notNull().default("AVAILABLE"),
     createdAt: timestamp("created_at").defaultNow().notNull(),

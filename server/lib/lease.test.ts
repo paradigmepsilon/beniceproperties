@@ -115,3 +115,78 @@ describe("buildLeaseQuote — guards", () => {
     ).rejects.toThrow(/not found in this property/i);
   });
 });
+
+// Phase 3 — auto tier selection by stay length (cadence is derived, not sent).
+function tieredRoom(id: string, name: string, weekly: string, daily?: string, monthly?: string) {
+  return {
+    id, name, roomNumber: name.slice(-1), status: "AVAILABLE", propertyId: "prop-1",
+    weeklyRent: weekly, dailyRate: daily ?? null, monthlyRate: monthly ?? null,
+  };
+}
+
+describe("buildLeaseQuote — auto tier by stay length", () => {
+  it("a 28+ day term uses the MONTHLY rate and bills monthly", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    // monthly 2240 → effectiveNightly 80; 28-day periods
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2240"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28", // 28 days
+    });
+    expect(q.cadence).toBe("MONTHLY");
+    expect(q.schedule).toHaveLength(1);
+    expect(q.schedule[0].amount).toBe(2240); // 80 × 28
+    expect(q.totalLeaseValue).toBe(2240);
+  });
+
+  it("a 7..27 day term uses the WEEKLY rate", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2240"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", // 14 days
+    });
+    expect(q.cadence).toBe("WEEKLY");
+    expect(q.schedule.every((r) => r.amount === 560)).toBe(true); // 80 × 7
+  });
+
+  it("a sub-7 day term uses the DAILY rate, billed weekly", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2240"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-04", // 4 days
+    });
+    expect(q.cadence).toBe("WEEKLY"); // daily tier still bills weekly
+    expect(q.dueToday).toBe(400); // 100 × 4 (one short period)
+  });
+
+  it("falls back to weekly when the monthly rate is missing", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560")); // only weekly set
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28", // 28 days → monthly requested
+    });
+    expect(q.cadence).toBe("WEEKLY"); // fell back
+    expect(q.schedule.every((r) => r.amount === 560)).toBe(true);
+  });
+
+  it("legacy weekly-only listing bills identically to pre-Phase-3", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "250")); // weekly_rent only
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28",
+    });
+    expect(q.schedule).toHaveLength(4);
+    expect(q.schedule.every((r) => r.amount === 250)).toBe(true);
+    expect(q.totalLeaseValue).toBe(1000);
+  });
+
+  it("quote==charge invariant: totalLeaseValue equals the sum of persisted amounts", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "555", "95", "2100"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-08-09", // 40 days → monthly
+    });
+    const sum = Math.round(q.schedule.reduce((a, r) => a + r.amount, 0) * 100) / 100;
+    expect(q.totalLeaseValue).toBe(sum);
+    expect(q.dueToday).toBe(q.schedule[0].amount);
+  });
+});

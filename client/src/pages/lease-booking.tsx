@@ -59,13 +59,13 @@ export default function LeaseBooking() {
   const today = new Date().toISOString().slice(0, 10);
   const [startDate, setStartDate] = useState(today);
   const [endDate, setEndDate] = useState("");
-  const [cadence, setCadence] = useState<Cadence>("WEEKLY");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
 
   const datesValid = Boolean(startDate && endDate && endDate >= startDate);
-  const quoteBody = { propertyId, roomIds, startDate, endDate, cadence };
+  // Cadence is auto-derived server-side from stay length (returned on the quote).
+  const quoteBody = { propertyId, roomIds, startDate, endDate };
 
   const {
     data: quote,
@@ -86,7 +86,7 @@ export default function LeaseBooking() {
   function proceedToLease() {
     // Phase 3 wires the lease document + signature. Hand off the committed
     // selection so the next step can create the DRAFT lease from it.
-    const qs = new URLSearchParams({ propertyId, startDate, endDate, cadence, name, email });
+    const qs = new URLSearchParams({ propertyId, startDate, endDate, name, email });
     if (phone) qs.set("phone", phone);
     for (const id of roomIds) qs.append("roomId", id);
     navigate(`/lease/sign?${qs.toString()}`);
@@ -115,8 +115,9 @@ export default function LeaseBooking() {
 
         <h1 className="font-display text-2xl font-semibold tracking-tight">Set up your lease</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Choose your dates and payment cadence. You'll see every payment before you commit — and
-          you won't be charged until you sign.
+          Choose your dates. We pick the best rate for your stay length automatically — longer
+          stays get the weekly or monthly rate. You'll see every payment before you commit, and you
+          won't be charged until you sign.
         </p>
 
         <div className="mt-6 grid gap-8 lg:grid-cols-[1fr_400px]">
@@ -155,26 +156,20 @@ export default function LeaseBooking() {
               </CardContent>
             </Card>
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Payment cadence</CardTitle>
-              </CardHeader>
-              <CardContent className="grid grid-cols-3 gap-2">
-                {PAYMENT_CADENCES.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setCadence(c)}
-                    className={`rounded-md border p-3 text-center text-sm transition-colors ${
-                      cadence === c ? "border-primary bg-accent font-medium" : "hover:bg-accent/50"
-                    }`}
-                    data-testid={`cadence-${c}`}
-                  >
-                    {CADENCE_LABELS[c]}
-                  </button>
-                ))}
-              </CardContent>
-            </Card>
+            {quote && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Your rate</CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm text-muted-foreground">
+                  Based on a {quote.termDays}-night stay, you're getting the{" "}
+                  <span className="font-medium text-foreground">
+                    {CADENCE_LABELS[quote.cadence]?.toLowerCase() ?? quote.cadence.toLowerCase()}
+                  </span>{" "}
+                  rate, billed {CADENCE_LABELS[quote.cadence]?.toLowerCase() ?? "per period"}.
+                </CardContent>
+              </Card>
+            )}
 
             <Card>
               <CardHeader>

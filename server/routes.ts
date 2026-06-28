@@ -527,6 +527,7 @@ export async function registerRoutes(app: Express): Promise<void> {
                 entity: resolved.property.entity,
                 property: resolved.property,
                 paymentKind: "BOOKING_DEPOSIT",
+                rateCadence: resolved.rateTier ?? null,
               });
 
         const session = await createCheckoutSession({

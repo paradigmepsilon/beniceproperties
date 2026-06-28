@@ -13,6 +13,7 @@ import {
   calculateWeeklyCharge,
   type PaymentMethod,
 } from "@shared/pricing";
+import { chooseRate, type RateTier } from "@shared/rateSelection";
 import type { QuoteResponse } from "@shared/api-types";
 import { storage } from "../storage";
 import type { Property, Room } from "@shared/schema";
@@ -30,10 +31,29 @@ function nights(checkIn: string, checkOut: string): number {
   return Math.max(0, n);
 }
 
-/** STR nightly subtotal: nights × property base price. */
-function strBaseTotal(property: Property, n: number): number {
-  const nightly = property.basePrice ? parseFloat(property.basePrice) : 0;
-  return nightly * n;
+/**
+ * STR base subtotal for `n` nights, using the day/week/month tier auto-selected
+ * by stay length (see shared/rateSelection.ts). For back-compat, the legacy
+ * `base_price` is passed as the DAILY rate so listings without the new columns
+ * bill exactly as before (nightly × n). Returns the rounded subtotal + the tier.
+ */
+function strBaseTotal(
+  property: Property,
+  n: number,
+): { baseAmount: number; tier: RateTier; effectiveNightly: number } {
+  const chosen = chooseRate({
+    nights: n,
+    // base_price is the legacy nightly; treat it as the daily-tier rate so a
+    // property with only base_price set keeps billing nightly × n.
+    daily: property.dailyRate ?? property.basePrice,
+    weekly: property.weeklyRate,
+    monthly: property.monthlyRate,
+  });
+  return {
+    baseAmount: Math.round(chosen.effectiveNightly * n * 100) / 100,
+    tier: chosen.tier,
+    effectiveNightly: chosen.effectiveNightly,
+  };
 }
 
 export class BookingError extends Error {
@@ -73,9 +93,13 @@ export interface ResolvedBooking {
   room?: Room;
   checkIn: string;
   checkOut: string | null;
-  baseAmount: number; // STR: nightly total. COLIVING: deposit.
+  baseAmount: number; // STR: stay total at the chosen tier. COLIVING: deposit.
   cleaningFee: number;
   nights?: number;
+  /** STR only: the rate tier the stay length landed in. */
+  rateTier?: RateTier;
+  /** STR only: per-night price the stay billed at (tierRate / tierDays). */
+  effectiveNightly?: number;
 }
 
 /**
@@ -122,14 +146,17 @@ export async function resolveBooking(input: {
   if (await strHasConflict(property.id, input.checkIn, input.checkOut)) {
     throw new BookingError("Those dates are not available", 409);
   }
+  const str = strBaseTotal(property, n);
   return {
     model: "STR",
     property,
     checkIn: input.checkIn,
     checkOut: input.checkOut,
-    baseAmount: strBaseTotal(property, n),
+    baseAmount: str.baseAmount,
     cleaningFee: property.cleaningFee ? parseFloat(property.cleaningFee) : 0,
     nights: n,
+    rateTier: str.tier,
+    effectiveNightly: str.effectiveNightly,
   };
 }
 
@@ -144,8 +171,13 @@ export function buildQuote(
       cleaningFee: resolved.cleaningFee,
       paymentMethod,
     });
+    const tierLabel =
+      resolved.rateTier === "MONTHLY" ? " @ monthly rate" : resolved.rateTier === "WEEKLY" ? " @ weekly rate" : "";
     const lines = [
-      { label: `Stay (${resolved.nights} night${resolved.nights === 1 ? "" : "s"})`, amount: resolved.baseAmount },
+      {
+        label: `Stay (${resolved.nights} night${resolved.nights === 1 ? "" : "s"}${tierLabel})`,
+        amount: resolved.baseAmount,
+      },
     ];
     if (resolved.cleaningFee > 0) lines.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
     if (b.tax > 0) lines.push({ label: "Tax", amount: b.tax });

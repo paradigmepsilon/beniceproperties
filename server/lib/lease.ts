@@ -10,15 +10,47 @@
 // =============================================================================
 
 import {
-  generateSchedule,
+  generateTierSchedule,
   inclusiveDays,
   ScheduleError,
   type PaymentCadence,
 } from "@shared/leaseSchedule";
+import { chooseRate, RateError, type RateTier } from "@shared/rateSelection";
 import type { LeaseQuoteResponse, LeaseScheduleLine } from "@shared/api-types";
 import { MAX_LEASE_DAYS } from "@shared/schema";
 import { storage } from "../storage";
 import type { Room } from "@shared/schema";
+
+/**
+ * Charge cadence (how often the card is billed) derived from the rate tier.
+ * Daily-tier stays still bill weekly — charging every night is impractical — so
+ * the tier sets the PRICE while this sets the billing interval.
+ */
+const TIER_TO_CADENCE: Record<RateTier, PaymentCadence> = {
+  DAILY: "WEEKLY",
+  WEEKLY: "WEEKLY",
+  MONTHLY: "MONTHLY",
+};
+const CADENCE_PERIOD_DAYS: Record<PaymentCadence, number> = {
+  WEEKLY: 7,
+  BIWEEKLY: 14,
+  MONTHLY: 28,
+};
+
+/** Sum a per-room rate column across rooms; null if no room has it set. */
+function sumRate(rooms: Room[], pick: (r: Room) => string | null): number | null {
+  let total = 0;
+  let any = false;
+  for (const r of rooms) {
+    const v = pick(r);
+    const n = v == null ? NaN : parseFloat(v);
+    if (Number.isFinite(n) && n > 0) {
+      total += n;
+      any = true;
+    }
+  }
+  return any ? Math.round(total * 100) / 100 : null;
+}
 
 export class LeaseError extends Error {
   status: number;
@@ -33,7 +65,8 @@ export interface LeaseQuoteInput {
   roomIds: string[];
   startDate: string;
   endDate: string;
-  cadence: PaymentCadence;
+  /** Deprecated: cadence is now auto-derived from stay length. Ignored if sent. */
+  cadence?: PaymentCadence;
 }
 
 /**
@@ -85,20 +118,38 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     }
   }
 
-  // Combined weekly rate across rooms. The generator multiplies a single weekly
-  // rate by roomCount, so we pass the summed rate with roomCount = 1 to support
-  // rooms with DIFFERENT weekly rents correctly.
-  const weeklyRateTotal =
-    Math.round(rooms.reduce((sum, r) => sum + parseFloat(r.weeklyRent), 0) * 100) / 100;
+  // Combined per-tier rates across rooms (supports rooms with different rents).
+  // weekly falls back from room.weekly_rent (always set); daily/monthly are the
+  // new optional tiers.
+  const weeklyRateTotal = sumRate(rooms, (r) => r.weeklyRent) ?? 0;
+  const dailyTotal = sumRate(rooms, (r) => r.dailyRate);
+  const monthlyTotal = sumRate(rooms, (r) => r.monthlyRate);
 
+  // Auto-select the tier by term length (>=28 monthly, >=7 weekly, else daily),
+  // falling back to a shorter tier if the chosen one isn't priced. This REPLACES
+  // the old guest-picked cadence — stay length now drives both rate and billing.
+  let chosen;
+  try {
+    chosen = chooseRate({
+      nights: termDays,
+      daily: dailyTotal,
+      weekly: weeklyRateTotal,
+      monthly: monthlyTotal,
+    });
+  } catch (err) {
+    if (err instanceof RateError) throw new LeaseError(err.message, 422);
+    throw err;
+  }
+
+  const cadence = TIER_TO_CADENCE[chosen.tier];
   let generated;
   try {
-    generated = generateSchedule({
+    generated = generateTierSchedule({
       startDate: input.startDate,
       endDate: input.endDate,
-      cadence: input.cadence,
-      weeklyRate: weeklyRateTotal,
-      roomCount: 1, // weeklyRateTotal already sums all rooms
+      cadence,
+      effectiveNightly: chosen.effectiveNightly,
+      periodDays: CADENCE_PERIOD_DAYS[cadence],
     });
   } catch (err) {
     if (err instanceof ScheduleError) throw new LeaseError(err.message, 422);
@@ -125,7 +176,7 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     })),
     startDate: input.startDate,
     endDate: input.endDate,
-    cadence: input.cadence,
+    cadence,
     weeklyRateTotal,
     termDays: generated.totalDays,
     schedule,

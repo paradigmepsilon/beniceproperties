@@ -114,12 +114,35 @@ export default function PropertyDetail() {
           {property.type === "STR" && (
             <aside>
               <div className="bnp-card sticky top-24 p-6">
-                <div className="flex items-baseline gap-1">
-                  <span className="font-display text-2xl font-semibold">
-                    {property.basePrice ? money(property.basePrice) : "—"}
-                  </span>
-                  <span className="text-muted-foreground">/ night</span>
-                </div>
+                {(() => {
+                  // Lowest effective nightly across the configured tiers — the
+                  // "from" price. Longer stays auto-apply weekly/monthly at checkout.
+                  const cand = [
+                    property.dailyRate ?? property.basePrice,
+                    property.weeklyRate ? String(parseFloat(property.weeklyRate) / 7) : null,
+                    property.monthlyRate ? String(parseFloat(property.monthlyRate) / 28) : null,
+                  ]
+                    .map((v) => (v ? parseFloat(v) : NaN))
+                    .filter((n) => Number.isFinite(n) && n > 0);
+                  const from = cand.length ? Math.min(...cand) : null;
+                  const multiTier = cand.length > 1;
+                  return (
+                    <div>
+                      <div className="flex items-baseline gap-1">
+                        {multiTier && <span className="text-muted-foreground">from</span>}
+                        <span className="font-display text-2xl font-semibold">
+                          {from != null ? money(String(from)) : "—"}
+                        </span>
+                        <span className="text-muted-foreground">/ night</span>
+                      </div>
+                      {multiTier && (
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Weekly &amp; monthly rates apply automatically for longer stays.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <div>
                     <Label htmlFor="checkIn" className="text-xs">Check-in</Label>

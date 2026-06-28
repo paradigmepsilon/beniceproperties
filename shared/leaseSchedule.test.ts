@@ -181,3 +181,69 @@ describe("generateSchedule — invariants & guards", () => {
     expect(s.installments.length).toBeGreaterThan(0);
   });
 });
+
+// Phase 3 — tier-driven schedule (effectiveNightly × periodDays).
+import { generateTierSchedule } from "./leaseSchedule";
+
+describe("generateTierSchedule — per-night × period", () => {
+  it("weekly tier: 28-day term → 4 installments of effectiveNightly×7", () => {
+    // 80/night, weekly periods
+    const s = generateTierSchedule({
+      startDate: "2026-07-01",
+      endDate: "2026-07-28",
+      cadence: "WEEKLY",
+      effectiveNightly: 80,
+      periodDays: 7,
+    });
+    expect(s.installments).toHaveLength(4);
+    for (const i of s.installments) expect(i.amount).toBe(560); // 80×7
+    expect(s.totalLeaseValue).toBe(2240);
+  });
+
+  it("monthly tier: 28-day periods, day-prorated tail", () => {
+    // 40-night stay @ 80/night monthly, periodDays 28 → 1 full (28d, 2240) + tail (12d, 960)
+    const s = generateTierSchedule({
+      startDate: "2026-07-01",
+      endDate: "2026-08-09", // 40 inclusive days
+      cadence: "MONTHLY",
+      effectiveNightly: 80,
+      periodDays: 28,
+    });
+    expect(s.totalDays).toBe(40);
+    expect(s.installments[0].amount).toBe(2240); // 28×80
+    const tail = s.installments.find((i) => i.prorated)!;
+    expect(tail.daysCovered).toBe(12);
+    expect(tail.amount).toBe(960); // 12×80
+    // invariant: total == sum of rows
+    expect(s.totalLeaseValue).toBe(
+      Math.round(s.installments.reduce((a, i) => a + i.amount, 0) * 100) / 100,
+    );
+  });
+
+  it("total always equals the sum of installments across odd lengths", () => {
+    for (const days of [5, 9, 13, 31, 45]) {
+      const end = new Date(Date.UTC(2026, 6, 1) + (days - 1) * 86400000)
+        .toISOString()
+        .slice(0, 10);
+      const s = generateTierSchedule({
+        startDate: "2026-07-01",
+        endDate: end,
+        cadence: "WEEKLY",
+        effectiveNightly: 79.2857,
+        periodDays: 7,
+      });
+      expect(s.totalLeaseValue).toBe(
+        Math.round(s.installments.reduce((a, i) => a + i.amount, 0) * 100) / 100,
+      );
+    }
+  });
+
+  it("rejects bad input", () => {
+    expect(() =>
+      generateTierSchedule({ startDate: "2026-07-01", endDate: "2026-07-10", cadence: "WEEKLY", effectiveNightly: 0, periodDays: 7 }),
+    ).toThrow(ScheduleError);
+    expect(() =>
+      generateTierSchedule({ startDate: "2026-07-01", endDate: "2026-07-10", cadence: "WEEKLY", effectiveNightly: 80, periodDays: 0 }),
+    ).toThrow(ScheduleError);
+  });
+});

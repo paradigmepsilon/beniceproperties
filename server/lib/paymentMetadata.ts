@@ -46,6 +46,8 @@ export interface StripeChargeMetadata {
   lease_id: string;
   payment_kind: PaymentKind;
   schedule_seq: string;
+  /** Rate tier the stay was priced at: "DAILY" | "WEEKLY" | "MONTHLY" | "null". */
+  rate_cadence: string;
   [key: string]: string;
 }
 
@@ -70,6 +72,8 @@ export function buildLeaseChargeMetadata(args: {
   rooms: Pick<LeaseRoom, "roomId" | "roomNameSnapshot" | "roomNumberSnapshot">[];
   paymentKind: PaymentKind;
   scheduleSeq: number | null;
+  /** Rate tier this lease was priced at; omit/null for legacy weekly leases. */
+  rateCadence?: string | null;
 }): StripeChargeMetadata {
   const roomIds = args.rooms.map((r) => r.roomId).join(",");
   const roomNames = args.rooms.map((r) => r.roomNameSnapshot).join(",");
@@ -86,6 +90,7 @@ export function buildLeaseChargeMetadata(args: {
     lease_id: str(args.lease.id),
     payment_kind: args.paymentKind,
     schedule_seq: str(args.scheduleSeq),
+    rate_cadence: str(args.rateCadence ?? null),
   };
 }
 
@@ -96,6 +101,8 @@ export function buildStrChargeMetadata(args: {
   entity: string;
   property: Pick<Property, "id" | "name" | "type">;
   paymentKind: Extract<PaymentKind, "BOOKING_DEPOSIT" | "MANUAL_RECONCILE">;
+  /** Rate tier the stay was priced at (DAILY|WEEKLY|MONTHLY); omit for null. */
+  rateCadence?: string | null;
 }): StripeChargeMetadata {
   return {
     entity: str(args.entity),
@@ -108,6 +115,7 @@ export function buildStrChargeMetadata(args: {
     lease_id: NULL,
     payment_kind: args.paymentKind,
     schedule_seq: NULL,
+    rate_cadence: str(args.rateCadence ?? null),
   };
 }
 

@@ -25,7 +25,6 @@
 
 import {
   CADENCE_DAYS,
-  CADENCE_WEEKS,
   MAX_LEASE_DAYS,
   type PAYMENT_CADENCES,
 } from "./schema";
@@ -43,6 +42,23 @@ export interface ScheduleInput {
   weeklyRate: number;
   /** Number of rooms on the lease (≥ 1). */
   roomCount: number;
+}
+
+/**
+ * Phase-3 tier-driven schedule input. The amount math is "per-night × period":
+ * each full installment = effectiveNightly × periodDays, the trailing partial =
+ * effectiveNightly × remainingDays. This generalizes the weekly-only model
+ * (where effectiveNightly was implicitly weeklyRate/7 and periodDays 7|14|28).
+ */
+export interface TierScheduleInput {
+  startDate: string;
+  endDate: string;
+  /** Per-night price the whole stay bills at (tierRate / tierDays). */
+  effectiveNightly: number;
+  /** Days in one billing period (1 daily, 7 weekly, 28 monthly). */
+  periodDays: number;
+  /** Cadence label carried through for the proration note. */
+  cadence: PaymentCadence;
 }
 
 export interface ScheduleInstallment {
@@ -106,6 +122,33 @@ export function generateSchedule(input: ScheduleInput): GeneratedSchedule {
   if (!(roomCount >= 1)) throw new ScheduleError("roomCount must be at least 1");
   if (!(weeklyRate > 0)) throw new ScheduleError("weeklyRate must be positive");
 
+  // The weekly model is the tier engine with effectiveNightly = weeklyRate/7 and
+  // periodDays = the cadence's day count. This preserves all existing behavior
+  // (full period = weeklyRate × CADENCE_WEEKS × rooms; proration = perDay × days).
+  return buildSchedule({
+    startDate,
+    endDate,
+    cadence,
+    effectiveNightly: (weeklyRate * roomCount) / 7,
+    periodDays: CADENCE_DAYS[cadence], // 7 | 14 | 28
+  });
+}
+
+/**
+ * Phase-3 tier-driven schedule: full installment = effectiveNightly × periodDays,
+ * trailing partial = effectiveNightly × remainingDays. Used by the co-living lease
+ * flow once the rate tier is chosen by stay length.
+ */
+export function generateTierSchedule(input: TierScheduleInput): GeneratedSchedule {
+  if (!(input.effectiveNightly > 0)) throw new ScheduleError("effectiveNightly must be positive");
+  if (!(input.periodDays >= 1)) throw new ScheduleError("periodDays must be at least 1");
+  return buildSchedule(input);
+}
+
+/** Shared engine: lay out installments by period, prorate the trailing tail. */
+function buildSchedule(input: TierScheduleInput): GeneratedSchedule {
+  const { startDate, endDate, cadence, effectiveNightly, periodDays } = input;
+
   const start = parseYmd(startDate);
   const end = parseYmd(endDate);
   if (end.getTime() < start.getTime()) {
@@ -117,9 +160,8 @@ export function generateSchedule(input: ScheduleInput): GeneratedSchedule {
     throw new ScheduleError(`Lease term ${totalDays} days exceeds the ${MAX_LEASE_DAYS}-day maximum`);
   }
 
-  const periodDays = CADENCE_DAYS[cadence]; // 7 | 14 | 28
-  const fullPeriodAmount = roundCurrency(weeklyRate * CADENCE_WEEKS[cadence] * roomCount);
-  const perDayRate = (weeklyRate * roomCount) / 7;
+  const fullPeriodAmount = roundCurrency(effectiveNightly * periodDays);
+  const perDayRate = effectiveNightly;
 
   const installments: ScheduleInstallment[] = [];
   let seq = 1;

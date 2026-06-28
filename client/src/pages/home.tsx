@@ -120,11 +120,25 @@ export default function Home() {
                     <MapPin className="h-3.5 w-3.5" /> {p.location}
                   </p>
                   <p className="mt-1.5 text-sm">
-                    {p.type === "STR" && p.basePrice ? (
-                      <>
-                        <span className="font-semibold">{money(p.basePrice)}</span>
-                        <span className="text-muted-foreground"> / night</span>
-                      </>
+                    {p.type === "STR" ? (
+                      (() => {
+                        const cand = [
+                          p.dailyRate ?? p.basePrice,
+                          p.weeklyRate ? String(parseFloat(p.weeklyRate) / 7) : null,
+                          p.monthlyRate ? String(parseFloat(p.monthlyRate) / 28) : null,
+                        ]
+                          .map((v) => (v ? parseFloat(v) : NaN))
+                          .filter((n) => Number.isFinite(n) && n > 0);
+                        const from = cand.length ? Math.min(...cand) : null;
+                        if (from == null) return <span className="font-medium text-foreground">Available</span>;
+                        return (
+                          <>
+                            {cand.length > 1 && <span className="text-muted-foreground">from </span>}
+                            <span className="font-semibold">{money(String(from))}</span>
+                            <span className="text-muted-foreground"> / night</span>
+                          </>
+                        );
+                      })()
                     ) : (
                       <span className="font-medium text-foreground">Rooms available</span>
                     )}
