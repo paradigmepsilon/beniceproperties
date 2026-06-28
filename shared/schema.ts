@@ -165,6 +165,16 @@ export const properties = pgTable("properties", {
   dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
   weeklyRate: decimal("weekly_rate", { precision: 10, scale: 2 }),
   monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
+  // Street address (structured beyond the free-text `location` market label).
+  // Added 2026-06-28 for the Unified-Ops Inventory manager. Additive, nullable.
+  address: text("address"),
+  // Prior Airbnb listing names this property has carried (Alex re-lists when a
+  // rating drops). Populated when duplicate Airbnb listings are merged onto this
+  // property. string[] of past names. Additive.
+  priorNames: jsonb("prior_names").$type<string[]>().default(sql`'[]'::jsonb`),
+  // The Airbnb listing_room_id this STR property maps to (entire-home listing).
+  // Links live inventory to the airbnb_reservations staging data. Additive.
+  airbnbListingRoomId: text("airbnb_listing_room_id"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -206,12 +216,22 @@ export const rooms = pgTable(
     monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
     // "AVAILABLE" | "OCCUPIED" | "HOLD"
     status: text("status").notNull().default("AVAILABLE"),
+    // Street address for this specific room (when it differs from / refines the
+    // parent property's). Added 2026-06-28 for the Inventory manager. Additive.
+    address: text("address"),
+    // Prior Airbnb listing names this room has carried (populated on merge of
+    // duplicate Airbnb listings). string[]. Additive.
+    priorNames: jsonb("prior_names").$type<string[]>().default(sql`'[]'::jsonb`),
+    // The Airbnb listing_room_id this room maps to (private-room listing). Links
+    // live inventory to airbnb_reservations staging data. Additive.
+    airbnbListingRoomId: text("airbnb_listing_room_id"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (table) => ({
     propertyIdx: index("rooms_property_idx").on(table.propertyId),
     statusIdx: index("rooms_status_idx").on(table.status),
+    airbnbIdx: index("rooms_airbnb_listing_idx").on(table.airbnbListingRoomId),
   }),
 );
 
