@@ -823,6 +823,14 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  app.get("/api/admin/properties/:id/rooms", requireAdmin, async (req, res, next) => {
+    try {
+      res.json(await storage.getRoomsByProperty(req.params.id));
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.post("/api/admin/rooms", requireAdmin, async (req, res, next) => {
     try {
       const parsed = insertRoomSchema.safeParse(req.body);
