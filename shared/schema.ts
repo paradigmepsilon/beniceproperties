@@ -165,6 +165,19 @@ export const properties = pgTable("properties", {
   dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
   weeklyRate: decimal("weekly_rate", { precision: 10, scale: 2 }),
   monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
+  // Per-night-by-weekday prices (added 2026-06-30, additive nullable). When a stay
+  // resolves to the DAILY tier (<7 nights), each night is priced by the weekday it
+  // falls on and the stay total = SUM of those nightly prices. A missing weekday
+  // price falls back to dailyRate ?? basePrice for that night. WEEKLY/MONTHLY tiers
+  // ignore these (they use the scalar rate). See shared/rateSelection.ts
+  // weekdayStayTotal(). STR (whole-property) only — co-living has no nightly path.
+  monPrice: decimal("mon_price", { precision: 10, scale: 2 }),
+  tuePrice: decimal("tue_price", { precision: 10, scale: 2 }),
+  wedPrice: decimal("wed_price", { precision: 10, scale: 2 }),
+  thuPrice: decimal("thu_price", { precision: 10, scale: 2 }),
+  friPrice: decimal("fri_price", { precision: 10, scale: 2 }),
+  satPrice: decimal("sat_price", { precision: 10, scale: 2 }),
+  sunPrice: decimal("sun_price", { precision: 10, scale: 2 }),
   // Street address (structured beyond the free-text `location` market label).
   // Added 2026-06-28 for the Unified-Ops Inventory manager. Additive, nullable.
   address: text("address"),

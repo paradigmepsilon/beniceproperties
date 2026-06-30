@@ -10,6 +10,9 @@ import {
   baseAmountForStay,
   RateError,
   TIER_DAYS,
+  hasAnyWeekdayRate,
+  weekdayStayTotal,
+  WEEKDAY_FIELDS,
 } from "./rateSelection";
 
 describe("tierForNights", () => {
@@ -114,5 +117,97 @@ describe("baseAmountForStay", () => {
   it("rounds odd proration to cents", () => {
     // 10 nights @ 555/wk → 79.2857.../night → 792.857... → 792.86
     expect(baseAmountForStay({ nights: 10, weekly: "555" })).toBe(792.86);
+  });
+});
+
+describe("WEEKDAY_FIELDS index map (getDay 0=Sun..6=Sat)", () => {
+  it("maps each JS weekday index to its field", () => {
+    expect(WEEKDAY_FIELDS[0]).toBe("sunPrice");
+    expect(WEEKDAY_FIELDS[1]).toBe("monPrice");
+    expect(WEEKDAY_FIELDS[5]).toBe("friPrice");
+    expect(WEEKDAY_FIELDS[6]).toBe("satPrice");
+  });
+});
+
+describe("hasAnyWeekdayRate", () => {
+  it("false when empty", () => {
+    expect(hasAnyWeekdayRate({})).toBe(false);
+  });
+  it("true when at least one price is set", () => {
+    expect(hasAnyWeekdayRate({ friPrice: "200" })).toBe(true);
+  });
+  it("treats 0 / '' / null as unset", () => {
+    expect(hasAnyWeekdayRate({ friPrice: "0", satPrice: "", sunPrice: null })).toBe(false);
+  });
+});
+
+describe("weekdayStayTotal", () => {
+  // 2026-07-03 is a Friday (getDay 5); +1 = Sat, +2 = Sun.
+  const rates = { friPrice: "200", satPrice: "250", sunPrice: "150" };
+
+  it("sums each night's weekday price (Fri+Sat+Sun)", () => {
+    expect(
+      weekdayStayTotal({
+        checkIn: "2026-07-03",
+        nights: 3,
+        weekdayRates: rates,
+        fallbackNightly: 100,
+      }),
+    ).toBe(600); // 200 + 250 + 150
+  });
+
+  it("falls back per-night when a weekday price is null", () => {
+    expect(
+      weekdayStayTotal({
+        checkIn: "2026-07-03",
+        nights: 3,
+        weekdayRates: { ...rates, satPrice: null },
+        fallbackNightly: 100,
+      }),
+    ).toBe(450); // 200 (Fri) + 100 (Sat fallback) + 150 (Sun)
+  });
+
+  it("maps all 7 weekdays exactly once over a full week from Monday", () => {
+    // 2026-07-06 is a Monday. Distinct primes so the sum is unambiguous.
+    const distinct = {
+      monPrice: "101",
+      tuePrice: "103",
+      wedPrice: "107",
+      thuPrice: "109",
+      friPrice: "113",
+      satPrice: "127",
+      sunPrice: "131",
+    };
+    const sum = 101 + 103 + 107 + 109 + 113 + 127 + 131; // 791
+    expect(
+      weekdayStayTotal({
+        checkIn: "2026-07-06",
+        nights: 7,
+        weekdayRates: distinct,
+        fallbackNightly: null,
+      }),
+    ).toBe(sum);
+  });
+
+  it("throws RateError when a night has no weekday price and no fallback", () => {
+    expect(() =>
+      weekdayStayTotal({
+        checkIn: "2026-07-03",
+        nights: 3,
+        weekdayRates: { friPrice: "200", satPrice: "250" }, // Sun unset
+        fallbackNightly: null,
+      }),
+    ).toThrow(RateError);
+  });
+
+  it("rounds the summed total to cents", () => {
+    expect(
+      weekdayStayTotal({
+        checkIn: "2026-07-03",
+        nights: 2,
+        weekdayRates: { friPrice: "100.005", satPrice: "100.005" },
+        fallbackNightly: null,
+      }),
+    ).toBe(200.01); // 200.01 after rounding
   });
 });

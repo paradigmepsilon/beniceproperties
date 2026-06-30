@@ -19,7 +19,16 @@
 // BACK-COMPAT: callers pass the legacy single rate (STR base_price as `daily`,
 // co-living weekly_rent as `weekly`) so listings configured before the day/week/
 // month columns existed bill EXACTLY as before.
+//
+// PER-WEEKDAY (added 2026-06-30): STR whole-property short stays (DAILY tier) can
+// price each night by the weekday it falls on (weekends cost more). This is a
+// SEPARATE axis from the day/week/month tiers — see weekdayStayTotal() at the
+// bottom. chooseRate() stays a pure scalar selector; weekday summation is layered
+// on top ONLY for the DAILY tier in server/lib/booking.ts. WEEKLY/MONTHLY tiers
+// and all co-living lease/installment math are unaffected.
 // =============================================================================
+
+import { addDays, getDay, parseISO } from "date-fns";
 
 export type RateTier = "DAILY" | "WEEKLY" | "MONTHLY";
 
@@ -124,4 +133,79 @@ export function chooseRate(input: RateInput): ChosenRate {
 export function baseAmountForStay(input: RateInput): number {
   const { effectiveNightly } = chooseRate(input);
   return roundCurrency(effectiveNightly * input.nights);
+}
+
+// =============================================================================
+// Per-weekday pricing (DAILY tier only) — added 2026-06-30.
+// =============================================================================
+
+/**
+ * JS getDay() index (0=Sun..6=Sat) -> the weekday-price field on a property.
+ * This index ordering is the CONTRACT: the DB/UI may present Mon-first for
+ * humans, but the runtime lookup is always WEEKDAY_FIELDS[getDay(night)].
+ */
+export const WEEKDAY_FIELDS = [
+  "sunPrice", // 0
+  "monPrice", // 1
+  "tuePrice", // 2
+  "wedPrice", // 3
+  "thuPrice", // 4
+  "friPrice", // 5
+  "satPrice", // 6
+] as const;
+
+export type WeekdayField = (typeof WEEKDAY_FIELDS)[number];
+
+/** The 7 per-weekday prices (decimal strings | numbers | null), keyed by field. */
+export type WeekdayRates = Partial<Record<WeekdayField, string | number | null>>;
+
+/**
+ * True iff at least one weekday price is set (0 / "" / null count as unset, per
+ * parseRate). Lets callers skip weekday math entirely when no weekday data
+ * exists, so a property without weekday prices bills EXACTLY as before.
+ */
+export function hasAnyWeekdayRate(rates: WeekdayRates): boolean {
+  return WEEKDAY_FIELDS.some((f) => parseRate(rates[f]) !== null);
+}
+
+export interface WeekdayStayInput {
+  /** YYYY-MM-DD check-in (the first night). */
+  checkIn: string;
+  /** Number of nights (>= 1). */
+  nights: number;
+  /** The 7 per-weekday prices, keyed by WeekdayField. */
+  weekdayRates: WeekdayRates;
+  /** Per-night fallback when a given weekday price is null (dailyRate ?? basePrice). */
+  fallbackNightly: number | null;
+}
+
+/**
+ * DAILY-tier stay total = SUM over each night of that night's weekday price,
+ * falling back to fallbackNightly for any night whose weekday price is null.
+ * Night k (0-based) falls on calendar day checkIn + k; its weekday is getDay of
+ * that local calendar date.
+ *
+ * Deliberately mirrors nights()'s basis in server/lib/booking.ts: parseISO on a
+ * YYYY-MM-DD string yields local-midnight (no time component), and addDays is
+ * calendar-day arithmetic, so the weekday a guest sees == the weekday billed for
+ * date-only inputs, TZ-independent. Do NOT introduce date-fns-tz here — it would
+ * diverge from nights().
+ *
+ * Throws RateError if a night has neither a weekday price nor a fallback.
+ */
+export function weekdayStayTotal(input: WeekdayStayInput): number {
+  const { checkIn, nights, weekdayRates, fallbackNightly } = input;
+  if (!(nights >= 1)) throw new RateError("Stay must be at least 1 night");
+  const start = parseISO(checkIn);
+  let total = 0;
+  for (let k = 0; k < nights; k++) {
+    const day = getDay(addDays(start, k)); // 0=Sun..6=Sat
+    const wkPrice = parseRate(weekdayRates[WEEKDAY_FIELDS[day]]);
+    const nightly = wkPrice ?? fallbackNightly;
+    if (nightly === null) {
+      throw new RateError("No price for one or more nights of this stay.");
+    }
+    total += nightly;
+  }
+  return roundCurrency(total);
 }

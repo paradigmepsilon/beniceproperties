@@ -13,7 +13,13 @@ import {
   calculateWeeklyCharge,
   type PaymentMethod,
 } from "@shared/pricing";
-import { chooseRate, type RateTier } from "@shared/rateSelection";
+import {
+  chooseRate,
+  hasAnyWeekdayRate,
+  weekdayStayTotal,
+  type RateTier,
+  type WeekdayRates,
+} from "@shared/rateSelection";
 import type { QuoteResponse } from "@shared/api-types";
 import { storage } from "../storage";
 import type { Property, Room } from "@shared/schema";
@@ -36,10 +42,19 @@ function nights(checkIn: string, checkOut: string): number {
  * by stay length (see shared/rateSelection.ts). For back-compat, the legacy
  * `base_price` is passed as the DAILY rate so listings without the new columns
  * bill exactly as before (nightly × n). Returns the rounded subtotal + the tier.
+ *
+ * Per-weekday (2026-06-30): when the stay lands in the DAILY tier (<7 nights) AND
+ * the property has any weekday price set, the total is the SUM of each night's
+ * weekday price (fallback per night = dailyRate ?? basePrice, i.e. the same value
+ * chooseRate used for DAILY). WEEKLY/MONTHLY tiers are untouched. A property with
+ * no weekday prices is byte-identical to the previous behavior.
+ *
+ * Exported for unit testing (like buildQuote / generateReference below).
  */
-function strBaseTotal(
+export function strBaseTotal(
   property: Property,
   n: number,
+  checkIn: string,
 ): { baseAmount: number; tier: RateTier; effectiveNightly: number } {
   const chosen = chooseRate({
     nights: n,
@@ -49,6 +64,37 @@ function strBaseTotal(
     weekly: property.weeklyRate,
     monthly: property.monthlyRate,
   });
+
+  if (chosen.tier === "DAILY") {
+    const weekdayRates: WeekdayRates = {
+      monPrice: property.monPrice,
+      tuePrice: property.tuePrice,
+      wedPrice: property.wedPrice,
+      thuPrice: property.thuPrice,
+      friPrice: property.friPrice,
+      satPrice: property.satPrice,
+      sunPrice: property.sunPrice,
+    };
+    if (hasAnyWeekdayRate(weekdayRates)) {
+      const baseAmount = weekdayStayTotal({
+        checkIn,
+        nights: n,
+        weekdayRates,
+        // chosen.effectiveNightly for DAILY == dailyRate ?? basePrice (tierDays 1).
+        fallbackNightly: chosen.effectiveNightly,
+      });
+      return {
+        baseAmount,
+        tier: "DAILY",
+        // Nightly prices vary across the stay, so there is no single nightly rate.
+        // effectiveNightly is a DISPLAY average only — baseAmount is authoritative
+        // and is the value that flows to the charge. (Verified: nothing downstream
+        // uses effectiveNightly for STR money math.)
+        effectiveNightly: Math.round((baseAmount / n) * 100) / 100,
+      };
+    }
+  }
+
   return {
     baseAmount: Math.round(chosen.effectiveNightly * n * 100) / 100,
     tier: chosen.tier,
@@ -146,7 +192,7 @@ export async function resolveBooking(input: {
   if (await strHasConflict(property.id, input.checkIn, input.checkOut)) {
     throw new BookingError("Those dates are not available", 409);
   }
-  const str = strBaseTotal(property, n);
+  const str = strBaseTotal(property, n, input.checkIn);
   return {
     model: "STR",
     property,
