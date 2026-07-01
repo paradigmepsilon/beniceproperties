@@ -99,7 +99,9 @@ export const leaseQuoteRequestSchema = z.object({
   roomIds: z.array(z.string().min(1)).min(1, "Select at least one room"),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Start date is required"),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "End date is required"),
-  cadence: z.enum(PAYMENT_CADENCES),
+  // Deprecated: cadence is auto-derived server-side from stay length. Kept
+  // optional for back-compat with callers that still send it (value ignored).
+  cadence: z.enum(PAYMENT_CADENCES).optional(),
 });
 
 export type LeaseQuoteRequest = z.infer<typeof leaseQuoteRequestSchema>;

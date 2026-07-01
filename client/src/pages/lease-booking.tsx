@@ -13,7 +13,7 @@
 // =============================================================================
 
 import { useMemo, useState } from "react";
-import { useLocation, Link } from "wouter";
+import { useLocation, useSearch, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
@@ -50,8 +50,10 @@ function cleanError(err: unknown): string {
 }
 
 export default function LeaseBooking() {
-  const [location, navigate] = useLocation();
-  const params = useMemo(() => new URLSearchParams(location.split("?")[1] ?? ""), [location]);
+  const [, navigate] = useLocation();
+  // Wouter v3 useLocation() returns the pathname only; the query lives in useSearch().
+  const search = useSearch();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
   const propertyId = params.get("propertyId") ?? "";
   // One or more roomId params (?roomId=a&roomId=b).
   const roomIds = useMemo(() => params.getAll("roomId").filter(Boolean), [params]);

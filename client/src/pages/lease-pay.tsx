@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { useEffect, useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { loadStripe, type Stripe } from "@stripe/stripe-js";
 import {
   Elements,
@@ -45,8 +45,9 @@ interface FirstPaymentInit {
 }
 
 export default function LeasePay() {
-  const [location] = useLocation();
-  const params = useMemo(() => new URLSearchParams(location.split("?")[1] ?? ""), [location]);
+  // Wouter v3 useLocation() returns the pathname only; the query lives in useSearch().
+  const search = useSearch();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
   const leaseId = params.get("leaseId") ?? "";
 
   const [init, setInit] = useState<FirstPaymentInit | null>(null);

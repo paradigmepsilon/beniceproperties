@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { useMemo, useState, useEffect } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import type {
@@ -40,9 +40,11 @@ function cleanError(err: unknown): string {
 }
 
 export default function LeaseSign() {
-  const [location, navigate] = useLocation();
+  const [, navigate] = useLocation();
   const { toast } = useToast();
-  const params = useMemo(() => new URLSearchParams(location.split("?")[1] ?? ""), [location]);
+  // Wouter v3 useLocation() returns the pathname only; the query lives in useSearch().
+  const search = useSearch();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
 
   const propertyId = params.get("propertyId") ?? "";
   const roomIds = useMemo(() => params.getAll("roomId").filter(Boolean), [params]);

@@ -5,7 +5,7 @@
 // the booking. Stripe → redirect to Checkout. CashApp/Zelle → instructions.
 
 import { useMemo, useState } from "react";
-import { useLocation } from "wouter";
+import { useLocation, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import type { QuoteResponse, CreateBookingResponse } from "@shared/api-types";
@@ -26,10 +26,12 @@ const METHODS: { value: PaymentMethod; label: string; note: string }[] = [
 ];
 
 export default function Checkout() {
-  const [location, navigate] = useLocation();
+  const [, navigate] = useLocation();
   const { toast } = useToast();
 
-  const params = useMemo(() => new URLSearchParams(location.split("?")[1] ?? ""), [location]);
+  // Wouter v3 useLocation() returns the pathname only; the query lives in useSearch().
+  const search = useSearch();
+  const params = useMemo(() => new URLSearchParams(search), [search]);
   const propertyId = params.get("propertyId") ?? "";
   const roomId = params.get("roomId") ?? undefined;
   const checkIn = params.get("checkIn") ?? undefined;
