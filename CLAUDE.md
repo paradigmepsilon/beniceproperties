@@ -265,3 +265,11 @@ Phases 1–3 and 6–9 run autonomously under `/goal` conditions. **Phases 4 and
 human review gates** — they are the only phases that move real money, save payment credentials, and
 accrue charges. Do not self-advance through 4 or 5. Keep `/docs/build-log.md` current throughout; it
 is the memory that lets any future session resume.
+
+
+---
+
+## Build Tracker
+- Project: BNP
+- Repo / Location: beniceproperties (branch: main)
+This repo follows the global Build Tracker Protocol. Tag all tickets with the Project above; do not re-ask.
