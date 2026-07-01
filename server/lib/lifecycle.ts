@@ -68,6 +68,14 @@ export const LIFECYCLE_TEMPLATES = {
       `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ` +
       `${v.property}. Thank you! A record is available in your portal.`,
   }),
+  depositReceipt: (v: { name: string; amount: string; property: string; room: string }) => ({
+    subject: `Your room is secured — ${v.property} 🔒`,
+    body:
+      `Hi ${v.name}, we received your refundable security deposit of ${v.amount} — your room ` +
+      `(${v.room}) at ${v.property} is now secured. The deposit is held and returned at the end ` +
+      `of your lease per the agreement. Your first week's rent is charged next; the full schedule ` +
+      `is in your portal.`,
+  }),
   leaseEnding: (v: { name: string; property: string; end: string; days: number; portalUrl: string }) => ({
     subject: `Your lease ends in ${v.days} days`,
     body:
@@ -181,6 +189,37 @@ export async function onPaymentReceived(args: {
     leaseId: lease.id,
     eventType: "PAYMENT_RECEIPT",
     scheduleSeq: scheduleRow.scheduleSeq,
+    status: sent.email.sent ? "SENT" : "SKIPPED",
+    emailSent: sent.email.sent,
+    smsSent: sent.sms.sent,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Event: deposit received — the room is secured (called from finalizeDepositPayment)
+// ---------------------------------------------------------------------------
+
+export async function onDepositReceived(args: {
+  lease: Lease;
+  property: Property;
+  guest: Guest;
+}): Promise<void> {
+  const { lease, property, guest } = args;
+  if (await storage.hasLifecycleEvent(lease.id, "DEPOSIT_RECEIPT", null)) return;
+
+  const rooms = await storage.getLeaseRooms(lease.id);
+  const roomNames = rooms.map((r) => r.roomNameSnapshot).join(", ") || "your room";
+  const tpl = LIFECYCLE_TEMPLATES.depositReceipt({
+    name: guest.name,
+    amount: fmtMoney(parseFloat(lease.depositAmountSnapshot ?? "0")),
+    property: property.name,
+    room: roomNames,
+  });
+  const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+  await storage.recordLifecycleEvent({
+    leaseId: lease.id,
+    eventType: "DEPOSIT_RECEIPT",
+    scheduleSeq: null,
     status: sent.email.sent ? "SENT" : "SKIPPED",
     emailSent: sent.email.sent,
     smsSent: sent.sms.sent,

@@ -122,9 +122,14 @@ export interface LeaseQuoteResponse {
   rooms: { id: string; name: string; roomNumber: string | null; weeklyRent: number }[];
   startDate: string;
   endDate: string;
+  /** The billing cadence used to build this schedule (the guest's choice). */
   cadence: (typeof PAYMENT_CADENCES)[number];
+  /** Cadences the guest may choose for this term length (gate by stay length). */
+  allowedCadences: (typeof PAYMENT_CADENCES)[number][];
   /** Combined weekly rate across all included rooms. */
   weeklyRateTotal: number;
+  /** Refundable security deposit that secures the room (sum across rooms). */
+  depositTotal: number;
   termDays: number;
   schedule: LeaseScheduleLine[];
   totalLeaseValue: number;

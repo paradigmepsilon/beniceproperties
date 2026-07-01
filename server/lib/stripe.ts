@@ -215,5 +215,19 @@ export async function retrievePaymentIntent(id: string): Promise<Stripe.PaymentI
   return requireStripe().paymentIntents.retrieve(id);
 }
 
+/**
+ * Refund a captured PaymentIntent in full (used to return a refundable security
+ * deposit at move-out). Idempotency key prevents a double refund on retry.
+ */
+export async function refundPaymentIntent(opts: {
+  paymentIntentId: string;
+  idempotencyKey: string;
+}): Promise<Stripe.Refund> {
+  return requireStripe().refunds.create(
+    { payment_intent: opts.paymentIntentId },
+    { idempotencyKey: opts.idempotencyKey },
+  );
+}
+
 export const stripePublishableConfigured = (): boolean =>
   Boolean(process.env.VITE_STRIPE_PUBLIC_KEY?.startsWith("pk_"));

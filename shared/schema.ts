@@ -83,6 +83,9 @@ export const SCHEDULE_STATUSES = [
 ] as const;
 export const SCHEDULE_PAYMENT_METHODS = ["CARD_ON_FILE", "MANUAL"] as const;
 export const LATE_FEE_STATUSES = ["ACCRUED", "BILLED", "PAID", "WAIVED"] as const;
+// Refundable security-deposit lifecycle. PAID secures the room; REFUNDED is the
+// move-out return; WAIVED is an admin override (no deposit collected).
+export const DEPOSIT_STATUSES = ["PENDING", "PAID", "REFUNDED", "WAIVED"] as const;
 
 // Number of cadence periods that fall in one installment. WEEKLY=1 week,
 // BIWEEKLY=2 weeks, MONTHLY=4 weeks. weekly_rate × this × room count = amount.
@@ -101,6 +104,26 @@ export const CADENCE_DAYS: Record<(typeof PAYMENT_CADENCES)[number], number> = {
 
 /** Hard ceiling on a co-living lease term (spec: ≤ 90 days). */
 export const MAX_LEASE_DAYS = 90;
+
+/**
+ * Which billing cadences a guest may choose, gated by term length (owner rule).
+ * The rate TIER (amount per period) is still chosen by stay length elsewhere;
+ * this only governs how OFTEN the guest is billed. One source of truth — imported
+ * by the client (to render options) and the server (to validate the submission).
+ *
+ *   1 week  to < 1 month  (7–27 days):  weekly only
+ *   1 month to < 3 months (28–83 days): weekly, or monthly (pay the whole month)
+ *   3 months and up       (84–90 days): weekly, biweekly, or monthly
+ *
+ * Below 7 days a co-living lease isn't offered; callers should reject shorter terms.
+ */
+export function allowedCadencesForTerm(
+  termDays: number,
+): (typeof PAYMENT_CADENCES)[number][] {
+  if (termDays >= 84) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
+  if (termDays >= 28) return ["WEEKLY", "MONTHLY"];
+  return ["WEEKLY"];
+}
 
 /** Flat daily late fee, in dollars (spec: $25/day, no cap). */
 export const LATE_FEE_PER_DAY = 25.0;
@@ -519,6 +542,15 @@ export const leases = pgTable(
     // at signing time with the signature block, timestamp, and IP. Stored inline
     // (no external blob store wired yet). Reference-only; contains no card data.
     signedDocumentHtml: text("signed_document_html"),
+    // --- Refundable security deposit (secures the room). Snapshotted at lease
+    // creation from the included room(s) so a later re-price never changes a
+    // signed lease. The deposit is the SECURING payment: paying it flips the
+    // room(s) to OCCUPIED. It is held separately and never counted as rent. ---
+    depositAmountSnapshot: decimal("deposit_amount_snapshot", { precision: 10, scale: 2 }),
+    // "PENDING" | "PAID" | "REFUNDED" | "WAIVED"
+    depositStatus: text("deposit_status").notNull().default("PENDING"),
+    depositStripePaymentIntentId: text("deposit_stripe_payment_intent_id"),
+    depositPaidAt: timestamp("deposit_paid_at"),
     // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
     stripeCustomerId: text("stripe_customer_id"),
     stripePaymentMethodId: text("stripe_payment_method_id"),
@@ -822,6 +854,7 @@ export type InsertGuestMessage = z.infer<typeof insertGuestMessageSchema>;
 // =============================================================================
 
 export const LIFECYCLE_EVENT_TYPES = [
+  "DEPOSIT_RECEIPT", // on deposit paid — room secured (guest)
   "COLIVING_WELCOME", // on lease activation (guest)
   "COLIVING_SCHEDULE_RECAP", // on activation (guest) — full schedule
   "COLIVING_ADMIN_NEW_LEASE", // on activation (admin)

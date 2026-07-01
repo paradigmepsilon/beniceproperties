@@ -125,25 +125,48 @@ describe("buildLeaseQuote — guards", () => {
 });
 
 // Phase 3 — auto tier selection by stay length (cadence is derived, not sent).
-function tieredRoom(id: string, name: string, weekly: string, daily?: string, monthly?: string) {
+function tieredRoom(id: string, name: string, weekly: string, daily?: string, monthly?: string, deposit?: string) {
   return {
     id, name, roomNumber: name.slice(-1), status: "AVAILABLE", propertyId: "prop-1",
     weeklyRent: weekly, dailyRate: daily ?? null, monthlyRate: monthly ?? null,
+    depositAmount: deposit ?? null,
   };
 }
 
 describe("buildLeaseQuote — auto tier by stay length", () => {
-  it("a 28+ day term uses the MONTHLY rate and bills monthly", async () => {
+  it("a 28-day term uses the MONTHLY rate; cadence defaults to weekly, guest may pick monthly", async () => {
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
-    // monthly 2240 → effectiveNightly 80; 28-day periods
+    // monthly 2240 → effectiveNightly 80. The rate TIER is monthly; the billing
+    // CADENCE is the guest's choice, gated by term (28 days → weekly or monthly).
     mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2240"));
-    const q = await buildLeaseQuote({
+
+    // Default (no cadence sent) → shortest allowed = WEEKLY: 4 × $560.
+    const wk = await buildLeaseQuote({
       propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28", // 28 days
     });
-    expect(q.cadence).toBe("MONTHLY");
-    expect(q.schedule).toHaveLength(1);
-    expect(q.schedule[0].amount).toBe(2240); // 80 × 28
-    expect(q.totalLeaseValue).toBe(2240);
+    expect(wk.allowedCadences).toEqual(["WEEKLY", "MONTHLY"]);
+    expect(wk.cadence).toBe("WEEKLY");
+    expect(wk.schedule.every((r) => r.amount === 560)).toBe(true); // 80 × 7
+    expect(wk.totalLeaseValue).toBe(2240);
+
+    // Guest picks MONTHLY → a single $2240 installment.
+    const mo = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28", cadence: "MONTHLY",
+    });
+    expect(mo.cadence).toBe("MONTHLY");
+    expect(mo.schedule).toHaveLength(1);
+    expect(mo.schedule[0].amount).toBe(2240); // 80 × 28
+    expect(mo.totalLeaseValue).toBe(2240);
+  });
+
+  it("rejects a cadence not allowed for the term (e.g. monthly on a 2-week stay)", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2240"));
+    await expect(
+      buildLeaseQuote({
+        propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "MONTHLY",
+      }),
+    ).rejects.toThrow(/monthly.*isn't available|isn't available for a/i);
   });
 
   it("a 7..27 day term uses the WEEKLY rate", async () => {
@@ -196,5 +219,28 @@ describe("buildLeaseQuote — auto tier by stay length", () => {
     const sum = Math.round(q.schedule.reduce((a, r) => a + r.amount, 0) * 100) / 100;
     expect(q.totalLeaseValue).toBe(sum);
     expect(q.dueToday).toBe(q.schedule[0].amount);
+  });
+});
+
+describe("buildLeaseQuote — deposit + allowed cadences", () => {
+  it("surfaces the refundable deposit (summed across rooms) separate from rent", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom
+      .mockResolvedValueOnce(tieredRoom("r1", "Room 1", "250", undefined, undefined, "300"))
+      .mockResolvedValueOnce(tieredRoom("r2", "Room 2", "200", undefined, undefined, "250"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1", "r2"], startDate: "2026-07-01", endDate: "2026-07-14",
+    });
+    expect(q.depositTotal).toBe(550); // 300 + 250, NOT counted in rent
+    expect(q.totalLeaseValue).not.toBe(550);
+  });
+
+  it("gates allowed cadences by term length", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560"));
+    const shortTerm = await buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14" }); // 14d
+    expect(shortTerm.allowedCadences).toEqual(["WEEKLY"]);
+    const longTerm = await buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-09-25" }); // ~87d
+    expect(longTerm.allowedCadences).toEqual(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
   });
 });

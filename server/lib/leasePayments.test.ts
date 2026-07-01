@@ -13,18 +13,22 @@ const mockStorage = vi.hoisted(() => ({
   getLease: vi.fn(),
   getLeases: vi.fn(),
   getProperty: vi.fn(),
+  getRoom: vi.fn(),
   getLeaseRooms: vi.fn(),
   getScheduleByLease: vi.fn(),
   getGuest: vi.fn(),
   updateLease: vi.fn(),
   updateScheduleRow: vi.fn(),
   updateRoom: vi.fn(),
+  hasLifecycleEvent: vi.fn(),
+  recordLifecycleEvent: vi.fn(),
 }));
 const mockStripe = vi.hoisted(() => ({
   ensureCustomer: vi.fn(),
   createFirstPaymentIntent: vi.fn(),
   chargeSavedCard: vi.fn(),
   retrievePaymentIntent: vi.fn(),
+  refundPaymentIntent: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./stripe", () => mockStripe);
@@ -32,6 +36,9 @@ vi.mock("./stripe", () => mockStripe);
 import {
   startFirstPayment,
   finalizeFirstPayment,
+  startDepositPayment,
+  finalizeDepositPayment,
+  refundDeposit,
   runScheduledRentSweep,
 } from "./leasePayments";
 import { LeaseError } from "./lease";
@@ -119,6 +126,9 @@ describe("finalizeFirstPayment", () => {
     mockStorage.updateLease.mockResolvedValue(undefined);
     mockStorage.updateScheduleRow.mockResolvedValue(undefined);
     mockStorage.updateRoom.mockResolvedValue(undefined);
+    // Defensive re-occupy path: a deposit-less legacy lease reaching first payment
+    // finds its room still AVAILABLE and flips it OCCUPIED.
+    mockStorage.getRoom.mockResolvedValue({ id: "r1", status: "AVAILABLE" });
     mockStripe.retrievePaymentIntent.mockResolvedValue({ id: "pi_first_1", payment_method: "pm_saved_1" });
   });
 
@@ -151,6 +161,110 @@ describe("finalizeFirstPayment", () => {
     mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1, { stripePaymentIntentId: "pi_other" })]);
     await finalizeFirstPayment("pi_unknown");
     expect(mockStorage.updateLease).not.toHaveBeenCalled();
+  });
+});
+
+describe("startDepositPayment", () => {
+  beforeEach(() => {
+    mockStorage.getProperty.mockResolvedValue(PROP);
+    mockStorage.getLeaseRooms.mockResolvedValue(ROOMS);
+    mockStorage.getGuest.mockResolvedValue({ id: "g1", name: "Jane", email: "jane@example.com" });
+    mockStorage.updateLease.mockResolvedValue(undefined);
+    mockStripe.ensureCustomer.mockResolvedValue("cus_123");
+    mockStripe.createFirstPaymentIntent.mockResolvedValue({ id: "pi_dep_1", client_secret: "cs_dep_1" });
+  });
+
+  it("creates a deposit PI for the snapshotted amount and stores its id", async () => {
+    mockStorage.getLease.mockResolvedValue(lease({ depositAmountSnapshot: "300", depositStatus: "PENDING" }));
+    const res = await startDepositPayment("lease-1");
+    expect(res.clientSecret).toBe("cs_dep_1");
+    expect(res.amount).toBe(300);
+    // Deposit charged flat (no surcharge added — it's not rent).
+    expect(mockStripe.createFirstPaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amount: 300, idempotencyKey: "lease-deposit-lease-1" }),
+    );
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", { depositStripePaymentIntentId: "pi_dep_1" });
+  });
+
+  it("refuses when the deposit is already paid", async () => {
+    mockStorage.getLease.mockResolvedValue(lease({ depositAmountSnapshot: "300", depositStatus: "PAID" }));
+    await expect(startDepositPayment("lease-1")).rejects.toThrow(/already paid/i);
+  });
+
+  it("refuses when no deposit is configured (amount 0)", async () => {
+    mockStorage.getLease.mockResolvedValue(lease({ depositAmountSnapshot: "0", depositStatus: "PENDING" }));
+    await expect(startDepositPayment("lease-1")).rejects.toThrow(/no deposit/i);
+    expect(mockStripe.createFirstPaymentIntent).not.toHaveBeenCalled();
+  });
+});
+
+describe("finalizeDepositPayment", () => {
+  beforeEach(() => {
+    mockStorage.getProperty.mockResolvedValue(PROP);
+    mockStorage.getLeaseRooms.mockResolvedValue(ROOMS);
+    mockStorage.getGuest.mockResolvedValue({ id: "g1", name: "Jane", email: "jane@example.com", phone: null });
+    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1)]);
+    mockStorage.updateLease.mockResolvedValue(undefined);
+    mockStorage.updateScheduleRow.mockResolvedValue(undefined);
+    mockStorage.updateRoom.mockResolvedValue(undefined);
+    mockStorage.hasLifecycleEvent.mockResolvedValue(true); // suppress lifecycle sends
+    mockStripe.retrievePaymentIntent.mockResolvedValue({ id: "pi_dep_1", payment_method: "pm_saved_1" });
+    mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_first_1" });
+  });
+
+  it("marks deposit PAID, secures the room, then charges the first week off-session → ACTIVE", async () => {
+    mockStorage.getLeases.mockResolvedValue([
+      lease({ depositStatus: "PENDING", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
+    ]);
+    // loadLeaseContext re-fetches the lease inside chargeFirstWeekOffSession.
+    mockStorage.getLease.mockResolvedValue(
+      lease({ depositStatus: "PAID", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
+    );
+
+    await finalizeDepositPayment("pi_dep_1");
+
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ depositStatus: "PAID" }));
+    expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
+    expect(mockStripe.chargeSavedCard).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentMethodId: "pm_saved_1", idempotencyKey: "lease-first-lease-1" }),
+    );
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+  });
+
+  it("is idempotent: an already-PAID deposit is left alone", async () => {
+    mockStorage.getLeases.mockResolvedValue([
+      lease({ depositStatus: "PAID", depositStripePaymentIntentId: "pi_dep_1" }),
+    ]);
+    await finalizeDepositPayment("pi_dep_1");
+    expect(mockStorage.updateRoom).not.toHaveBeenCalled();
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+});
+
+describe("refundDeposit", () => {
+  beforeEach(() => {
+    mockStorage.updateLease.mockResolvedValue(undefined);
+    mockStripe.refundPaymentIntent.mockResolvedValue({ id: "re_1" });
+  });
+
+  it("refunds a PAID deposit and marks it REFUNDED", async () => {
+    mockStorage.getLease.mockResolvedValue(lease({ depositStatus: "PAID", depositStripePaymentIntentId: "pi_dep_1" }));
+    await refundDeposit("lease-1");
+    expect(mockStripe.refundPaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_dep_1", idempotencyKey: "lease-deposit-refund-lease-1" }),
+    );
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", { depositStatus: "REFUNDED" });
+  });
+
+  it("no-ops if already refunded", async () => {
+    mockStorage.getLease.mockResolvedValue(lease({ depositStatus: "REFUNDED" }));
+    await refundDeposit("lease-1");
+    expect(mockStripe.refundPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("refuses if there is no paid deposit", async () => {
+    mockStorage.getLease.mockResolvedValue(lease({ depositStatus: "PENDING" }));
+    await expect(refundDeposit("lease-1")).rejects.toThrow(/no paid deposit/i);
   });
 });
 

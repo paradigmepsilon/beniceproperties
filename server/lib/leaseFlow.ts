@@ -137,6 +137,10 @@ export async function createDraftLease(input: CreateDraftLeaseInput): Promise<Cr
       weeklyRateSnapshot: String(quote.weeklyRateTotal),
       totalLeaseValue: String(quote.totalLeaseValue),
       prorationNote: quote.prorationNote,
+      // Freeze the refundable deposit at booking so a later room re-price never
+      // changes a signed lease. This is the amount that secures the room.
+      depositAmountSnapshot: String(quote.depositTotal),
+      depositStatus: "PENDING",
       status: "PENDING_SIGNATURE",
       portalToken: portalTokenGen(),
     },

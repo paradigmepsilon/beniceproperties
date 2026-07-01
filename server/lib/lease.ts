@@ -15,22 +15,12 @@ import {
   ScheduleError,
   type PaymentCadence,
 } from "@shared/leaseSchedule";
-import { chooseRate, RateError, type RateTier } from "@shared/rateSelection";
+import { chooseRate, RateError } from "@shared/rateSelection";
 import type { LeaseQuoteResponse, LeaseScheduleLine } from "@shared/api-types";
-import { MAX_LEASE_DAYS } from "@shared/schema";
+import { MAX_LEASE_DAYS, allowedCadencesForTerm } from "@shared/schema";
 import { storage } from "../storage";
 import type { Room } from "@shared/schema";
 
-/**
- * Charge cadence (how often the card is billed) derived from the rate tier.
- * Daily-tier stays still bill weekly — charging every night is impractical — so
- * the tier sets the PRICE while this sets the billing interval.
- */
-const TIER_TO_CADENCE: Record<RateTier, PaymentCadence> = {
-  DAILY: "WEEKLY",
-  WEEKLY: "WEEKLY",
-  MONTHLY: "MONTHLY",
-};
 const CADENCE_PERIOD_DAYS: Record<PaymentCadence, number> = {
   WEEKLY: 7,
   BIWEEKLY: 14,
@@ -65,7 +55,12 @@ export interface LeaseQuoteInput {
   roomIds: string[];
   startDate: string;
   endDate: string;
-  /** Deprecated: cadence is now auto-derived from stay length. Ignored if sent. */
+  /**
+   * Guest-selected billing cadence. Must be one of allowedCadencesForTerm(term).
+   * Optional here: if omitted we default to the first (shortest) allowed cadence,
+   * so a preview always renders. The rate TIER (amount per period) is independent
+   * of this — cadence only controls how often the guest is billed.
+   */
   cadence?: PaymentCadence;
 }
 
@@ -118,10 +113,12 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
   const weeklyRateTotal = sumRate(rooms, (r) => r.weeklyRent) ?? 0;
   const dailyTotal = sumRate(rooms, (r) => r.dailyRate);
   const monthlyTotal = sumRate(rooms, (r) => r.monthlyRate);
+  // Refundable security deposit that secures the room(s). Sum across rooms.
+  const depositTotal = sumRate(rooms, (r) => r.depositAmount) ?? 0;
 
-  // Auto-select the tier by term length (>=28 monthly, >=7 weekly, else daily),
-  // falling back to a shorter tier if the chosen one isn't priced. This REPLACES
-  // the old guest-picked cadence — stay length now drives both rate and billing.
+  // The rate TIER sets the price per night (>=28 monthly, >=7 weekly, else daily),
+  // falling back to a shorter tier if the chosen one isn't priced. Independent of
+  // the billing cadence below.
   let chosen;
   try {
     chosen = chooseRate({
@@ -135,7 +132,18 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     throw err;
   }
 
-  const cadence = TIER_TO_CADENCE[chosen.tier];
+  // Billing cadence is the GUEST's choice, gated by term length. Validate the
+  // submitted cadence; default to the shortest allowed one when none is sent
+  // (so a preview always renders). This is separate from the rate tier above.
+  const allowed = allowedCadencesForTerm(termDays);
+  const cadence: PaymentCadence =
+    input.cadence && allowed.includes(input.cadence) ? input.cadence : allowed[0];
+  if (input.cadence && !allowed.includes(input.cadence)) {
+    throw new LeaseError(
+      `A ${input.cadence.toLowerCase()} schedule isn't available for a ${termDays}-day term`,
+      422,
+    );
+  }
   let generated;
   try {
     generated = generateTierSchedule({
@@ -171,7 +179,9 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     startDate: input.startDate,
     endDate: input.endDate,
     cadence,
+    allowedCadences: allowed,
     weeklyRateTotal,
+    depositTotal,
     termDays: generated.totalDays,
     schedule,
     totalLeaseValue: generated.totalLeaseValue,

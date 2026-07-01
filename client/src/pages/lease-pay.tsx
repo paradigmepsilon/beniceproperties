@@ -37,7 +37,7 @@ function cleanError(err: unknown): string {
   return raw;
 }
 
-interface FirstPaymentInit {
+interface DepositInit {
   clientSecret: string;
   amount: number;
   publishableKey: string;
@@ -50,11 +50,13 @@ export default function LeasePay() {
   const params = useMemo(() => new URLSearchParams(search), [search]);
   const leaseId = params.get("leaseId") ?? "";
 
-  const [init, setInit] = useState<FirstPaymentInit | null>(null);
+  const [init, setInit] = useState<DepositInit | null>(null);
   const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Kick off the PaymentIntent once.
+  // Kick off the DEPOSIT PaymentIntent once. Paying the deposit secures the room;
+  // the first week's rent is then charged off-session (server-side) on the saved
+  // card — the guest only enters their card once.
   useEffect(() => {
     if (!leaseId) {
       setError("Missing lease. Start from your signed lease.");
@@ -63,8 +65,8 @@ export default function LeasePay() {
     let cancelled = false;
     (async () => {
       try {
-        const res = await apiRequest("POST", `/api/leases/${leaseId}/first-payment`, {});
-        const data = (await res.json()) as FirstPaymentInit;
+        const res = await apiRequest("POST", `/api/leases/${leaseId}/deposit`, {});
+        const data = (await res.json()) as DepositInit;
         if (cancelled) return;
         setInit(data);
         setStripePromise(loadStripe(data.publishableKey));
@@ -81,10 +83,10 @@ export default function LeasePay() {
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
       <main className="mx-auto w-full max-w-xl flex-1 px-6 py-10">
-        <h1 className="font-display text-2xl font-semibold tracking-tight">Activate your lease</h1>
+        <h1 className="font-display text-2xl font-semibold tracking-tight">Secure your room</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pay your first installment and save your card for recurring rent. Your lease activates as
-          soon as this payment succeeds.
+          Pay your refundable deposit to secure the room and save your card. Your first week's rent
+          is charged right after on the same card, and your lease activates.
         </p>
 
         {error && (
@@ -99,7 +101,7 @@ export default function LeasePay() {
           <Card className="mt-6">
             <CardHeader>
               <CardTitle className="text-base">
-                First payment: <span data-testid="text-amount">{money(init.amount)}</span>
+                Refundable deposit: <span data-testid="text-amount">{money(init.amount)}</span>
               </CardTitle>
             </CardHeader>
             <CardContent>
@@ -153,10 +155,10 @@ function PayForm({ portalToken }: { portalToken: string | null }) {
   if (done) {
     return (
       <div className="space-y-3 text-sm" data-testid="text-pay-success">
-        <p className="font-medium">Payment received ✓</p>
+        <p className="font-medium">Room secured ✓</p>
         <p className="text-muted-foreground">
-          Your lease is being activated and your card is saved for upcoming rent. Redirecting to your
-          bookings…
+          Your deposit is received and your room is secured. We're charging your first week's rent on
+          the saved card and activating your lease. Redirecting to your bookings…
         </p>
       </div>
     );
@@ -167,10 +169,11 @@ function PayForm({ portalToken }: { portalToken: string | null }) {
       <PaymentElement />
       {err && <p className="text-sm text-destructive">{err}</p>}
       <Button type="submit" disabled={!stripe || submitting} className="w-full" data-testid="button-pay">
-        {submitting ? "Processing…" : "Pay & activate lease"}
+        {submitting ? "Processing…" : "Pay deposit & secure room"}
       </Button>
       <p className="text-center text-xs text-muted-foreground">
-        Your card is securely saved by Stripe for recurring rent. We never see your card number.
+        Your refundable deposit secures the room; your first week's rent is charged next on the same
+        card. Your card is securely saved by Stripe — we never see your card number.
       </p>
     </form>
   );

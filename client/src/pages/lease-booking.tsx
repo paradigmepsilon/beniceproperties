@@ -64,10 +64,14 @@ export default function LeaseBooking() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  // Guest-selected billing cadence. Empty = let the server pick the default
+  // (shortest allowed) so the first preview renders before the guest chooses.
+  const [cadence, setCadence] = useState<Cadence | "">("");
 
   const datesValid = Boolean(startDate && endDate && endDate >= startDate);
-  // Cadence is auto-derived server-side from stay length (returned on the quote).
-  const quoteBody = { propertyId, roomIds, startDate, endDate };
+  // Cadence is the guest's choice, gated by term length; sent to the quote so the
+  // schedule reflects it. Blank until chosen (server defaults to shortest allowed).
+  const quoteBody = { propertyId, roomIds, startDate, endDate, ...(cadence ? { cadence } : {}) };
 
   const {
     data: quote,
@@ -87,9 +91,12 @@ export default function LeaseBooking() {
 
   function proceedToLease() {
     // Phase 3 wires the lease document + signature. Hand off the committed
-    // selection so the next step can create the DRAFT lease from it.
+    // selection (incl. the chosen cadence) so the next step creates the DRAFT.
     const qs = new URLSearchParams({ propertyId, startDate, endDate, name, email });
     if (phone) qs.set("phone", phone);
+    // Use the server-confirmed cadence from the quote (falls back to chosen).
+    const chosen = quote?.cadence ?? cadence;
+    if (chosen) qs.set("cadence", chosen);
     for (const id of roomIds) qs.append("roomId", id);
     navigate(`/lease/sign?${qs.toString()}`);
   }
@@ -173,6 +180,34 @@ export default function LeaseBooking() {
               </Card>
             )}
 
+            {quote && quote.allowedCadences.length > 1 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">How often would you like to pay?</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-2">
+                    {quote.allowedCadences.map((c) => (
+                      <Button
+                        key={c}
+                        type="button"
+                        size="sm"
+                        variant={quote.cadence === c ? "default" : "outline"}
+                        onClick={() => setCadence(c)}
+                        data-testid={`button-cadence-${c}`}
+                      >
+                        {CADENCE_LABELS[c]}
+                      </Button>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Longer terms unlock more options. Your rate is the same; this only changes how
+                    often you're billed.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
             <Card>
               <CardHeader>
                 <CardTitle className="text-base">Your details</CardTitle>
@@ -243,14 +278,26 @@ export default function LeaseBooking() {
                     </ol>
 
                     <Separator />
+                    {quote.depositTotal > 0 && (
+                      <div className="flex justify-between rounded-md bg-accent px-2 py-1.5">
+                        <span className="font-medium">Deposit to secure the room</span>
+                        <span className="font-semibold" data-testid="text-deposit">{money(quote.depositTotal)}</span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Due today</span>
+                      <span className="text-muted-foreground">First week's rent (at move-in)</span>
                       <span className="font-medium" data-testid="text-due-today">{money(quote.dueToday)}</span>
                     </div>
                     <div className="flex justify-between font-semibold">
                       <span>Total lease value</span>
                       <span data-testid="text-total-lease">{money(quote.totalLeaseValue)}</span>
                     </div>
+                    {quote.depositTotal > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        The refundable deposit secures your room; your first week's rent is charged
+                        right after. Remaining payments follow your schedule above.
+                      </p>
+                    )}
 
                     <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground" data-testid="text-proration">
                       {quote.prorationNote}

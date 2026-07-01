@@ -38,6 +38,9 @@ import { createDraftLease, previewLease, signLease } from "./lib/leaseFlow";
 import {
   startFirstPayment,
   finalizeFirstPayment,
+  startDepositPayment,
+  finalizeDepositPayment,
+  refundDeposit,
 } from "./lib/leasePayments";
 import { billAccruedLateFees, handleChargeFailure } from "./lib/dunning";
 import {
@@ -415,6 +418,28 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Start the co-living DEPOSIT payment (secures the room). Creates a Stripe
+  // Customer + a PaymentIntent for the refundable deposit that saves the card;
+  // returns the client secret for Elements. Paying it flips the room(s) to
+  // OCCUPIED and then charges the first week off-session (webhook).
+  app.post("/api/leases/:id/deposit", async (req, res, next) => {
+    try {
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled yet (Stripe test key not set)." });
+      }
+      const result = await startDepositPayment(req.params.id);
+      res.json({
+        clientSecret: result.clientSecret,
+        amount: result.amount,
+        portalToken: result.portalToken,
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY,
+      });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
   // Expose whether card payments are live (drives the client payment UI).
   app.get("/api/payments/config", (_req, res) => {
     res.json({
@@ -446,6 +471,20 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Admin: refund a lease's refundable security deposit (e.g. at move-out).
+  app.post("/api/admin/leases/:id/refund-deposit", requireAdmin, async (req, res, next) => {
+    try {
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled (Stripe key not set)." });
+      }
+      await refundDeposit(req.params.id);
+      res.json({ ok: true });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
   // Admin: open escalations raised by this app (Phase 8 UO consumes/resolves).
   app.get("/api/admin/escalations", requireAdmin, async (req, res, next) => {
     try {
@@ -473,6 +512,17 @@ export async function registerRoutes(app: Express): Promise<void> {
       const { propertyId, roomId, checkIn, checkOut, paymentMethod, guest } = parsed.data;
 
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
+
+      // Co-living rooms are booked through the LEASE flow (deposit secures the
+      // room → first week → schedule), not this one-time deposit checkout. This
+      // endpoint now serves STR (whole-property) only. Reject co-living so there
+      // is a single co-living money path and no divergent legacy deposit.
+      if (resolved.model === "COLIVING") {
+        return res.status(409).json({
+          message: "Co-living rooms are booked through the lease flow. Start from the room page.",
+        });
+      }
+
       const quote = buildQuote(resolved, paymentMethod);
       const reference = generateReference();
 
@@ -493,7 +543,8 @@ export async function registerRoutes(app: Express): Promise<void> {
 
       const dueNow = quote.dueNow.total;
       const surcharge = quote.dueNow.surcharge;
-      const paymentType = resolved.model === "COLIVING" ? "DEPOSIT" : "ONE_TIME";
+      // STR-only path now (co-living rejected above), so this is a one-time stay charge.
+      const paymentType = "ONE_TIME";
 
       const response: CreateBookingResponse = {
         reference,
@@ -521,37 +572,17 @@ export async function registerRoutes(app: Express): Promise<void> {
           paidAt: null,
         });
 
-        // Full Stripe Metadata Contract on the charge. STR = whole-property;
-        // a (legacy) co-living deposit booking carries its single room.
-        const chargeMetadata =
-          resolved.model === "COLIVING" && resolved.room
-            ? buildLeaseChargeMetadata({
-                entity: resolved.property.entity,
-                property: resolved.property,
-                lease: { id: "" }, // legacy deposit path has no lease row
-                rooms: [
-                  {
-                    roomId: resolved.room.id,
-                    roomNameSnapshot: resolved.room.name,
-                    roomNumberSnapshot: resolved.room.roomNumber ?? null,
-                  },
-                ],
-                paymentKind: "BOOKING_DEPOSIT",
-                scheduleSeq: null,
-              })
-            : buildStrChargeMetadata({
-                entity: resolved.property.entity,
-                property: resolved.property,
-                paymentKind: "BOOKING_DEPOSIT",
-                rateCadence: resolved.rateTier ?? null,
-              });
+        // Full Stripe Metadata Contract on the STR (whole-property) charge.
+        const chargeMetadata = buildStrChargeMetadata({
+          entity: resolved.property.entity,
+          property: resolved.property,
+          paymentKind: "BOOKING_DEPOSIT",
+          rateCadence: resolved.rateTier ?? null,
+        });
 
         const session = await createCheckoutSession({
           amount: dueNow,
-          description:
-            resolved.model === "COLIVING"
-              ? `Deposit — ${resolved.room!.name} @ ${resolved.property.name}`
-              : `Stay — ${resolved.property.name}`,
+          description: `Stay — ${resolved.property.name}`,
           reference,
           guestEmail: guest.email,
           successUrl: appUrl(req, `/confirmation/${reference}`),
@@ -988,7 +1019,12 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
     case "payment_intent.succeeded": {
       const pi = event.data.object as import("stripe").Stripe.PaymentIntent;
       const kind = pi.metadata?.payment_kind;
-      if (kind === "FIRST_PAYMENT") {
+      if (kind === "BOOKING_DEPOSIT" && pi.metadata?.lease_id) {
+        // Co-living deposit succeeded → secure the room(s) + charge first week.
+        // (STR bookings also use BOOKING_DEPOSIT but carry no lease_id; those are
+        // settled by checkout.session.completed, not here.)
+        await finalizeDepositPayment(pi.id);
+      } else if (kind === "FIRST_PAYMENT") {
         // Source of truth for lease activation.
         await finalizeFirstPayment(pi.id);
       } else if (kind === "SCHEDULED_RENT") {
