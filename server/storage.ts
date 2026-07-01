@@ -22,6 +22,7 @@ import {
   adminUsers,
   leases,
   leaseRooms,
+  vehicles,
   paymentSchedule,
   lateFees,
   notificationLog,
@@ -50,6 +51,8 @@ import {
   type InsertLease,
   type LeaseRoom,
   type InsertLeaseRoom,
+  type Vehicle,
+  type InsertVehicle,
   type PaymentScheduleRow,
   type InsertPaymentScheduleRow,
   type LateFee,
@@ -71,6 +74,7 @@ const ROOM_BLOCKING_LEASE_STATUSES = [
   "DRAFT",
   "PENDING_SIGNATURE",
   "PENDING_FIRST_PAYMENT",
+  "PENDING_VERIFICATION", // deposit paid, room secured, awaiting ID approval
   "ACTIVE",
 ] as const;
 
@@ -149,6 +153,10 @@ export interface IStorage {
   updateLease(id: string, updates: Partial<InsertLease>): Promise<Lease | undefined>;
   getLeaseByPortalToken(token: string): Promise<Lease | undefined>;
   getLeaseRooms(leaseId: string): Promise<LeaseRoom[]>;
+
+  // --- Vehicles (one per lease; parking identification) ---
+  getVehicleByLease(leaseId: string): Promise<Vehicle | undefined>;
+  upsertVehicleByLease(leaseId: string, data: Partial<InsertVehicle>): Promise<Vehicle>;
 
   // --- Guest messages (threaded portal questions / requests) ---
   getMessageThreadsByLease(leaseId: string): Promise<GuestMessage[]>; // roots only
@@ -523,6 +531,32 @@ class Storage implements IStorage {
 
   async getLeaseRooms(leaseId: string): Promise<LeaseRoom[]> {
     return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+
+  // --- Vehicles (one row per lease; upsert keyed on lease_id) ---
+  async getVehicleByLease(leaseId: string): Promise<Vehicle | undefined> {
+    const [row] = await db.select().from(vehicles).where(eq(vehicles.leaseId, leaseId));
+    return row;
+  }
+
+  async upsertVehicleByLease(
+    leaseId: string,
+    data: Partial<InsertVehicle>,
+  ): Promise<Vehicle> {
+    const existing = await this.getVehicleByLease(leaseId);
+    if (existing) {
+      const [row] = await db
+        .update(vehicles)
+        .set({ ...data, leaseId, updatedAt: new Date() })
+        .where(eq(vehicles.id, existing.id))
+        .returning();
+      return row;
+    }
+    const [row] = await db
+      .insert(vehicles)
+      .values({ ...data, leaseId })
+      .returning();
+    return row;
   }
 
   // --- Guest messages ---

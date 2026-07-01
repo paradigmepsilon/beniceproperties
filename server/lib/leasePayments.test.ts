@@ -38,6 +38,7 @@ import {
   finalizeFirstPayment,
   startDepositPayment,
   finalizeDepositPayment,
+  activateVerifiedLease,
   refundDeposit,
   runScheduledRentSweep,
 } from "./leasePayments";
@@ -212,41 +213,41 @@ describe("finalizeDepositPayment", () => {
     mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_first_1" });
   });
 
-  it("same-day move-in: deposit PAID secures + activates, then charges the first week off-session", async () => {
+  it("deposit PAID secures the room + parks in PENDING_VERIFICATION; does NOT activate or charge rent", async () => {
     mockStorage.getLeases.mockResolvedValue([
       lease({ depositStatus: "PENDING", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
     ]);
-    // loadLeaseContext re-fetches the lease inside chargeFirstWeekOffSession.
     mockStorage.getLease.mockResolvedValue(
       lease({ depositStatus: "PAID", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
     );
 
     await finalizeDepositPayment("pi_dep_1");
 
+    // Deposit paid + room secured.
     expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ depositStatus: "PAID" }));
     expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
-    expect(mockStripe.chargeSavedCard).toHaveBeenCalledWith(
-      expect.objectContaining({ paymentMethodId: "pm_saved_1", idempotencyKey: "lease-first-lease-1" }),
+    // Lease waits for ID verification — NOT active, and no rent charged yet.
+    expect(mockStorage.updateLease).toHaveBeenCalledWith(
+      "lease-1",
+      expect.objectContaining({ status: "PENDING_VERIFICATION" }),
     );
-    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    expect(mockStorage.updateLease).not.toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
   });
 
-  it("defers the first week for a FUTURE move-in: secures + activates, does NOT charge rent yet", async () => {
+  it("does NOT charge the first week even for a same-day move-in (activation is gated on approval)", async () => {
     mockStorage.getLeases.mockResolvedValue([
       lease({ depositStatus: "PENDING", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
     ]);
     mockStorage.getLease.mockResolvedValue(
       lease({ depositStatus: "PAID", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
     );
-    // seq 1 due far in the future → not chargeable now; rent sweep charges it on move-in.
-    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1, { dueDate: "2099-01-01" })]);
+    // seq 1 due today would previously charge — now it must wait for approval.
+    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1, { dueDate: "2000-01-01" })]);
 
     await finalizeDepositPayment("pi_dep_1");
 
-    // Room secured + lease activated by the DEPOSIT, regardless of move-in date.
     expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
-    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
-    // But the first week's rent is NOT charged yet — it's due on move-in.
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
   });
 
@@ -256,6 +257,67 @@ describe("finalizeDepositPayment", () => {
     ]);
     await finalizeDepositPayment("pi_dep_1");
     expect(mockStorage.updateRoom).not.toHaveBeenCalled();
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+});
+
+describe("activateVerifiedLease", () => {
+  beforeEach(() => {
+    mockStorage.getProperty.mockResolvedValue(PROP);
+    mockStorage.getLeaseRooms.mockResolvedValue(ROOMS);
+    mockStorage.getGuest.mockResolvedValue({ id: "g1", name: "Jane", email: "jane@example.com", phone: null });
+    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1)]);
+    mockStorage.updateLease.mockResolvedValue(undefined);
+    mockStorage.updateScheduleRow.mockResolvedValue(undefined);
+    mockStorage.updateRoom.mockResolvedValue(undefined);
+    mockStorage.hasLifecycleEvent.mockResolvedValue(true); // suppress lifecycle sends
+    mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_first_1" });
+  });
+
+  const verifiedLease = (over = {}) =>
+    lease({
+      status: "PENDING_VERIFICATION",
+      verificationStatus: "APPROVED",
+      depositStatus: "PAID",
+      stripeCustomerId: "cus_123",
+      stripePaymentMethodId: "pm_saved_1",
+      ...over,
+    });
+
+  it("same-day move-in: approval activates the lease and charges the first week off-session", async () => {
+    mockStorage.getLease.mockResolvedValue(verifiedLease());
+    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1, { dueDate: "2000-01-01" })]);
+
+    await activateVerifiedLease("lease-1");
+
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
+    expect(mockStripe.chargeSavedCard).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentMethodId: "pm_saved_1", idempotencyKey: "lease-first-lease-1" }),
+    );
+  });
+
+  it("future move-in: approval activates but defers the first week to the rent sweep", async () => {
+    mockStorage.getLease.mockResolvedValue(verifiedLease());
+    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1, { dueDate: "2099-01-01" })]);
+
+    await activateVerifiedLease("lease-1");
+
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("refuses to activate an unapproved lease", async () => {
+    mockStorage.getLease.mockResolvedValue(verifiedLease({ verificationStatus: "PENDING_REVIEW" }));
+    await expect(activateVerifiedLease("lease-1")).rejects.toThrow(/not approved/i);
+    expect(mockStorage.updateLease).not.toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent: an already-ACTIVE lease is a no-op", async () => {
+    mockStorage.getLease.mockResolvedValue(verifiedLease({ status: "ACTIVE" }));
+    await activateVerifiedLease("lease-1");
+    expect(mockStorage.updateLease).not.toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
   });
 });

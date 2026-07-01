@@ -7,3 +7,8 @@ dist/
 tsbuildinfo
 migrations/meta/_journal.json.lock
 .vercel
+
+# Local tooling artifacts (not app code)
+.claude/
+.agents/
+.playwright-mcp/

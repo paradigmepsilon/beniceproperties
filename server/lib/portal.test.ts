@@ -13,6 +13,7 @@ const mockStorage = vi.hoisted(() => ({
   getLateFeesByLease: vi.fn(),
   getMessageThreadsByLease: vi.fn(),
   getMessagesByThread: vi.fn(),
+  getVehicleByLease: vi.fn(),
   updateScheduleRow: vi.fn(),
   createMessage: vi.fn(),
   updateMessage: vi.fn(),
@@ -62,6 +63,7 @@ beforeEach(() => {
   mockStorage.getLeaseRooms.mockResolvedValue([{ roomNameSnapshot: "Room 1", roomNumberSnapshot: "1", roomId: "r1" }]);
   mockStorage.getLateFeesByLease.mockResolvedValue([]);
   mockStorage.getMessageThreadsByLease.mockResolvedValue([]);
+  mockStorage.getVehicleByLease.mockResolvedValue(undefined);
 });
 
 describe("token resolution", () => {

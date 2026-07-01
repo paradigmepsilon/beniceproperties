@@ -42,6 +42,17 @@ interface PaymentRow {
   subscription: Subscription | undefined;
 }
 
+interface VerificationRow {
+  leaseId: string;
+  signedName: string | null;
+  guestName: string | null;
+  guestEmail: string | null;
+  propertyName: string | null;
+  rooms: string[];
+  licenseUploadedAt: string | null;
+  startDate: string;
+}
+
 export default function AdminDashboard() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
@@ -90,6 +101,48 @@ export default function AdminDashboard() {
     },
   });
 
+  // --- Tenant identity verification queue ---
+  const verifications = useQuery<{ verifications: VerificationRow[] }>({
+    queryKey: ["/api/admin/verifications"],
+    enabled: !!me.data,
+  });
+
+  const approveVerification = useMutation({
+    mutationFn: async (leaseId: string) =>
+      apiRequest("POST", `/api/admin/leases/${leaseId}/approve-verification`),
+    onSuccess: () => {
+      toast({ title: "Approved", description: "Lease activated." });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/verifications"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Could not approve", description: e.message, variant: "destructive" }),
+  });
+
+  const rejectVerification = useMutation({
+    mutationFn: async ({ leaseId, reason }: { leaseId: string; reason: string }) =>
+      apiRequest("POST", `/api/admin/leases/${leaseId}/reject-verification`, { reason }),
+    onSuccess: () => {
+      toast({ title: "Rejected", description: "Tenant notified to re-upload." });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/verifications"] });
+    },
+    onError: (e: Error) =>
+      toast({ title: "Could not reject", description: e.message, variant: "destructive" }),
+  });
+
+  /** Open the license image in a new tab via a short-lived presigned URL. */
+  async function viewLicense(leaseId: string) {
+    try {
+      const res = await apiRequest("GET", `/api/admin/leases/${leaseId}/license-url`);
+      const { url } = await res.json();
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      toast({ title: "Could not open license", description: (e as Error).message, variant: "destructive" });
+    }
+  }
+
+  // Per-lease reject-reason drafts (keyed by leaseId).
+  const [rejectDrafts, setRejectDrafts] = useState<Record<string, string>>({});
+
   if (me.isLoading) return <main className="p-12 text-muted-foreground">Loading…</main>;
   if (!me.data) return null;
 
@@ -118,6 +171,10 @@ export default function AdminDashboard() {
           </TabsTrigger>
           <TabsTrigger value="inventory" data-testid="tab-inventory">Inventory</TabsTrigger>
           <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>
+          <TabsTrigger value="verifications" data-testid="tab-verifications">
+            Verifications
+            {verifications.data?.verifications.length ? ` (${verifications.data.verifications.length})` : ""}
+          </TabsTrigger>
         </TabsList>
 
         {/* Overview */}
@@ -192,6 +249,73 @@ export default function AdminDashboard() {
         {/* Inventory */}
         <TabsContent value="inventory" className="mt-6">
           <InventoryManager properties={properties.data ?? []} />
+        </TabsContent>
+
+        {/* Verifications — review uploaded licenses, then approve (activates lease) or reject */}
+        <TabsContent value="verifications" className="mt-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Pending identity verification</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="divide-y text-sm">
+                {verifications.data?.verifications.map((v) => (
+                  <div key={v.leaseId} className="py-4 space-y-2" data-testid={`verification-${v.leaseId}`}>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-medium">
+                          Signed as: {v.signedName || "—"}
+                          {v.guestName && v.signedName && v.guestName.trim().toLowerCase() !== v.signedName.trim().toLowerCase() && (
+                            <span className="ml-2 text-xs text-destructive">(guest record: {v.guestName})</span>
+                          )}
+                        </div>
+                        <div className="text-muted-foreground">
+                          {v.guestEmail} · {v.propertyName} · {v.rooms.join(", ")} · move-in {v.startDate}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => viewLicense(v.leaseId)}
+                        data-testid={`button-view-license-${v.leaseId}`}
+                      >
+                        View license
+                      </Button>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        disabled={approveVerification.isPending}
+                        onClick={() => approveVerification.mutate(v.leaseId)}
+                        data-testid={`button-approve-${v.leaseId}`}
+                      >
+                        Approve &amp; activate
+                      </Button>
+                      <Input
+                        placeholder="Reason to reject…"
+                        value={rejectDrafts[v.leaseId] ?? ""}
+                        className="h-8 max-w-xs"
+                        data-testid={`input-reject-reason-${v.leaseId}`}
+                        onChange={(e) => setRejectDrafts({ ...rejectDrafts, [v.leaseId]: e.target.value })}
+                      />
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        disabled={rejectVerification.isPending || !(rejectDrafts[v.leaseId] ?? "").trim()}
+                        onClick={() => rejectVerification.mutate({ leaseId: v.leaseId, reason: rejectDrafts[v.leaseId] })}
+                        data-testid={`button-reject-${v.leaseId}`}
+                      >
+                        Reject
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {!verifications.data?.verifications.length && (
+                  <p className="py-4 text-muted-foreground">No licenses awaiting review.</p>
+                )}
+              </div>
+            </CardContent>
+          </Card>
         </TabsContent>
 
         {/* Payments */}

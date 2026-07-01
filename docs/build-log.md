@@ -716,3 +716,81 @@ now carries full charge metadata.
 SendGrid/Twilio creds, set `UO_BNP_API_TOKEN` + `CRON_SECRET` in prod, replace
 placeholder/expansion-test inventory with real properties, and run a real
 (refundable) end-to-end checkout once live keys are in.
+
+---
+
+## PHASE 6.5 — Tenant identity verification: license + vehicle upload, approval-gated activation
+
+Post-build addition. Lets a signed, deposit-paid co-living tenant upload their
+driver's license and vehicle info from the portal; an admin reviews the license
+(verifying the tenant's name against the signed agreement) and **approves to
+activate the lease**. Additive — the STR path and every existing table are
+untouched; nothing in Phases 1–9 changed behavior except the deposit→activation
+split described below.
+
+**What was built (files touched):**
+- **File storage (new dependency):** `server/lib/storage-r2.ts` — `uploadBuffer` /
+  `getPresignedDownloadUrl` / `isR2Configured` against the **same Cloudflare R2
+  bucket UO uses** (`@aws-sdk/client-s3`, S3-compatible). BNP objects are
+  namespaced under a `bnp/` key prefix. Licenses are **private** — server-derived
+  keys, presigned GET reads only (600 s), never a public URL. Env-gated exactly
+  like Stripe/email (`isR2Configured()`): degrades to a clean 503 when the four
+  `R2_*` vars are unset. Deps added: `@aws-sdk/client-s3`,
+  `@aws-sdk/s3-request-presigner`, `multer`, `@types/multer`.
+- **Schema (additive):** `shared/schema.ts` — six verification columns on `leases`
+  (`verification_status` + license/review metadata), a new `PENDING_VERIFICATION`
+  lease status, `VERIFICATION_STATUSES`, a new `vehicles` table (one row per lease),
+  and `VERIFICATION_PENDING` added to `ESCALATION_KINDS`. Storage:
+  `getVehicleByLease` / `upsertVehicleByLease`; `PENDING_VERIFICATION` added to
+  `ROOM_BLOCKING_LEASE_STATUSES` so a deposit-paid, awaiting-review lease keeps
+  holding its room.
+- **Service:** `server/lib/verification.ts` — token-authed `uploadLicense` /
+  `saveVehicle` / `uploadVehiclePhoto` (reuses `resolvePortalLease`), plus
+  admin-side `getLicenseViewUrl` / `approveVerification` / `rejectVerification`.
+  `getPortalView` extended with `verification` + `vehicle` blocks.
+- **Activation gate (`server/lib/leasePayments.ts`):** `finalizeDepositPayment` now
+  secures the room + parks the lease in `PENDING_VERIFICATION` (no longer straight
+  to ACTIVE, no first-week charge). New `activateVerifiedLease()` — called from the
+  admin approve action — does the ACTIVE transition + `onLeaseActivated` + first-week
+  rent (charge if move-in ≤ today, else defer to the sweep). Rent sweep + dunning
+  already filter `status === "ACTIVE"`, so an unverified tenant is never charged —
+  verified, no extra guard needed. Deposit-receipt copy updated to direct the tenant
+  to upload their license.
+- **Routes (`server/routes.ts`):** 3 portal routes (`POST /api/portal/:token/license`,
+  `/vehicle`, `/vehicle-photo` — multer memory storage for the two file routes) +
+  4 admin routes (`GET /api/admin/verifications`, `GET
+  /api/admin/leases/:id/license-url`, `POST …/approve-verification`, `POST
+  …/reject-verification`), all `requireAdmin`.
+- **UI:** `client/src/pages/portal.tsx` — Verification card (upload / in-review /
+  rejected-with-reason / approved states) + Vehicle card (make/model/year/color/
+  plate/state + optional photo, "no vehicle" toggle).
+  `client/src/pages/admin/dashboard.tsx` — new "Verifications" tab: queue with
+  signed-name vs guest-name comparison, "View license" (presigned), Approve &
+  activate, Reject-with-reason.
+- **Migration:** `scripts/push-verification-schema.mjs` — idempotent, additive-only
+  (`ADD COLUMN IF NOT EXISTS` / `CREATE TABLE IF NOT EXISTS`), mirroring the
+  existing `push-lease-schema.mjs` pattern (drizzle-kit push prompts without a TTY).
+  Pre/post state verified; re-run is a confirmed no-op. **Zero destructive
+  operations.**
+
+**Decisions:** manual admin review (no OCR/KYC vendor); reuse UO's R2 bucket per the
+user's instruction (object storage, not the forbidden UO Postgres; `bnp/` prefix
+isolates it); deposit reserves the room, admin approval activates; on reject the
+tenant is emailed/SMSed the reason + portal link and the room stays held.
+
+**Tests + results:** `npm run check` (tsc) clean; `npm test` → **185/185 pass**
+(was 164; added `server/lib/verification.test.ts` (16) + `activateVerifiedLease`
+cases, and updated the deposit tests to assert the new `PENDING_VERIFICATION`
+landing + no first-week charge). `npm run build` succeeds (client bundle + server
+esbuild + PWA). Dev server boots on `127.0.0.1:3005`; all 7 routes verified live —
+admin routes 401 unauthed, portal upload 503 when R2 unset (env-gate working),
+vehicle route 404 on a bad token.
+
+**Deferred:** OCR/automated name match; insurance-card capture; a full password
+account system (the portal token stays the login); STR-guest verification
+(co-living only, per the request).
+
+**Carry-through for go-live:** set the four `R2_*` env vars in this app's
+environment (the same values UO uses) so uploads leave dry-run mode.
+
+**PHASE 6.5: COMPLETE — tests green**

@@ -67,11 +67,30 @@ export const PAYMENT_CADENCES = ["WEEKLY", "BIWEEKLY", "MONTHLY"] as const;
 export const LEASE_STATUSES = [
   "DRAFT", // created, not yet signed
   "PENDING_SIGNATURE", // presented to guest for signature
-  "PENDING_FIRST_PAYMENT", // signed; awaiting schedule_seq 1
-  "ACTIVE", // signed AND first payment succeeded
+  "PENDING_FIRST_PAYMENT", // signed; awaiting the securing payment (deposit)
+  "PENDING_VERIFICATION", // deposit paid + room secured; awaiting ID approval
+  "ACTIVE", // verified (ID approved) AND securing payment succeeded
   "COMPLETED", // term finished, fully paid
   "TERMINATED", // ended early
   "DEFAULTED", // unpaid past the default threshold
+] as const;
+// Tenant identity verification (driver's license review) lifecycle. A signed
+// lease whose deposit is paid parks in PENDING_VERIFICATION until an admin
+// APPROVES the uploaded license (verifying the tenant's name) — approval is what
+// activates the lease. NOT_SUBMITTED → PENDING_REVIEW (on upload) →
+// APPROVED | REJECTED. A rejected tenant re-uploads (back to PENDING_REVIEW).
+export const VERIFICATION_STATUSES = [
+  "NOT_SUBMITTED",
+  "PENDING_REVIEW",
+  "APPROVED",
+  "REJECTED",
+] as const;
+/** US state/territory codes for a vehicle plate. */
+export const US_STATE_CODES = [
+  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS",
+  "KY","LA","ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY",
+  "NC","ND","OH","OK","OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV",
+  "WI","WY","DC",
 ] as const;
 export const SCHEDULE_STATUSES = [
   "SCHEDULED", // future, not yet due
@@ -143,7 +162,12 @@ export const NOTIFICATION_KINDS = [
   "DEFAULTED",
 ] as const;
 
-export const ESCALATION_KINDS = ["PAYMENT_FAILED", "PAYMENT_OVERDUE", "LEASE_DEFAULTED"] as const;
+export const ESCALATION_KINDS = [
+  "PAYMENT_FAILED",
+  "PAYMENT_OVERDUE",
+  "LEASE_DEFAULTED",
+  "VERIFICATION_PENDING", // a tenant uploaded a license awaiting admin review
+] as const;
 export const ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"] as const;
 export const ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"] as const;
 
@@ -551,6 +575,20 @@ export const leases = pgTable(
     depositStatus: text("deposit_status").notNull().default("PENDING"),
     depositStripePaymentIntentId: text("deposit_stripe_payment_intent_id"),
     depositPaidAt: timestamp("deposit_paid_at"),
+    // --- Tenant identity verification (driver's license review). The tenant
+    // uploads a license from the portal; an admin reviews it against signedName
+    // and APPROVES to activate the lease. The license image lives in R2 (private);
+    // only the object key is stored here — no image bytes, no PII beyond the key. ---
+    // One of VERIFICATION_STATUSES.
+    verificationStatus: text("verification_status").notNull().default("NOT_SUBMITTED"),
+    // R2 object key for the uploaded license (bnp/licenses/<leaseId>/<uuid>.<ext>).
+    licenseR2Key: text("license_r2_key"),
+    licenseUploadedAt: timestamp("license_uploaded_at"),
+    verificationReviewedAt: timestamp("verification_reviewed_at"),
+    // Admin id/email who approved or rejected.
+    verificationReviewedBy: text("verification_reviewed_by"),
+    // Reason surfaced to the tenant on rejection (why to re-upload).
+    verificationRejectionReason: text("verification_rejection_reason"),
     // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
     stripeCustomerId: text("stripe_customer_id"),
     stripePaymentMethodId: text("stripe_payment_method_id"),
@@ -571,6 +609,7 @@ export const leases = pgTable(
 export const insertLeaseSchema = createInsertSchema(leases, {
   paymentCadence: z.enum(PAYMENT_CADENCES),
   status: z.enum(LEASE_STATUSES).optional(),
+  verificationStatus: z.enum(VERIFICATION_STATUSES).optional(),
 }).omit({ id: true, createdAt: true, updatedAt: true });
 
 export type Lease = typeof leases.$inferSelect;
@@ -608,6 +647,49 @@ export const insertLeaseRoomSchema = createInsertSchema(leaseRooms).omit({
 
 export type LeaseRoom = typeof leaseRooms.$inferSelect;
 export type InsertLeaseRoom = z.infer<typeof insertLeaseRoomSchema>;
+
+// =============================================================================
+// vehicles — a tenant's vehicle for a lease (parking identification in a shared
+// house). One row per lease (upsert by lease_id). hasVehicle=false means the
+// tenant declared no vehicle and the car fields stay null. The optional vehicle
+// photo lives in R2 (private); only the object key is stored here.
+// =============================================================================
+
+export const vehicles = pgTable(
+  "vehicles",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id")
+      .notNull()
+      .references(() => leases.id),
+    // False when the tenant declares they have no vehicle (car fields null).
+    hasVehicle: boolean("has_vehicle").notNull().default(true),
+    make: text("make"),
+    model: text("model"),
+    year: integer("year"),
+    color: text("color"),
+    plate: text("plate"),
+    // Two-letter US state/territory code (US_STATE_CODES).
+    plateState: text("plate_state"),
+    // R2 object key for an optional vehicle photo (bnp/vehicles/<leaseId>/<uuid>.<ext>).
+    photoR2Key: text("photo_r2_key"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    leaseIdx: index("vehicles_lease_idx").on(table.leaseId),
+  }),
+);
+
+export const insertVehicleSchema = createInsertSchema(vehicles, {
+  plateState: z.enum(US_STATE_CODES).nullish(),
+  // Reasonable bounds; a plausible vehicle year range. Nullable (cleared when the
+  // tenant declares no vehicle).
+  year: z.number().int().min(1900).max(2100).nullish(),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+
+export type Vehicle = typeof vehicles.$inferSelect;
+export type InsertVehicle = z.infer<typeof insertVehicleSchema>;
 
 // =============================================================================
 // payment_schedule — the installment plan generated from a lease's term +

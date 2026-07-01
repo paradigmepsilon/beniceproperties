@@ -300,20 +300,22 @@ export async function startDepositPayment(leaseId: string): Promise<StartDeposit
 
 /**
  * Finalize a successful deposit (called from the webhook). Idempotent. Marks the
- * deposit PAID, saves the card, OCCUPIES the room(s) — the room is secured — and
- * activates the lease. The DEPOSIT is the only charge due at booking.
+ * deposit PAID, saves the card, OCCUPIES the room(s) — the room is SECURED — and
+ * parks the lease in PENDING_VERIFICATION. The DEPOSIT is the only charge due at
+ * booking.
  *
- * The first week's rent (schedule_seq 1) is due on the MOVE-IN date (start_date),
- * not at booking. So we only charge it now if move-in is today or already past;
- * for a future move-in we leave seq 1 SCHEDULED and the rent sweep charges it on
- * the start date like any other installment.
+ * Activation is GATED on identity verification: the tenant uploads a driver's
+ * license from the portal and an admin approves it (verifying their name), which
+ * calls activateVerifiedLease() below — that is what moves the lease → ACTIVE,
+ * fires the welcome lifecycle, and charges/defers the first week's rent. Paying
+ * the deposit no longer activates on its own.
  */
 export async function finalizeDepositPayment(paymentIntentId: string): Promise<void> {
   const lease = await findLeaseByDepositPaymentIntent(paymentIntentId);
   if (!lease) return; // not a deposit PI we track
   if (lease.depositStatus === "PAID") return; // already finalized
 
-  // Read the saved payment method off the deposit PI so rent can charge it.
+  // Read the saved payment method off the deposit PI so rent can charge it later.
   let savedPaymentMethodId: string | null = lease.stripePaymentMethodId ?? null;
   try {
     const pi = await retrievePaymentIntent(paymentIntentId);
@@ -323,38 +325,88 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
     log(`could not read saved payment method for deposit ${paymentIntentId}: ${(err as Error).message}`, "stripe");
   }
 
-  // Deposit paid → secure the room(s), save the card, activate the lease.
+  // Deposit paid → secure the room(s), save the card, await verification.
   await storage.updateLease(lease.id, {
     depositStatus: "PAID",
     depositPaidAt: new Date(),
     depositStripePaymentIntentId: paymentIntentId,
     stripePaymentMethodId: savedPaymentMethodId ?? undefined,
-    status: "ACTIVE",
+    status: "PENDING_VERIFICATION",
   });
   const leaseRooms = await storage.getLeaseRooms(lease.id);
   for (const lr of leaseRooms) {
     await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
   }
-  log(`lease ${lease.id} ACTIVE — deposit PAID via ${paymentIntentId}; room(s) secured`, "stripe");
+  log(
+    `lease ${lease.id} PENDING_VERIFICATION — deposit PAID via ${paymentIntentId}; room(s) secured, awaiting ID approval`,
+    "stripe",
+  );
 
-  // Deposit receipt + activation lifecycle (non-fatal).
+  // Deposit receipt only (activation lifecycle fires later, on approval).
   try {
     const property = await storage.getProperty(lease.propertyId);
     const guest = await storage.getGuest(lease.guestId);
     if (property && guest) await onDepositReceived({ lease, property, guest });
-    await onLeaseActivated(lease.id);
   } catch (err) {
     log(`deposit lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
+  // NOTE: first week's rent is NOT charged here — activateVerifiedLease() owns it,
+  // so an unverified tenant is never charged rent.
+}
 
-  // First week's rent is due on the move-in date. Charge it now only if move-in
-  // is today or past; otherwise the rent sweep charges seq 1 on start_date.
+/**
+ * Activate a signed, deposit-paid lease once its identity verification is
+ * APPROVED (called from the admin approve action). This is the code that used to
+ * live at the tail of finalizeDepositPayment — the ACTIVE transition, the welcome
+ * lifecycle, and the first-week rent — now gated behind approval.
+ *
+ * Idempotent: a no-op if the lease is already ACTIVE. Guards that the deposit is
+ * paid and verification is APPROVED so it can't activate an unverified lease.
+ *
+ * First week's rent (schedule_seq 1) is due on the MOVE-IN date (start_date): we
+ * charge it now only if move-in is today or past; for a future move-in seq 1 stays
+ * SCHEDULED and the rent sweep charges it on start_date like any other installment.
+ */
+export async function activateVerifiedLease(leaseId: string): Promise<void> {
+  const lease = await storage.getLease(leaseId);
+  if (!lease) throw new LeaseError("Lease not found", 404);
+  if (lease.status === "ACTIVE") return; // already activated
+  if (lease.status !== "PENDING_VERIFICATION") {
+    throw new LeaseError(
+      `Lease can't be activated from status ${lease.status} (must be PENDING_VERIFICATION)`,
+      409,
+    );
+  }
+  if (lease.verificationStatus !== "APPROVED") {
+    throw new LeaseError("Lease identity verification is not approved yet", 409);
+  }
+  if (lease.depositStatus !== "PAID") {
+    throw new LeaseError("Lease deposit is not paid", 409);
+  }
+
+  await storage.updateLease(lease.id, { status: "ACTIVE" });
+  // Defensively ensure room(s) OCCUPIED (already set at deposit; idempotent).
+  const leaseRooms = await storage.getLeaseRooms(lease.id);
+  for (const lr of leaseRooms) {
+    await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
+  }
+  log(`lease ${lease.id} ACTIVE — identity verified/approved`, "stripe");
+
+  // Welcome + schedule recap + admin notice (non-fatal).
+  try {
+    await onLeaseActivated(lease.id);
+  } catch (err) {
+    log(`activation lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
+  }
+
+  // First week's rent — charge now only if move-in is today/past; else defer.
+  const savedPaymentMethodId = lease.stripePaymentMethodId ?? null;
   const schedule = await storage.getScheduleByLease(lease.id);
   const first = schedule.find((s) => s.scheduleSeq === 1);
   const dueNow = first && first.status !== "PAID" && first.dueDate <= todayYmd();
   if (dueNow && savedPaymentMethodId) {
     await chargeFirstWeekOffSession(lease.id, savedPaymentMethodId).catch((err) => {
-      log(`first-week charge on move-in failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
+      log(`first-week charge on activation failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
     });
   } else if (first && !dueNow) {
     log(`lease ${lease.id} first week (${first.dueDate}) deferred to move-in; rent sweep will charge it`, "stripe");

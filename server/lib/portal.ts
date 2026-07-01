@@ -36,13 +36,14 @@ export async function resolvePortalLease(token: string): Promise<Lease> {
 
 export async function getPortalView(token: string) {
   const lease = await resolvePortalLease(token);
-  const [property, guest, rooms, schedule, lateFees, threads] = await Promise.all([
+  const [property, guest, rooms, schedule, lateFees, threads, vehicle] = await Promise.all([
     storage.getProperty(lease.propertyId),
     storage.getGuest(lease.guestId),
     storage.getLeaseRooms(lease.id),
     storage.getScheduleByLease(lease.id),
     storage.getLateFeesByLease(lease.id),
     storage.getMessageThreadsByLease(lease.id),
+    storage.getVehicleByLease(lease.id),
   ]);
 
   const accruedLateFeeTotal =
@@ -64,6 +65,26 @@ export async function getPortalView(token: string) {
       signedPdfUrl: lease.signedPdfUrl,
       hasSavedCard: Boolean(lease.stripeCustomerId && lease.stripePaymentMethodId),
     },
+    // Identity verification (driver's license review) state. The image itself is
+    // never exposed here — only whether one is on file and the review status.
+    verification: {
+      status: lease.verificationStatus, // NOT_SUBMITTED | PENDING_REVIEW | APPROVED | REJECTED
+      hasLicense: Boolean(lease.licenseR2Key),
+      uploadedAt: lease.licenseUploadedAt,
+      rejectionReason: lease.verificationRejectionReason,
+    },
+    vehicle: vehicle
+      ? {
+          hasVehicle: vehicle.hasVehicle,
+          make: vehicle.make,
+          model: vehicle.model,
+          year: vehicle.year,
+          color: vehicle.color,
+          plate: vehicle.plate,
+          plateState: vehicle.plateState,
+          hasPhoto: Boolean(vehicle.photoR2Key),
+        }
+      : null,
     property: property ? { name: property.name, location: property.location } : null,
     guest: guest ? { name: guest.name, email: guest.email } : null,
     rooms: rooms.map((r) => ({ name: r.roomNameSnapshot, roomNumber: r.roomNumberSnapshot })),

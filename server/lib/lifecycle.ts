@@ -68,13 +68,15 @@ export const LIFECYCLE_TEMPLATES = {
       `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ` +
       `${v.property}. Thank you! A record is available in your portal.`,
   }),
-  depositReceipt: (v: { name: string; amount: string; property: string; room: string }) => ({
+  depositReceipt: (v: { name: string; amount: string; property: string; room: string; portalUrl: string }) => ({
     subject: `Your room is secured — ${v.property} 🔒`,
     body:
       `Hi ${v.name}, we received your refundable security deposit of ${v.amount} — your room ` +
-      `(${v.room}) at ${v.property} is now secured. The deposit is held and returned at the end ` +
-      `of your lease per the agreement. Your first week's rent is charged next; the full schedule ` +
-      `is in your portal.`,
+      `(${v.room}) at ${v.property} is now secured and held for you. The deposit is returned at the ` +
+      `end of your lease per the agreement.\n\n` +
+      `One last step to activate your lease: upload a photo of your driver's license from your portal ` +
+      `so we can verify your identity. Once we approve it, your lease goes active and your first ` +
+      `week's rent is charged. Upload here: ${v.portalUrl}`,
   }),
   leaseEnding: (v: { name: string; property: string; end: string; days: number; portalUrl: string }) => ({
     subject: `Your lease ends in ${v.days} days`,
@@ -214,6 +216,7 @@ export async function onDepositReceived(args: {
     amount: fmtMoney(parseFloat(lease.depositAmountSnapshot ?? "0")),
     property: property.name,
     room: roomNames,
+    portalUrl: portalUrl(lease),
   });
   const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
   await storage.recordLifecycleEvent({

@@ -10,6 +10,7 @@
 // =============================================================================
 
 import express, { type Express } from "express";
+import multer from "multer";
 import { z } from "zod";
 import { setupAuth, requireAdmin } from "./auth";
 import { storage } from "./storage";
@@ -22,6 +23,7 @@ import {
 import {
   insertPropertySchema,
   insertRoomSchema,
+  US_STATE_CODES,
 } from "@shared/schema";
 import {
   resolveBooking,
@@ -50,6 +52,15 @@ import {
   replyToThread,
   getThread,
 } from "./lib/portal";
+import {
+  uploadLicense,
+  saveVehicle,
+  uploadVehiclePhoto,
+  getLicenseViewUrl,
+  approveVerification,
+  rejectVerification,
+  type UploadedFile,
+} from "./lib/verification";
 import { requireServiceToken } from "./lib/serviceAuth";
 import * as uo from "./lib/uoApi";
 import { buildReconciliationReport } from "./lib/reconciliation";
@@ -71,6 +82,20 @@ function appUrl(req: express.Request, path: string): string {
   const proto = req.protocol;
   const host = req.get("host");
   return `${proto}://${host}${path}`;
+}
+
+// In-memory multipart parsing for the tenant upload routes (license / vehicle
+// photo). Files are held in memory and handed straight to R2 — never written to
+// disk. 12 MB cap mirrors the service-side limit; single field named "file".
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 12 * 1024 * 1024 },
+});
+
+/** Normalize a multer file into the verification service's UploadedFile. */
+function toUploadedFile(f: Express.Multer.File | undefined): UploadedFile | undefined {
+  if (!f) return undefined;
+  return { buffer: f.buffer, mimetype: f.mimetype, size: f.size };
 }
 
 // Shared reconciliation handler (Phase 9). Module-level so both the UO and admin
@@ -397,6 +422,53 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // -------------------------------------------------------------------------
+  // TENANT VERIFICATION (Phase 6.5) — token-authenticated, portal-side. Upload a
+  // driver's license (moves lease → PENDING_REVIEW) + optional vehicle info. The
+  // license/vehicle-photo routes take multipart/form-data (field "file") parsed
+  // by multer in-memory; the vehicle route is JSON.
+  // -------------------------------------------------------------------------
+  app.post("/api/portal/:token/license", upload.single("file"), async (req, res, next) => {
+    try {
+      const result = await uploadLicense(req.params.token, toUploadedFile(req.file));
+      res.status(201).json(result);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  app.post("/api/portal/:token/vehicle", async (req, res, next) => {
+    try {
+      const schema = z.object({
+        hasVehicle: z.boolean(),
+        make: z.string().max(60).nullish(),
+        model: z.string().max(60).nullish(),
+        year: z.number().int().min(1900).max(2100).nullish(),
+        color: z.string().max(40).nullish(),
+        plate: z.string().max(15).nullish(),
+        plateState: z.enum(US_STATE_CODES).nullish(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const vehicle = await saveVehicle(req.params.token, parsed.data);
+      res.status(200).json({ id: vehicle.id, hasVehicle: vehicle.hasVehicle });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  app.post("/api/portal/:token/vehicle-photo", upload.single("file"), async (req, res, next) => {
+    try {
+      const result = await uploadVehiclePhoto(req.params.token, toUploadedFile(req.file));
+      res.status(201).json(result);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
   // Start the co-living first payment (Phase 4). Creates a Stripe Customer + a
   // PaymentIntent that saves the card; returns the client secret for Elements.
   // Booking becomes ACTIVE only after Stripe confirms success (webhook).
@@ -479,6 +551,79 @@ export async function registerRoutes(app: Express): Promise<void> {
       }
       await refundDeposit(req.params.id);
       res.json({ ok: true });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // ADMIN — tenant identity verification review (Phase 6.5). List the queue,
+  // view an uploaded license (short-lived presigned URL — never public), and
+  // approve (verifies name → activates lease) or reject (notifies tenant).
+  // -------------------------------------------------------------------------
+  function adminActor(req: express.Request): string {
+    const u = req.user as { email?: string; id?: string } | undefined;
+    return u?.email || u?.id || "admin";
+  }
+
+  // Leases awaiting ID review, with the guest + typed lease name for comparison.
+  app.get("/api/admin/verifications", requireAdmin, async (_req, res, next) => {
+    try {
+      const leases = await storage.getLeases({ status: "PENDING_VERIFICATION" });
+      const pending = leases.filter((l) => l.verificationStatus === "PENDING_REVIEW");
+      const rows = await Promise.all(
+        pending.map(async (l) => {
+          const [guest, property, leaseRooms] = await Promise.all([
+            storage.getGuest(l.guestId),
+            storage.getProperty(l.propertyId),
+            storage.getLeaseRooms(l.id),
+          ]);
+          return {
+            leaseId: l.id,
+            signedName: l.signedName, // the name the tenant signed with
+            guestName: guest?.name ?? null,
+            guestEmail: guest?.email ?? null,
+            propertyName: property?.name ?? null,
+            rooms: leaseRooms.map((r) => r.roomNameSnapshot),
+            licenseUploadedAt: l.licenseUploadedAt,
+            startDate: l.startDate,
+          };
+        }),
+      );
+      res.json({ verifications: rows });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Presigned URL to view a lease's uploaded license (600s; private object).
+  app.get("/api/admin/leases/:id/license-url", requireAdmin, async (req, res, next) => {
+    try {
+      res.json(await getLicenseViewUrl(req.params.id));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Approve verification → verifies name + activates the lease.
+  app.post("/api/admin/leases/:id/approve-verification", requireAdmin, async (req, res, next) => {
+    try {
+      res.json(await approveVerification(req.params.id, adminActor(req)));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Reject verification → records reason + notifies tenant to re-upload.
+  app.post("/api/admin/leases/:id/reject-verification", requireAdmin, async (req, res, next) => {
+    try {
+      const schema = z.object({ reason: z.string().min(1, "A reason is required").max(500) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await rejectVerification(req.params.id, parsed.data.reason, adminActor(req)));
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
