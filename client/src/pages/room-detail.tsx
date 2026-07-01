@@ -6,7 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import type { Property, Room } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
-import { ListingImage } from "@/components/listing-image";
+import { ListingGallery } from "@/components/listing-gallery";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { money } from "@/lib/format";
@@ -51,9 +51,8 @@ export default function RoomDetail() {
           </Link>
         )}
 
-        <div className="relative aspect-[16/7] w-full overflow-hidden rounded-3xl">
-          <ListingImage id={room.id} photos={room.photos} alt={room.name} kind="ROOM" rounded="rounded-3xl" />
-        </div>
+        <ListingGallery id={room.id} photos={room.photos} alt={room.name} kind="ROOM" rounded="rounded-3xl" />
+
 
         <div className="mt-6 grid gap-10 lg:grid-cols-[1fr_360px]">
           <div>

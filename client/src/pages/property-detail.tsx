@@ -9,6 +9,7 @@ import { MapPin, ArrowLeft } from "lucide-react";
 import type { Property, Room } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingImage } from "@/components/listing-image";
+import { ListingGallery } from "@/components/listing-gallery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -46,17 +47,29 @@ export default function PropertyDetail() {
           <ArrowLeft className="h-4 w-4" /> All stays
         </Link>
 
-        {/* Hero */}
-        <div className="relative aspect-[16/7] w-full overflow-hidden rounded-3xl">
-          <ListingImage
+        {/* Hero — STR gets a full gallery; co-living house shows a single image
+            (you book a room, not the house, so the house just needs one photo). */}
+        {property.type === "STR" ? (
+          <ListingGallery
             id={property.id}
             photos={property.photos}
             alt={property.name}
             location={property.location}
-            kind={property.type as "STR" | "COLIVING"}
+            kind="STR"
             rounded="rounded-3xl"
           />
-        </div>
+        ) : (
+          <div className="relative aspect-[16/7] w-full overflow-hidden rounded-3xl">
+            <ListingImage
+              id={property.id}
+              photos={property.photos}
+              alt={property.name}
+              location={property.location}
+              kind="COLIVING"
+              rounded="rounded-3xl"
+            />
+          </div>
+        )}
 
         <div className="mt-6 grid gap-10 lg:grid-cols-[1fr_360px]">
           {/* Left: details */}
