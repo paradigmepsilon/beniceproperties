@@ -55,45 +55,38 @@ export default function LeaseSign() {
   const email = params.get("email") ?? "";
   const phone = params.get("phone") ?? undefined;
 
-  const [leaseId, setLeaseId] = useState<string | null>(null);
   const [documentHtml, setDocumentHtml] = useState<string>("");
   const [signedName, setSignedName] = useState(name);
   const [affirmed, setAffirmed] = useState(false);
   const [signed, setSigned] = useState<SignLeaseResponse | null>(null);
 
-  // Create the DRAFT lease once on mount (idempotent at the UI level via a guard).
-  const draft = useMutation({
+  const leaseBody = { propertyId, roomIds, startDate, endDate, cadence, guest: { name, email, phone } };
+
+  // Render the agreement for review on load — this does NOT create a lease or
+  // hold the room. The lease is only created when the guest actually signs.
+  const preview = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/leases", {
-        propertyId,
-        roomIds,
-        startDate,
-        endDate,
-        cadence,
-        guest: { name, email, phone },
-      });
-      return (await res.json()) as CreateDraftLeaseResponse;
+      const res = await apiRequest("POST", "/api/leases/preview", leaseBody);
+      return (await res.json()) as { documentHtml: string };
     },
-    onSuccess: (data) => {
-      setLeaseId(data.leaseId);
-      setDocumentHtml(data.documentHtml);
-    },
+    onSuccess: (data) => setDocumentHtml(data.documentHtml),
     onError: (err: Error) =>
       toast({ title: "Could not prepare your lease", description: cleanError(err), variant: "destructive" }),
   });
 
   const hasSelection = Boolean(propertyId) && roomIds.length > 0 && Boolean(startDate && endDate);
   useEffect(() => {
-    if (hasSelection && !leaseId && !draft.isPending) draft.mutate();
+    if (hasSelection && !documentHtml && !preview.isPending) preview.mutate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasSelection]);
 
+  // On sign: create the DRAFT lease (this is what reserves the room) and sign it
+  // in one step, so an abandoned review never leaves a hold behind.
   const sign = useMutation({
     mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/leases/${leaseId}/sign`, {
-        signedName,
-        affirmed,
-      });
+      const created = await apiRequest("POST", "/api/leases", leaseBody);
+      const { leaseId } = (await created.json()) as CreateDraftLeaseResponse;
+      const res = await apiRequest("POST", `/api/leases/${leaseId}/sign`, { signedName, affirmed });
       return (await res.json()) as SignLeaseResponse;
     },
     onSuccess: (data) => setSigned(data),
@@ -139,7 +132,7 @@ export default function LeaseSign() {
     );
   }
 
-  const canSign = Boolean(leaseId) && signedName.trim().length >= 2 && affirmed && !sign.isPending;
+  const canSign = Boolean(documentHtml) && signedName.trim().length >= 2 && affirmed && !sign.isPending;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -150,7 +143,7 @@ export default function LeaseSign() {
           Read the agreement, then type your full legal name to sign. You won't be charged yet.
         </p>
 
-        {draft.isPending && <p className="mt-6 text-muted-foreground">Preparing your agreement…</p>}
+        {preview.isPending && <p className="mt-6 text-muted-foreground">Preparing your agreement…</p>}
 
         {documentHtml && (
           <>

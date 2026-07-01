@@ -84,6 +84,30 @@ function docDataFrom(
   };
 }
 
+/**
+ * Render the agreement for REVIEW without persisting anything. Used by the sign
+ * page on load so merely viewing it never creates a lease (and never holds a
+ * room). No DB write, no overlap guard — a lease row (and its hold) is only
+ * created when the guest actually signs, via createDraftLease() + signLease().
+ */
+export async function previewLease(input: CreateDraftLeaseInput): Promise<{ documentHtml: string }> {
+  const quote = await buildLeaseQuote({
+    propertyId: input.propertyId,
+    roomIds: input.roomIds,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    cadence: input.cadence,
+  });
+  const property = await storage.getProperty(input.propertyId);
+  if (!property) throw new LeaseError("Property not found", 404);
+
+  // Placeholder id — this document is not yet backed by a persisted lease.
+  const documentHtml = renderLeaseHtml(
+    docDataFrom("PREVIEW", quote, input.guest, property.location),
+  );
+  return { documentHtml };
+}
+
 export async function createDraftLease(input: CreateDraftLeaseInput): Promise<CreateDraftLeaseResult> {
   // Re-validate + recompute the schedule server-side (never trust the client).
   const quote = await buildLeaseQuote({

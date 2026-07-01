@@ -106,17 +106,11 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     throw new LeaseError(`Lease term cannot exceed ${MAX_LEASE_DAYS} days`, 422);
   }
 
-  // Availability overlap guard per room.
-  for (const room of rooms) {
-    const free = await storage.isRoomAvailableForRange({
-      roomId: room.id,
-      startDate: input.startDate,
-      endDate: input.endDate,
-    });
-    if (!free) {
-      throw new LeaseError(`Room ${room.name} is already booked for an overlapping range`, 409);
-    }
-  }
+  // NOTE: no availability/overlap guard here. This function only PRICES a stay;
+  // it must never fail because a room looks "taken" — otherwise a guest can't
+  // even preview a schedule, and a stale DRAFT/pending lease (or the guest's own
+  // in-progress one) would block the quote. The real overlap guard runs at lease
+  // creation time in storage.createLease(), which is where a room is committed.
 
   // Combined per-tier rates across rooms (supports rooms with different rents).
   // weekly falls back from room.weekly_rent (always set); daily/monthly are the

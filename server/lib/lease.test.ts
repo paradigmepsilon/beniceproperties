@@ -90,13 +90,21 @@ describe("buildLeaseQuote — guards", () => {
     ).rejects.toThrow(/no longer available/i);
   });
 
-  it("rejects a room that overlaps an existing lease", async () => {
+  it("still prices a stay even if the room range looks taken (overlap is a creation-time guard, not a quote-time one)", async () => {
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
     mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    // A stale DRAFT/pending lease (or the guest's own in-progress one) must not
+    // break the price preview. createLease() is where overlap is actually enforced.
     mockStorage.isRoomAvailableForRange.mockResolvedValue(false);
-    await expect(
-      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "WEEKLY" }),
-    ).rejects.toThrow(/overlapping/i);
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1",
+      roomIds: ["r1"],
+      startDate: "2026-07-01",
+      endDate: "2026-07-14",
+      cadence: "WEEKLY",
+    });
+    expect(q.schedule.length).toBeGreaterThan(0);
+    expect(q.dueToday).toBeGreaterThan(0);
   });
 
   it("rejects a term over 90 days", async () => {

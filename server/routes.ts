@@ -34,7 +34,7 @@ import {
   buildStrChargeMetadata,
   buildLeaseChargeMetadata,
 } from "./lib/paymentMetadata";
-import { createDraftLease, signLease } from "./lib/leaseFlow";
+import { createDraftLease, previewLease, signLease } from "./lib/leaseFlow";
 import {
   startFirstPayment,
   finalizeFirstPayment,
@@ -216,6 +216,22 @@ export async function registerRoutes(app: Express): Promise<void> {
   // =========================================================================
   // PUBLIC — co-living lease creation + e-signature (Phase 3). No payment here.
   // =========================================================================
+
+  // Render the agreement for review WITHOUT persisting a lease (no room hold).
+  // The sign page calls this on load; the real lease is only created on sign.
+  app.post("/api/leases/preview", async (req, res, next) => {
+    try {
+      const parsed = createDraftLeaseSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid lease request" });
+      }
+      const { documentHtml } = await previewLease(parsed.data);
+      res.json({ documentHtml });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
 
   // Create the DRAFT (→ PENDING_SIGNATURE) lease + persisted schedule, and
   // return the agreement rendered for review.
