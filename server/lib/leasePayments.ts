@@ -300,9 +300,13 @@ export async function startDepositPayment(leaseId: string): Promise<StartDeposit
 
 /**
  * Finalize a successful deposit (called from the webhook). Idempotent. Marks the
- * deposit PAID, saves the card, OCCUPIES the room(s) — the room is now secured —
- * then charges the first week's rent off-session. Lease → ACTIVE iff that
- * first-week charge succeeds; otherwise it stays PENDING_FIRST_PAYMENT.
+ * deposit PAID, saves the card, OCCUPIES the room(s) — the room is secured — and
+ * activates the lease. The DEPOSIT is the only charge due at booking.
+ *
+ * The first week's rent (schedule_seq 1) is due on the MOVE-IN date (start_date),
+ * not at booking. So we only charge it now if move-in is today or already past;
+ * for a future move-in we leave seq 1 SCHEDULED and the rent sweep charges it on
+ * the start date like any other installment.
  */
 export async function finalizeDepositPayment(paymentIntentId: string): Promise<void> {
   const lease = await findLeaseByDepositPaymentIntent(paymentIntentId);
@@ -319,36 +323,41 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
     log(`could not read saved payment method for deposit ${paymentIntentId}: ${(err as Error).message}`, "stripe");
   }
 
+  // Deposit paid → secure the room(s), save the card, activate the lease.
   await storage.updateLease(lease.id, {
     depositStatus: "PAID",
     depositPaidAt: new Date(),
     depositStripePaymentIntentId: paymentIntentId,
     stripePaymentMethodId: savedPaymentMethodId ?? undefined,
+    status: "ACTIVE",
   });
-
-  // Secure the room(s): deposit paid → OCCUPIED.
   const leaseRooms = await storage.getLeaseRooms(lease.id);
   for (const lr of leaseRooms) {
     await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
   }
-  log(`lease ${lease.id} deposit PAID via ${paymentIntentId}; room(s) secured`, "stripe");
+  log(`lease ${lease.id} ACTIVE — deposit PAID via ${paymentIntentId}; room(s) secured`, "stripe");
 
-  // Deposit receipt (non-fatal).
+  // Deposit receipt + activation lifecycle (non-fatal).
   try {
     const property = await storage.getProperty(lease.propertyId);
     const guest = await storage.getGuest(lease.guestId);
     if (property && guest) await onDepositReceived({ lease, property, guest });
+    await onLeaseActivated(lease.id);
   } catch (err) {
-    log(`deposit receipt error lease ${lease.id}: ${(err as Error).message}`, "stripe");
+    log(`deposit lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
 
-  // Now charge the first week's rent (schedule_seq 1) off-session on the saved
-  // card. Success → lease ACTIVE. Decline → stays PENDING_FIRST_PAYMENT (guest
-  // retries from the portal; dunning owns the follow-up).
-  if (savedPaymentMethodId) {
+  // First week's rent is due on the move-in date. Charge it now only if move-in
+  // is today or past; otherwise the rent sweep charges seq 1 on start_date.
+  const schedule = await storage.getScheduleByLease(lease.id);
+  const first = schedule.find((s) => s.scheduleSeq === 1);
+  const dueNow = first && first.status !== "PAID" && first.dueDate <= todayYmd();
+  if (dueNow && savedPaymentMethodId) {
     await chargeFirstWeekOffSession(lease.id, savedPaymentMethodId).catch((err) => {
-      log(`first-week charge after deposit failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
+      log(`first-week charge on move-in failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
     });
+  } else if (first && !dueNow) {
+    log(`lease ${lease.id} first week (${first.dueDate}) deferred to move-in; rent sweep will charge it`, "stripe");
   }
 }
 
@@ -378,13 +387,13 @@ export async function refundDeposit(leaseId: string): Promise<void> {
 }
 
 /**
- * Charge schedule_seq 1 (first week's rent) off-session on the saved card, right
- * after the deposit secures the room. On success: seq 1 PAID, lease ACTIVE,
- * activation lifecycle fires. Idempotent per (lease, seq 1).
+ * Charge schedule_seq 1 (first week's rent) off-session on the saved card. Called
+ * when move-in is today/past (from the deposit finalizer). The lease is already
+ * ACTIVE (the deposit secured + activated it); this just settles seq 1 and sends
+ * the receipt. Idempotent per (lease, seq 1).
  */
 async function chargeFirstWeekOffSession(leaseId: string, paymentMethodId: string): Promise<void> {
   const { lease, property, rooms } = await loadLeaseContext(leaseId);
-  if (lease.status === "ACTIVE") return;
   if (!lease.stripeCustomerId) throw new LeaseError("Lease has no Stripe customer", 500);
 
   const schedule = await storage.getScheduleByLease(lease.id);
@@ -415,18 +424,16 @@ async function chargeFirstWeekOffSession(leaseId: string, paymentMethodId: strin
     paidAt: new Date(),
     stripePaymentIntentId: pi.id,
   });
-  await storage.updateLease(lease.id, { status: "ACTIVE" });
-  log(`lease ${lease.id} ACTIVE — first week charged off-session ${pi.id}`, "stripe");
+  log(`lease ${lease.id} first week charged off-session ${pi.id}`, "stripe");
 
-  // Activation lifecycle (welcome + schedule recap + admin notice) + first receipt.
+  // First-payment receipt (activation lifecycle already fired on the deposit).
   try {
-    await onLeaseActivated(lease.id);
     const guest = await storage.getGuest(lease.guestId);
     if (guest) {
       await onPaymentReceived({ lease, property, guest, scheduleRow: { scheduleSeq: 1, amount: first.amount } });
     }
   } catch (err) {
-    log(`lifecycle activation error lease ${lease.id}: ${(err as Error).message}`, "stripe");
+    log(`first-week receipt error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
 }
 
@@ -462,7 +469,10 @@ export async function runScheduledRentSweep(today: string = todayYmd()): Promise
     const schedule = await storage.getScheduleByLease(lease.id);
 
     for (const row of schedule) {
-      if (row.scheduleSeq === 1) continue; // first payment handled elsewhere
+      // seq 1 (first week's rent) is due on the move-in date. If move-in was in
+      // the future at booking, the deposit finalizer deferred it to here; if it
+      // was same-day, the finalizer already charged it (PAID) and the guards
+      // below skip it. Either way the sweep charges it on/after start_date.
       if (row.paymentMethod !== "CARD_ON_FILE") continue; // manual rows are not auto-charged
       if (row.dueDate > today) continue; // not due yet
       if (!CHARGEABLE_STATUSES.has(row.status)) {

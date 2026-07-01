@@ -203,9 +203,9 @@ function buildSchedule(input: TierScheduleInput): GeneratedSchedule {
   const prorationNote = finalProrated
     ? `${fullCount} full ${cadence.toLowerCase()} installment(s) of $${fullPeriodAmount.toFixed(2)}, ` +
       `plus a final prorated installment of $${finalProrated.amount.toFixed(2)} covering ` +
-      `${finalProrated.daysCovered} day(s). First payment due on the booking date.`
+      `${finalProrated.daysCovered} day(s). First payment due on the move-in date.`
     : `${fullCount} ${cadence.toLowerCase()} installment(s) of $${fullPeriodAmount.toFixed(2)}, no proration. ` +
-      `First payment due on the booking date.`;
+      `First payment due on the move-in date.`;
 
   return { installments, totalLeaseValue, prorationNote, totalDays };
 }

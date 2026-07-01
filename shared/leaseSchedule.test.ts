@@ -116,7 +116,7 @@ describe("generateSchedule — proration of the final installment", () => {
     expect(tail.amount).toBe(120); // 40 × 3
     expect(s.totalLeaseValue).toBe(280 * 4 + 120);
     expect(s.prorationNote).toMatch(/prorated/i);
-    expect(s.prorationNote).toMatch(/booking date/i);
+    expect(s.prorationNote).toMatch(/move-in date/i);
   });
 
   it("emits a no-proration note when the term divides evenly", () => {

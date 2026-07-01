@@ -212,7 +212,7 @@ describe("finalizeDepositPayment", () => {
     mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_first_1" });
   });
 
-  it("marks deposit PAID, secures the room, then charges the first week off-session → ACTIVE", async () => {
+  it("same-day move-in: deposit PAID secures + activates, then charges the first week off-session", async () => {
     mockStorage.getLeases.mockResolvedValue([
       lease({ depositStatus: "PENDING", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
     ]);
@@ -229,6 +229,25 @@ describe("finalizeDepositPayment", () => {
       expect.objectContaining({ paymentMethodId: "pm_saved_1", idempotencyKey: "lease-first-lease-1" }),
     );
     expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+  });
+
+  it("defers the first week for a FUTURE move-in: secures + activates, does NOT charge rent yet", async () => {
+    mockStorage.getLeases.mockResolvedValue([
+      lease({ depositStatus: "PENDING", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
+    ]);
+    mockStorage.getLease.mockResolvedValue(
+      lease({ depositStatus: "PAID", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
+    );
+    // seq 1 due far in the future → not chargeable now; rent sweep charges it on move-in.
+    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1, { dueDate: "2099-01-01" })]);
+
+    await finalizeDepositPayment("pi_dep_1");
+
+    // Room secured + lease activated by the DEPOSIT, regardless of move-in date.
+    expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    // But the first week's rent is NOT charged yet — it's due on move-in.
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
   });
 
   it("is idempotent: an already-PAID deposit is left alone", async () => {
@@ -340,5 +359,22 @@ describe("runScheduledRentSweep", () => {
     const res = await runScheduledRentSweep("2026-07-10");
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
     expect(res.considered).toBe(0);
+  });
+
+  it("charges a deferred first week (seq 1) once it comes due on the move-in date", async () => {
+    // Future move-in: the deposit finalizer left seq 1 SCHEDULED. On/after the
+    // move-in date the sweep charges it like any due installment.
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      schedRow(1, { dueDate: "2026-07-10" }), // move-in day
+    ]);
+    mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_rent_1", status: "succeeded" });
+
+    const res = await runScheduledRentSweep("2026-07-10");
+
+    expect(res.charged).toBe(1);
+    expect(mockStorage.updateScheduleRow).toHaveBeenCalledWith(
+      "row-1",
+      expect.objectContaining({ status: "PAID", stripePaymentIntentId: "pi_rent_1" }),
+    );
   });
 });

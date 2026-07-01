@@ -23,7 +23,7 @@ const DATA: LeaseDocData = {
   cadence: "WEEKLY",
   weeklyRateTotal: 260,
   totalLeaseValue: 1040,
-  prorationNote: "4 weekly installment(s) of $260.00, no proration. First payment due on the booking date.",
+  prorationNote: "4 weekly installment(s) of $260.00, no proration. First payment due on the move-in date.",
   schedule: [
     { seq: 1, dueDate: "2026-07-01", amount: 260, prorated: false },
     { seq: 2, dueDate: "2026-07-08", amount: 260, prorated: false },

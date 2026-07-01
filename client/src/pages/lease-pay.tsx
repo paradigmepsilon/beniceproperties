@@ -85,8 +85,8 @@ export default function LeasePay() {
       <main className="mx-auto w-full max-w-xl flex-1 px-6 py-10">
         <h1 className="font-display text-2xl font-semibold tracking-tight">Secure your room</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Pay your refundable deposit to secure the room and save your card. Your first week's rent
-          is charged right after on the same card, and your lease activates.
+          Pay your refundable deposit to secure the room and save your card. Only the deposit is due
+          now — your first week's rent is charged on your move-in date, on the same card.
         </p>
 
         {error && (
@@ -157,8 +157,8 @@ function PayForm({ portalToken }: { portalToken: string | null }) {
       <div className="space-y-3 text-sm" data-testid="text-pay-success">
         <p className="font-medium">Room secured ✓</p>
         <p className="text-muted-foreground">
-          Your deposit is received and your room is secured. We're charging your first week's rent on
-          the saved card and activating your lease. Redirecting to your bookings…
+          Your deposit is received and your room is secured — your lease is active. Your first week's
+          rent will be charged on your move-in date. Redirecting to your bookings…
         </p>
       </div>
     );

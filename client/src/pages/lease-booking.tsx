@@ -263,7 +263,7 @@ export default function LeaseBooking() {
                             <span className="text-muted-foreground">#{row.seq}</span> {row.dueDate}
                             {row.dueOnBooking && (
                               <span className="ml-2 rounded-full bg-primary px-2 py-0.5 text-[10px] font-semibold text-primary-foreground">
-                                Due today
+                                Due at move-in
                               </span>
                             )}
                             {row.prorated && (
@@ -280,12 +280,12 @@ export default function LeaseBooking() {
                     <Separator />
                     {quote.depositTotal > 0 && (
                       <div className="flex justify-between rounded-md bg-accent px-2 py-1.5">
-                        <span className="font-medium">Deposit to secure the room</span>
+                        <span className="font-medium">Due now — deposit to secure the room</span>
                         <span className="font-semibold" data-testid="text-deposit">{money(quote.depositTotal)}</span>
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">First week's rent (at move-in)</span>
+                      <span className="text-muted-foreground">Due at move-in — first week's rent</span>
                       <span className="font-medium" data-testid="text-due-today">{money(quote.dueToday)}</span>
                     </div>
                     <div className="flex justify-between font-semibold">
@@ -294,8 +294,9 @@ export default function LeaseBooking() {
                     </div>
                     {quote.depositTotal > 0 && (
                       <p className="text-xs text-muted-foreground">
-                        The refundable deposit secures your room; your first week's rent is charged
-                        right after. Remaining payments follow your schedule above.
+                        Only the refundable deposit is due now — it secures your room. Your first
+                        week's rent is due on your move-in date ({quote.startDate}), and the rest
+                        follows your schedule above.
                       </p>
                     )}
 
