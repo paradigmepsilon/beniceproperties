@@ -6,15 +6,18 @@ export const money = (v: number | string) =>
 
 // Best-effort city from a free-text location. The `location` field is
 // inconsistent — a full street address ("5870 Old Bill Cook Rd. Atlanta, GA
-// 30349"), a bare city ("Atlanta"), or even a property name ("Antiguan Village
-// Retreat"). Rule: take the segment before the first comma; if that segment
-// still has a street part (a "Rd."/"Ave." style token ending in "."), keep only
-// what follows the last period. Falls back to the trimmed input so name-only
-// locations still bucket sensibly. Used to filter listings by city.
+// 30349"), a bare city ("Atlanta"), or a "City, Country" ("St. John's,
+// Antigua"). Rule: take the segment before the first comma; if it looks like a
+// street address (starts with a house number), drop the street part by keeping
+// only what follows the last period ("… Rd. Atlanta" → "Atlanta"). Segments
+// that don't start with a digit are treated as the city verbatim, so an
+// abbreviation inside the city name ("St. John's") is preserved. Falls back to
+// the trimmed input. Used to filter listings by city.
 export function cityOf(location: string): string {
   const beforeComma = (location ?? "").split(",")[0]?.trim() ?? "";
-  const afterStreet = beforeComma.includes(".")
+  const looksLikeStreet = /^\d/.test(beforeComma) && beforeComma.includes(".");
+  const city = looksLikeStreet
     ? beforeComma.slice(beforeComma.lastIndexOf(".") + 1).trim()
     : beforeComma;
-  return afterStreet || (location ?? "").trim();
+  return city || (location ?? "").trim();
 }

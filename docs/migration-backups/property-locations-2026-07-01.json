@@ -1,0 +1,20 @@
+{
+  "captured_at_note": "2026-07-01 ET, pre location edit",
+  "rows": [
+    {
+      "id": "5ca7fe07-2299-41d5-955a-ff5f1888f28d",
+      "name": "OBC Home",
+      "location": "5870 Old Bill Cook Rd. Atlanta, GA 30349"
+    },
+    {
+      "id": "1891af80-f03f-422f-8983-ca4add8168ab",
+      "name": "HUTCHENS HOME",
+      "location": "Atlanta"
+    },
+    {
+      "id": "88423aa4-92d4-4c99-9f9b-3966c27b80b0",
+      "name": "ANTIGUAN VILLAGE RETREAT",
+      "location": "ANTIGUAN VILLAGE RETREAT"
+    }
+  ]
+}

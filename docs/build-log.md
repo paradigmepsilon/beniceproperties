@@ -863,3 +863,39 @@ a dedicated `city` column later.
 
 **Tracker:** BNP ticket "Home page — co-living cards show 'from $X/week'…" → Needs
 Admin Verification.
+
+---
+
+## 2026-07-01 — Enhancement: real cities in "Where" filter + stacked filter rows
+
+**What:**
+1. **Filter-bar layout.** "Where" and "Type" now sit on separate lines (outer
+   filter-bar container `flex flex-wrap` row → `flex flex-col`).
+2. **Real city data.** Two properties had no usable city. Updated their stored
+   `location` (admin/storage path, not raw SQL): OBC Home "5870 Old Bill Cook Rd.
+   Atlanta, GA 30349" → "Atlanta"; Antiguan Village Retreat "ANTIGUAN VILLAGE
+   RETREAT" → "St. John's, Antigua". The "Where" filter now reads All locations ·
+   Atlanta · St. John's. Prior values backed up to
+   `docs/migration-backups/property-locations-2026-07-01.json`.
+3. **cityOf hardening.** "St. John's, Antigua" broke the old parser (it stripped
+   everything after the last "." → "s"). New rule only strips a street prefix when
+   the pre-comma segment STARTS WITH A DIGIT (a real house number), so
+   abbreviations inside a city name ("St. John's", "St. Louis") are preserved.
+
+**Files:** `client/src/pages/home.tsx`, `client/src/lib/format.ts` (+ 2 new
+`format.test.ts` cases), `docs/migration-backups/property-locations-2026-07-01.json`.
+Data edit applied to the BNP Neon DB. Branch `feat/location-city-filter`.
+
+**Tests + results:** `npm run check` clean; `npm test` → 193/193 (was 191).
+Verified live (dev :3005): "Where" shows Atlanta + St. John's on their own line,
+"Type" on the line below; selecting St. John's shows only the Antigua listing,
+Atlanta shows both Atlanta homes; cards show cleaned locations; 0 console errors.
+(One transient Neon ConnectTimeoutError 500 observed pre-edit — DB cold start, not
+code; all subsequent requests 200.)
+
+**Note for later (not blocking):** GET /api/properties now does one
+getRoomsByProperty call per co-living property (N+1). Fine at current inventory;
+worth collapsing to a single grouped query if the property count grows.
+
+**Tracker:** BNP ticket "Home page — co-living 'from $X/week' price + filter
+locations by city" covers the filter; layout + city-data added same session.

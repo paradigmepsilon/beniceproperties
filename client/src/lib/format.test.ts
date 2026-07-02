@@ -22,6 +22,14 @@ describe("cityOf", () => {
     expect(cityOf("Atlanta, GA")).toBe("Atlanta");
   });
 
+  it("preserves an abbreviation inside the city name (not a street prefix)", () => {
+    expect(cityOf("St. John's, Antigua")).toBe("St. John's");
+  });
+
+  it("preserves a saint-city with no country suffix", () => {
+    expect(cityOf("St. Louis")).toBe("St. Louis");
+  });
+
   it("is safe on empty input", () => {
     expect(cityOf("")).toBe("");
   });

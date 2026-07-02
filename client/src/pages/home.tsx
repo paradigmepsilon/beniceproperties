@@ -49,7 +49,7 @@ export default function Home() {
 
       {/* Sticky filter bar */}
       <div className="sticky top-[65px] z-30 border-b bg-white/90 backdrop-blur-md">
-        <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-8 gap-y-3 px-6 py-3">
+        <div className="mx-auto flex max-w-6xl flex-col gap-3 px-6 py-3">
           <FilterGroup label="Where">
             {locations.map((loc) => (
               <button
