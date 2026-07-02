@@ -12,6 +12,7 @@ import type { PropertyListItem } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PropertyCard, isBookedNow } from "@/components/property-card";
 import { SearchBar } from "@/components/search-bar";
+import { HeroSlideshow } from "@/components/hero-slideshow";
 import { cityOf } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -98,10 +99,21 @@ export default function Home() {
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
 
-      {/* Hero: eyebrow + serif headline + search + the two product doors. */}
+      {/* Hero: rotating image slideshow (BT-22, from Unified Ops) behind the
+          eyebrow + serif headline + search + two product doors, which stay as
+          the overlay on top. With zero hero images the slideshow renders nothing
+          and the gradient below is the background (graceful fallback). */}
       <header className="relative overflow-hidden">
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-accent/60 to-transparent" aria-hidden />
-        <div className="relative mx-auto w-full max-w-6xl px-6 pb-12 pt-14 sm:pt-20">
+        {/* Backmost: rotating hero images (renders nothing if none configured). */}
+        <HeroSlideshow />
+        {/* Scrim: keeps the overlay text legible over photos, and is the visible
+            background when there are no images. */}
+        <div
+          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-accent/60 to-transparent"
+          aria-hidden
+        />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-background/85 via-background/40 to-background/10" aria-hidden />
+        <div className="relative z-10 mx-auto w-full max-w-6xl px-6 pb-12 pt-14 sm:pt-20">
           <p className="text-sm font-bold uppercase tracking-widest text-primary">
             Atlanta · Antigua · and growing
           </p>
