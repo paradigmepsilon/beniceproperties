@@ -86,16 +86,17 @@ export default function PropertyDetail() {
             {property.type === "COLIVING" && (
               <section className="mt-10">
                 <h2 className="font-display text-xl font-semibold">Available rooms</h2>
-                <div className="mt-4 grid gap-5 sm:grid-cols-2">
+                {/* One inline row on desktop (equal-width cards, any room count); stacked on mobile. */}
+                <div className="mt-4 grid gap-5 md:grid-flow-col md:auto-cols-fr">
                   {rooms.map((room) => (
                     <div key={room.id} className="bnp-card bnp-card-interactive overflow-hidden" data-testid={`card-room-${room.id}`}>
-                      <div className="relative aspect-[3/2] w-full">
+                      <Link href={`/room/${room.id}`} aria-label={`View ${room.name} details`} className="relative block aspect-[3/2] w-full" data-testid={`link-room-image-${room.id}`}>
                         <ListingImage id={room.id} photos={room.photos} alt={room.name} kind="ROOM" rounded="rounded-none" />
-                      </div>
+                      </Link>
                       <div className="p-4">
-                        <div className="flex items-center justify-between">
-                          <h3 className="font-semibold">{room.name}</h3>
-                          <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${room.status === "AVAILABLE" ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground"}`}>
+                        <div className="flex items-start justify-between gap-2">
+                          <h3 className="min-w-0 font-semibold">{room.name}</h3>
+                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${room.status === "AVAILABLE" ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground"}`}>
                             {room.status}
                           </span>
                         </div>

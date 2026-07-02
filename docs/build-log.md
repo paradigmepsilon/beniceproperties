@@ -794,3 +794,27 @@ account system (the portal token stays the login); STR-guest verification
 environment (the same values UO uses) so uploads leave dry-run mode.
 
 **PHASE 6.5: COMPLETE — tests green**
+
+---
+
+## 2026-07-01 — Enhancement: co-living room cards inline + clickable images
+
+**What:** "Available rooms" section on the co-living property page: (1) each room
+card image is now a link to the room's detail page (`/room/:id`, all statuses —
+the room page shows the status badge; aria-label + `link-room-image-<id>`
+testid); (2) card layout `sm:grid-cols-2` → `md:grid-flow-col md:auto-cols-fr` —
+one equal-width inline row on desktop for any room count (no hard-coded column
+count), stacked full-width on mobile; (3) fixed a squeeze the narrower cards
+exposed: long room names pushed the status badge past the card edge under
+`overflow-hidden` — heading `min-w-0`, badge `shrink-0`, row `items-start gap-2`.
+
+**Files:** `client/src/pages/property-detail.tsx`. Branch `feat/room-cards-inline`.
+
+**Tests + results:** `npm run check` clean; `npm test` → 185/185 pass; `npm run
+build` green. Playwright smoke on OBC Home (dev, port 3005): desktop 1280px = 3
+cards in one row (equal widths, images aligned), image click → room detail page;
+mobile 390px = stacked full-width; "Reserve this room" unchanged; 0 console
+errors/warnings.
+
+**Tracker:** Build Tracker ticket "Co-living property page — clickable room
+images + inline room-card row" (BNP) → Needs Admin Verification.
