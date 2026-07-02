@@ -56,16 +56,21 @@ export default function RoomDetail() {
 
         <div className="mt-6 grid gap-10 lg:grid-cols-[1fr_360px]">
           <div>
-            <p className="text-sm text-muted-foreground">{property?.name}</p>
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-segment-room-tint px-3 py-1 text-xs font-semibold text-segment-room">
+              <span aria-hidden className="h-2 w-2 rounded-full bg-segment-room" />
+              By the room
+            </span>
+            <p className="mt-3 text-sm text-muted-foreground">{property?.name}</p>
             <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight">{room.name}</h1>
-            <span className={`mt-3 inline-block rounded-full px-3 py-1 text-xs font-semibold ${room.status === "AVAILABLE" ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground"}`}>
-              {room.status}
+            <span className={`mt-3 inline-block rounded-full px-3 py-1 text-xs font-bold ${room.status === "AVAILABLE" ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
+              {room.status === "AVAILABLE" ? "Available" : room.status === "HOLD" ? "On hold" : "Occupied"}
             </span>
             {room.description && <p className="mt-6 max-w-2xl leading-relaxed text-foreground/90">{room.description}</p>}
           </div>
 
           <aside>
-            <div className="bnp-card sticky top-24 p-6">
+            <div className="bnp-card sticky top-24 overflow-hidden p-6">
+              <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
               <h2 className="font-display text-lg font-semibold">Reserve this room</h2>
               <div className="mt-4 space-y-3 text-sm">
                 <div className="flex items-baseline justify-between">

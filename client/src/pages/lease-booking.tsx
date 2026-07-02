@@ -192,6 +192,7 @@ export default function LeaseBooking() {
                         key={c}
                         type="button"
                         size="sm"
+                        className="rounded-full"
                         variant={quote.cadence === c ? "default" : "outline"}
                         onClick={() => setCadence(c)}
                         data-testid={`button-cadence-${c}`}

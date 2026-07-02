@@ -921,3 +921,69 @@ Verified live (dev :3005): room hero 976×651, STR property hero 1104×736,
 co-living property hero 1104×736 — all exactly 3:2; 0 console errors.
 
 **Tracker:** BNP quick fix off the room-cards work.
+
+---
+
+## 2026-07-02 — Full-site redesign: template adoption (coral edition)
+
+**What:** Rebuilt the public site to the owner-supplied design template while
+keeping the existing coral palette and PNG logo. Homepage: hero (eyebrow, serif
+H1, sub) + wired search card (Where/Check-in/Check-out; Where filters the grid,
+dates ride card links as query params) + two "door" cards (coral = whole
+property → STR filter; teal = by the room → COLIVING filter) + trust band
+(template copy verbatim as placeholders, constants at top of home.tsx) +
+listings section with filter chips (segment dots; replaces the old sticky
+FilterGroup bar) + coral "How it works" band + dark 3-column footer with honest
+deep links (/?type=…&city=…#stays; home honors both on load and hash-scrolls
+once data renders). New card anatomy: 5px left segment accent bar, segment pill
+(dot+label), Available/Fully-booked status pill (new green "good" tint —
+green = status only, never brand), serif names, static ★4.9 placeholder.
+Available cards sort before booked ones.
+
+**Server — `nextOpening` on GET /api/properties:** fully-booked cards can now
+show "Next opening · <date>". COLIVING: min endDate of OCCUPYING leases
+(PENDING_VERIFICATION | ACTIVE — deposit paid holds the room) + 1 day (endDate
+is the inclusive last night). STR: back-to-back chain walk over non-cancelled
+STR bookings covering today; checkout day itself bookable (matches
+strHasConflict). Two batched storage queries (getSoonestOccupyingLeaseEndByProperty,
+getStrBookingsEndingOnOrAfter) — no N+1. Pure math in `server/lib/nextOpening.ts`.
+
+**Design tokens:** `--background` #ffffff → #fbfaf7 (warm paper; cards stay
+white islands); new vars `--segment-whole` (coral) / `--segment-room` #2c6e8f
+(+tint) / `--good` (+bg); `.bnp-chip`, `.is-booked` component classes; Tailwind
+`segment.*` + `good.*` colors; shadcn Card base → rounded-2xl + shadow-card
+(site-wide reskin incl. admin, intentionally); theme-color meta fixed
+#0f172a → #e0533d.
+
+**Other pages:** property-detail seeds dates from ?checkIn/?checkOut (validated
+>= today / out > in), segment pills with dots, room cards get teal accent bar +
+good/gray status pills + friendly labels, min-nightly IIFE deduped into shared
+`fromNightly()` (lib/format.ts, also used by the home card); room-detail gets
+segment pill + teal accent on reserve card; lookup/portal badges use the good
+tint via statusClass; confirmation check icon → good tint; lease-booking
+cadence buttons → pill-shaped; not-found link → coral pill button.
+
+**Files:** client/src/pages/home.tsx (rebuilt), new
+client/src/components/{property-card,search-bar}.tsx, site-header.tsx (header +
+dark footer), index.css, tailwind.config.ts, client/index.html, ui/card.tsx,
+pages/{property-detail,room-detail,booking-lookup,portal,confirmation,
+lease-booking,not-found}.tsx, lib/format.ts (+shortDate/fromNightly),
+shared/schema.ts (PropertyListItem +nextOpening), server/routes.ts,
+server/storage.ts (2 new batched methods), new server/lib/nextOpening.ts.
+Branch `feat/site-redesign`.
+
+**Tests + results:** `npm run check` clean; 206 vitest tests pass (193 prior +
+9 nextOpening + 4 format); vite build + `npm run build:api` clean (api bundle
+regenerated so prod gets nextOpening). Playwright (dev :3006): desktop 1440 +
+mobile 390 full-page homepage OK, 0 console errors; /?type=COLIVING#stays
+deep link filters + scrolls; search dates propagate to card hrefs; STR detail
+prefills dates + checkout enabled; co-living detail shows teal room cards;
+lookup + admin login sane on paper background. "Next opening" render path unit-
+tested (no booked inventory in dev DB to see live).
+
+**Deferred/flagged:** sticky filter bar intentionally removed (template puts
+chips in the section head) — restore if Alex wants it; trust-band claims +
+★4.9 are owner-approved placeholders; dark mode still declared-but-undefined.
+
+**Tracker:** BNP "Full-site redesign — template adoption" → Needs Admin
+Verification.

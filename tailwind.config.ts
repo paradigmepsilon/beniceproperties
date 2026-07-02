@@ -44,6 +44,15 @@ export default {
         border: "var(--border)",
         input: "var(--input)",
         ring: "var(--ring)",
+        segment: {
+          whole: "var(--segment-whole)",
+          room: "var(--segment-room)",
+          "room-tint": "var(--segment-room-tint)",
+        },
+        good: {
+          DEFAULT: "var(--good)",
+          bg: "var(--good-bg)",
+        },
       },
       fontFamily: {
         sans: ["Inter", "system-ui", "sans-serif"],

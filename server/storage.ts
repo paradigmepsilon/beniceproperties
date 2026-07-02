@@ -9,7 +9,7 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   properties,
@@ -108,6 +108,12 @@ export interface IStorage {
   getBooking(id: string): Promise<Booking | undefined>;
   getBookingByReference(reference: string): Promise<Booking | undefined>;
   getBookings(opts?: { status?: string }): Promise<Booking[]>;
+  /**
+   * Non-cancelled STR bookings with a checkOut on/after `date`, for the given
+   * properties, ordered by checkIn — the inputs to the "next opening" chain
+   * walk (server/lib/nextOpening.ts). One batched query, never per-property.
+   */
+  getStrBookingsEndingOnOrAfter(propertyIds: string[], date: string): Promise<Booking[]>;
   createBooking(data: InsertBooking): Promise<Booking>;
   updateBooking(id: string, updates: Partial<InsertBooking>): Promise<Booking | undefined>;
 
@@ -138,6 +144,16 @@ export interface IStorage {
   // --- Leases (co-living) ---
   getLease(id: string): Promise<Lease | undefined>;
   getLeases(opts?: { status?: string; guestId?: string; propertyId?: string }): Promise<Lease[]>;
+  /**
+   * Soonest endDate (>= `onOrAfter`) of an OCCUPYING lease per property —
+   * statuses where the deposit is paid and a room is actually held
+   * (PENDING_VERIFICATION | ACTIVE). Feeds "Next opening" on fully-booked
+   * co-living cards. Returns propertyId → min endDate.
+   */
+  getSoonestOccupyingLeaseEndByProperty(
+    propertyIds: string[],
+    onOrAfter: string,
+  ): Promise<Record<string, string>>;
   /**
    * Create a lease with its room links and full payment schedule in one call.
    * Enforces: term ≤ 90 days, ≥ 1 room, and the room-overlap availability guard
@@ -326,6 +342,23 @@ class Storage implements IStorage {
     return db.select().from(bookings).orderBy(desc(bookings.createdAt));
   }
 
+  async getStrBookingsEndingOnOrAfter(propertyIds: string[], date: string): Promise<Booking[]> {
+    if (propertyIds.length === 0) return [];
+    return db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          inArray(bookings.propertyId, propertyIds),
+          eq(bookings.model, "STR"),
+          ne(bookings.status, "CANCELLED"),
+          // SQL null comparison also drops open-ended stays (null checkOut).
+          gte(bookings.checkOut, date),
+        ),
+      )
+      .orderBy(asc(bookings.checkIn));
+  }
+
   async createBooking(data: InsertBooking): Promise<Booking> {
     const [row] = await db.insert(bookings).values(data).returning();
     return row;
@@ -468,6 +501,32 @@ class Storage implements IStorage {
     if (opts?.propertyId) filters.push(eq(leases.propertyId, opts.propertyId));
     const q = db.select().from(leases).orderBy(desc(leases.createdAt));
     return filters.length ? q.where(and(...filters)) : q;
+  }
+
+  async getSoonestOccupyingLeaseEndByProperty(
+    propertyIds: string[],
+    onOrAfter: string,
+  ): Promise<Record<string, string>> {
+    if (propertyIds.length === 0) return {};
+    // Occupying = deposit paid, room held. Narrower than
+    // ROOM_BLOCKING_LEASE_STATUSES on purpose: a DRAFT/unsigned lease blocks
+    // double-booking but does not make a card read "Fully booked" — only
+    // occupied rooms do, and rooms flip OCCUPIED at deposit-paid.
+    const rows = await db
+      .select({
+        propertyId: leases.propertyId,
+        minEnd: sql<string>`min(${leases.endDate})`,
+      })
+      .from(leases)
+      .where(
+        and(
+          inArray(leases.propertyId, propertyIds),
+          inArray(leases.status, ["PENDING_VERIFICATION", "ACTIVE"]),
+          gte(leases.endDate, onOrAfter),
+        ),
+      )
+      .groupBy(leases.propertyId);
+    return Object.fromEntries(rows.map((r) => [r.propertyId, r.minEnd]));
   }
 
   async createLeaseWithSchedule(args: {

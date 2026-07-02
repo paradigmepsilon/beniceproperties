@@ -18,8 +18,8 @@ export default function Confirmation() {
       <main className="mx-auto w-full max-w-xl flex-1 px-6 py-16">
         <Card className="bnp-card">
           <CardHeader>
-            <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-accent">
-              <CheckCircle2 className="h-6 w-6 text-primary" />
+            <div className="mb-2 flex h-12 w-12 items-center justify-center rounded-full bg-good-bg">
+              <CheckCircle2 className="h-6 w-6 text-good" />
             </div>
             <CardTitle className="font-display text-2xl">Booking received</CardTitle>
           </CardHeader>

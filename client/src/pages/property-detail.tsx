@@ -3,7 +3,7 @@
 // COLIVING: hero + photo-forward room cards → room detail.
 
 import { useState } from "react";
-import { Link, useParams, useLocation } from "wouter";
+import { Link, useParams, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
 import type { Property, Room } from "@shared/schema";
@@ -13,7 +13,7 @@ import { ListingGallery } from "@/components/listing-gallery";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { money } from "@/lib/format";
+import { fromNightly, money } from "@/lib/format";
 
 interface DetailResponse {
   property: Property;
@@ -24,9 +24,20 @@ export default function PropertyDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const { data, isLoading } = useQuery<DetailResponse>({ queryKey: ["/api/properties", id!] });
+  const searchStr = useSearch();
   const today = new Date().toISOString().slice(0, 10);
-  const [checkIn, setCheckIn] = useState("");
-  const [checkOut, setCheckOut] = useState("");
+  // Seed dates from the home hero search (?checkIn=&checkOut=) when they're
+  // still sensible; otherwise start empty like a direct visit.
+  const [checkIn, setCheckIn] = useState(() => {
+    const v = new URLSearchParams(searchStr).get("checkIn") ?? "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= today ? v : "";
+  });
+  const [checkOut, setCheckOut] = useState(() => {
+    const params = new URLSearchParams(searchStr);
+    const inV = params.get("checkIn") ?? "";
+    const outV = params.get("checkOut") ?? "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(outV) && outV > (inV >= today ? inV : today) ? outV : "";
+  });
 
   if (isLoading) return <Shell><p className="text-muted-foreground">Loading…</p></Shell>;
   if (!data) return <Shell><p>Property not found.</p></Shell>;
@@ -76,7 +87,17 @@ export default function PropertyDetail() {
         <div className={`mt-6 grid gap-10 ${property.type === "STR" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
           {/* Left: details */}
           <div>
-            <span className="inline-block rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
+                property.type === "STR"
+                  ? "bg-accent text-accent-foreground"
+                  : "bg-segment-room-tint text-segment-room"
+              }`}
+            >
+              <span
+                aria-hidden
+                className={`h-2 w-2 rounded-full ${property.type === "STR" ? "bg-segment-whole" : "bg-segment-room"}`}
+              />
               {property.type === "STR" ? "Whole property" : "By the room"}
             </span>
             <h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">{property.name}</h1>
@@ -91,15 +112,16 @@ export default function PropertyDetail() {
                 {/* One inline row on desktop (equal-width cards, any room count); stacked on mobile. */}
                 <div className="mt-4 grid gap-5 md:grid-flow-col md:auto-cols-fr">
                   {rooms.map((room) => (
-                    <div key={room.id} className="bnp-card bnp-card-interactive overflow-hidden" data-testid={`card-room-${room.id}`}>
+                    <div key={room.id} className="bnp-card bnp-card-interactive relative overflow-hidden" data-testid={`card-room-${room.id}`}>
+                      <span aria-hidden className="absolute inset-y-0 left-0 z-10 w-[5px] bg-segment-room" />
                       <Link href={`/room/${room.id}`} aria-label={`View ${room.name} details`} className="relative block aspect-[3/2] w-full" data-testid={`link-room-image-${room.id}`}>
                         <ListingImage id={room.id} photos={room.photos} alt={room.name} kind="ROOM" rounded="rounded-none" />
                       </Link>
                       <div className="p-4">
                         <div className="flex items-start justify-between gap-2">
-                          <h3 className="min-w-0 font-semibold">{room.name}</h3>
-                          <span className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ${room.status === "AVAILABLE" ? "bg-accent text-accent-foreground" : "bg-secondary text-muted-foreground"}`}>
-                            {room.status}
+                          <h3 className="min-w-0 font-display font-semibold">{room.name}</h3>
+                          <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-bold ${room.status === "AVAILABLE" ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
+                            {room.status === "AVAILABLE" ? "Available" : room.status === "HOLD" ? "On hold" : "Occupied"}
                           </span>
                         </div>
                         <p className="mt-2 text-sm">
@@ -133,25 +155,17 @@ export default function PropertyDetail() {
                 {(() => {
                   // Lowest effective nightly across the configured tiers — the
                   // "from" price. Longer stays auto-apply weekly/monthly at checkout.
-                  const cand = [
-                    property.dailyRate ?? property.basePrice,
-                    property.weeklyRate ? String(parseFloat(property.weeklyRate) / 7) : null,
-                    property.monthlyRate ? String(parseFloat(property.monthlyRate) / 28) : null,
-                  ]
-                    .map((v) => (v ? parseFloat(v) : NaN))
-                    .filter((n) => Number.isFinite(n) && n > 0);
-                  const from = cand.length ? Math.min(...cand) : null;
-                  const multiTier = cand.length > 1;
+                  const nightly = fromNightly(property);
                   return (
                     <div>
                       <div className="flex items-baseline gap-1">
-                        {multiTier && <span className="text-muted-foreground">from</span>}
+                        {nightly?.multiTier && <span className="text-muted-foreground">from</span>}
                         <span className="font-display text-2xl font-semibold">
-                          {from != null ? money(String(from)) : "—"}
+                          {nightly ? money(String(nightly.from)) : "—"}
                         </span>
                         <span className="text-muted-foreground">/ night</span>
                       </div>
-                      {multiTier && (
+                      {nightly?.multiTier && (
                         <p className="mt-1 text-xs text-muted-foreground">
                           Weekly &amp; monthly rates apply automatically for longer stays.
                         </p>

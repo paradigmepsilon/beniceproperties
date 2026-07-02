@@ -33,6 +33,7 @@ import {
   BookingError,
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
+import { dayAfter, strNextOpening } from "./lib/nextOpening";
 import {
   buildStrChargeMetadata,
   buildLeaseChargeMetadata,
@@ -174,7 +175,7 @@ export async function registerRoutes(app: Express): Promise<void> {
   app.get("/api/properties", async (_req, res, next) => {
     try {
       const props = await storage.getProperties({ activeOnly: true });
-      const list: PropertyListItem[] = await Promise.all(
+      const withRent = await Promise.all(
         props.map(async (p) => {
           // Co-living cards price "from" the cheapest room a guest can actually
           // book (AVAILABLE only); null → card shows "Fully booked".
@@ -190,6 +191,32 @@ export async function registerRoutes(app: Express): Promise<void> {
           return { ...p, fromWeeklyRent };
         }),
       );
+
+      // "Next opening" for currently-unavailable inventory — two batched
+      // queries across all properties, then pure math (lib/nextOpening.ts).
+      const today = new Date().toISOString().slice(0, 10);
+      const bookedColivingIds = withRent
+        .filter((p) => p.type === "COLIVING" && p.fromWeeklyRent === null)
+        .map((p) => p.id);
+      const strIds = withRent.filter((p) => p.type === "STR").map((p) => p.id);
+      const [leaseEnds, strBookings] = await Promise.all([
+        storage.getSoonestOccupyingLeaseEndByProperty(bookedColivingIds, today),
+        storage.getStrBookingsEndingOnOrAfter(strIds, today),
+      ]);
+
+      const list: PropertyListItem[] = withRent.map((p) => {
+        let nextOpening: string | null = null;
+        if (p.type === "COLIVING" && p.fromWeeklyRent === null) {
+          // Lease endDate is the last occupied night; opening is the next day.
+          nextOpening = leaseEnds[p.id] ? dayAfter(leaseEnds[p.id]) : null;
+        } else if (p.type === "STR") {
+          nextOpening = strNextOpening(
+            strBookings.filter((b) => b.propertyId === p.id),
+            today,
+          );
+        }
+        return { ...p, nextOpening };
+      });
       res.json(list);
     } catch (err) {
       next(err);

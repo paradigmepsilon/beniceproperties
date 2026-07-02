@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cityOf } from "./format";
+import { cityOf, fromNightly, shortDate } from "./format";
 
 describe("cityOf", () => {
   it("extracts the city from a full street address", () => {
@@ -32,5 +32,29 @@ describe("cityOf", () => {
 
   it("is safe on empty input", () => {
     expect(cityOf("")).toBe("");
+  });
+});
+
+describe("shortDate", () => {
+  it("formats an ISO date as 'MMM d'", () => {
+    expect(shortDate("2026-08-14")).toBe("Aug 14");
+  });
+});
+
+describe("fromNightly", () => {
+  it("returns null when no positive rate is configured", () => {
+    expect(fromNightly({})).toBeNull();
+    expect(fromNightly({ dailyRate: "0" })).toBeNull();
+  });
+
+  it("uses the daily rate (or basePrice fallback) as a single tier", () => {
+    expect(fromNightly({ dailyRate: "210" })).toEqual({ from: 210, multiTier: false });
+    expect(fromNightly({ basePrice: "185" })).toEqual({ from: 185, multiTier: false });
+  });
+
+  it("picks the lowest effective nightly across tiers and flags multiTier", () => {
+    const result = fromNightly({ dailyRate: "210", weeklyRate: "1260", monthlyRate: "4760" });
+    // weekly 1260/7 = 180, monthly 4760/28 = 170 → lowest
+    expect(result).toEqual({ from: 170, multiTier: true });
   });
 });

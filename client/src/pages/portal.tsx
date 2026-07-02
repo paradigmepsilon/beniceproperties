@@ -92,11 +92,15 @@ function cleanError(err: unknown): string {
 }
 
 const statusVariant = (s: string) =>
+  s === "FAILED" || s === "LATE" || s === "DEFAULTED" || s === "REJECTED"
+    ? "destructive"
+    : "secondary";
+
+// Positive statuses get the green "good" tint (green = status, never brand).
+const statusClass = (s: string) =>
   s === "PAID" || s === "ACTIVE" || s === "RESOLVED" || s === "APPROVED"
-    ? "default"
-    : s === "FAILED" || s === "LATE" || s === "DEFAULTED" || s === "REJECTED"
-      ? "destructive"
-      : "secondary";
+    ? "bg-good-bg text-good hover:bg-good-bg"
+    : undefined;
 
 /** Friendly label for a lease status shown to the tenant. */
 const leaseStatusLabel = (s: string) =>
@@ -225,7 +229,7 @@ export default function Portal() {
               {property?.name} · {rooms.map((r) => r.name).join(" + ")}
             </p>
           </div>
-          <Badge variant={statusVariant(lease.status)} data-testid="badge-lease-status">{leaseStatusLabel(lease.status)}</Badge>
+          <Badge variant={statusVariant(lease.status)} className={statusClass(lease.status)} data-testid="badge-lease-status">{leaseStatusLabel(lease.status)}</Badge>
         </div>
 
         {/* Identity verification — gates lease activation */}
@@ -234,7 +238,7 @@ export default function Portal() {
             <CardHeader>
               <CardTitle className="text-base flex items-center justify-between">
                 <span>Identity verification</span>
-                <Badge variant={statusVariant(verification.status)}>
+                <Badge variant={statusVariant(verification.status)} className={statusClass(verification.status)}>
                   {verification.status === "PENDING_REVIEW"
                     ? "In review"
                     : verification.status === "NOT_SUBMITTED"
@@ -398,7 +402,7 @@ export default function Portal() {
                 </span>
                 <span className="flex items-center gap-2">
                   {money(s.amount)}
-                  <Badge variant={statusVariant(s.status)}>{s.status}</Badge>
+                  <Badge variant={statusVariant(s.status)} className={statusClass(s.status)}>{s.status}</Badge>
                   {nextDue?.seq === s.seq && lease.hasSavedCard && s.paymentMethod !== "MANUAL" && (
                     <Button size="sm" disabled={pay.isPending} onClick={() => pay.mutate(s.seq)} data-testid={`button-pay-${s.seq}`}>
                       {pay.isPending ? "Paying…" : "Pay now"}
@@ -422,7 +426,7 @@ export default function Portal() {
                 {threads.map((t) => (
                   <div key={t.id} className="flex items-center justify-between rounded-md border p-2" data-testid={`thread-${t.id}`}>
                     <span>{t.subject || `${t.category} request`}</span>
-                    <Badge variant={statusVariant(t.status)}>{t.status}</Badge>
+                    <Badge variant={statusVariant(t.status)} className={statusClass(t.status)}>{t.status}</Badge>
                   </div>
                 ))}
               </div>

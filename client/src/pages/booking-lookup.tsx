@@ -28,12 +28,20 @@ interface LookupResult {
   payments: { type: string; method: string; amount: string; surcharge: string; status: string; paidAt: string | null }[];
 }
 
-const statusVariant = (s: string) =>
-  s === "CONFIRMED" || s === "ACTIVE" || s === "PAID"
-    ? "default"
-    : s === "CANCELLED" || s === "FAILED"
-      ? "destructive"
-      : "secondary";
+// Positive statuses get the green "good" tint (green = status, never brand);
+// failures stay destructive; everything else is neutral.
+function StatusBadge({ status }: { status: string }) {
+  const positive = status === "CONFIRMED" || status === "ACTIVE" || status === "PAID";
+  const negative = status === "CANCELLED" || status === "FAILED";
+  return (
+    <Badge
+      variant={negative ? "destructive" : "secondary"}
+      className={positive ? "bg-good-bg text-good hover:bg-good-bg" : undefined}
+    >
+      {status}
+    </Badge>
+  );
+}
 
 export default function BookingLookup() {
   const [reference, setReference] = useState("");
@@ -56,7 +64,7 @@ export default function BookingLookup() {
           Enter your reference and the email you booked with.
         </p>
 
-        <Card className="mt-6">
+        <Card className="bnp-card mt-6">
           <CardContent className="space-y-3 pt-6">
             <div>
               <Label htmlFor="ref">Booking reference</Label>
@@ -80,11 +88,11 @@ export default function BookingLookup() {
         </Card>
 
         {lookup.data && (
-          <Card className="mt-6">
+          <Card className="bnp-card mt-6">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base">{lookup.data.booking.reference}</CardTitle>
-                <Badge variant={statusVariant(lookup.data.booking.status)}>{lookup.data.booking.status}</Badge>
+                <StatusBadge status={lookup.data.booking.status} />
               </div>
             </CardHeader>
             <CardContent className="space-y-2 text-sm">
@@ -108,7 +116,7 @@ export default function BookingLookup() {
                   </span>
                   <span className="flex items-center gap-2">
                     {money(parseFloat(p.amount) + parseFloat(p.surcharge))}
-                    <Badge variant={statusVariant(p.status)}>{p.status}</Badge>
+                    <StatusBadge status={p.status} />
                   </span>
                 </div>
               ))}

@@ -10,7 +10,7 @@
 
 @layer base {
   :root {
-    --background: #ffffff;
+    --background: #fbfaf7; /* warm paper — cards sit on it as white islands */
     --foreground: #1c1917; /* warm near-black */
 
     --card: #ffffff;
@@ -37,6 +37,17 @@
     --border: #ebe7e3;
     --input: #ebe7e3;
     --ring: #e0533d;
+
+    /* Product-segment colors: whole-property = brand coral, by-the-room = a
+       distinct teal so the two offerings never blur together on cards/doors. */
+    --segment-whole: #e0533d;
+    --segment-room: #2c6e8f;
+    --segment-room-tint: #eaf2f6;
+
+    /* Positive-status tint (Available / Paid pills) — green stays reserved for
+       status, never for brand surfaces. */
+    --good: #1d7a3f;
+    --good-bg: #e7f3ea;
 
     --radius: 0.875rem; /* roomy, modern rounding */
 
@@ -81,5 +92,23 @@
   /* Pill filter button. */
   .bnp-pill {
     @apply rounded-full border px-4 py-1.5 text-sm font-medium transition-colors;
+  }
+
+  /* Filter chip (listings section head). Pair with an inline color dot child
+     for segment chips. */
+  .bnp-chip {
+    @apply rounded-full border bg-card px-4 py-1.5 text-sm font-medium transition-colors;
+  }
+  .bnp-chip:hover {
+    @apply border-primary;
+  }
+  .bnp-chip-active {
+    @apply border-primary bg-primary text-primary-foreground;
+  }
+
+  /* Demoted treatment for fully-booked listing cards — visible but clearly
+     secondary to available inventory. */
+  .is-booked {
+    @apply opacity-[0.72] saturate-[0.85];
   }
 }

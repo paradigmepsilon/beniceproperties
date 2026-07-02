@@ -12,8 +12,8 @@ export function SiteHeader() {
   }, []);
 
   return (
-    <header className="sticky top-0 z-40 border-b bg-white/85 backdrop-blur-md">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
+    <header className="sticky top-0 z-40 border-b bg-[#FBFAF7]/85 backdrop-blur-md">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
         <Link href="/" className="flex items-center">
           <img
             src={scrolled ? "/bnp-mark-round.png" : "/bnp-logo.png"}
@@ -27,11 +27,16 @@ export function SiteHeader() {
         </Link>
         <nav className="flex items-center gap-6 text-sm font-medium text-muted-foreground">
           <Link href="/" className="transition-colors hover:text-foreground">
-            Browse
+            Browse stays
           </Link>
+          {/* Plain anchor: wouter Link doesn't scroll to hashes; a real
+              navigation to /#how lands and scrolls natively. */}
+          <a href="/#how" className="hidden transition-colors hover:text-foreground sm:inline">
+            How it works
+          </a>
           <Link
             href="/lookup"
-            className="rounded-full border px-4 py-1.5 transition-colors hover:bg-secondary hover:text-foreground"
+            className="rounded-full bg-primary px-5 py-2 font-semibold text-primary-foreground transition-colors hover:bg-accent-foreground"
           >
             My booking
           </Link>
@@ -43,20 +48,51 @@ export function SiteHeader() {
 
 export function SiteFooter() {
   return (
-    <footer className="mt-20 border-t bg-secondary/40">
-      <div className="mx-auto flex max-w-6xl flex-col items-start justify-between gap-4 px-6 py-10 sm:flex-row sm:items-center">
-        <div className="flex items-center gap-3">
-          <img src="/bnp-mark.png" alt="Be Nice Properties" className="h-10 w-10" />
-          <div>
-            <div className="font-display text-base font-semibold">Be Nice Properties</div>
-            <p className="mt-1 text-sm text-muted-foreground">Stays in Atlanta &amp; Antigua.</p>
+    <footer className="mt-20 bg-foreground text-background">
+      <div className="mx-auto w-full max-w-6xl px-6 py-14">
+        <div className="flex flex-col justify-between gap-10 md:flex-row">
+          <div className="max-w-xs">
+            <div className="flex items-center gap-3">
+              <img src="/bnp-mark-round.png" alt="Be Nice Properties" className="h-10 w-10" />
+              <span className="font-display text-lg font-semibold">Be Nice Properties</span>
+            </div>
+            <p className="mt-3 text-sm text-white/60">
+              Whole-home stays and by-the-room co-living in Atlanta, Antigua, and beyond. Book
+              direct, stay comfortable.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-x-14 gap-y-8">
+            <FooterCol title="Stays">
+              {/* Plain anchors on purpose: these deep-link into home filters
+                  (/?type=…#stays) and need a real navigation to apply. */}
+              <a href="/#stays">Browse all</a>
+              <a href="/?type=STR#stays">Whole properties</a>
+              <a href="/?type=COLIVING#stays">Rooms</a>
+              <a href="/?city=Atlanta#stays">Atlanta</a>
+              <a href={`/?city=${encodeURIComponent("St. John's")}#stays`}>St. John&rsquo;s</a>
+            </FooterCol>
+            <FooterCol title="Company">
+              <a href="/#how">How it works</a>
+            </FooterCol>
+            <FooterCol title="Support">
+              <a href="/lookup">My booking</a>
+            </FooterCol>
           </div>
         </div>
-        <div className="flex gap-6 text-sm text-muted-foreground">
-          <Link href="/" className="hover:text-foreground">Browse stays</Link>
-          <Link href="/lookup" className="hover:text-foreground">My booking</Link>
+        <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t border-white/15 pt-6 text-xs text-white/50">
+          <span>© {new Date().getFullYear()} Be Nice Properties.</span>
+          <span>Atlanta · Antigua</span>
         </div>
       </div>
     </footer>
+  );
+}
+
+function FooterCol({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="flex min-w-[140px] flex-col gap-2.5 text-sm [&>a]:text-white/70 [&>a:hover]:text-white">
+      <h4 className="text-xs font-bold uppercase tracking-wider text-white/90">{title}</h4>
+      {children}
+    </div>
   );
 }

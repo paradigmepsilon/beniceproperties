@@ -8,7 +8,7 @@ var __export = (target, all) => {
 import "dotenv/config";
 
 // server/storage.ts
-import { and, asc, desc, eq, inArray, sql as sql3 } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, ne, sql as sql3 } from "drizzle-orm";
 
 // server/db.ts
 import { neon } from "@neondatabase/serverless";
@@ -948,6 +948,18 @@ var Storage = class {
     }
     return db.select().from(bookings).orderBy(desc(bookings.createdAt));
   }
+  async getStrBookingsEndingOnOrAfter(propertyIds, date2) {
+    if (propertyIds.length === 0) return [];
+    return db.select().from(bookings).where(
+      and(
+        inArray(bookings.propertyId, propertyIds),
+        eq(bookings.model, "STR"),
+        ne(bookings.status, "CANCELLED"),
+        // SQL null comparison also drops open-ended stays (null checkOut).
+        gte(bookings.checkOut, date2)
+      )
+    ).orderBy(asc(bookings.checkIn));
+  }
   async createBooking(data) {
     const [row] = await db.insert(bookings).values(data).returning();
     return row;
@@ -1032,6 +1044,20 @@ var Storage = class {
     if (opts?.propertyId) filters.push(eq(leases.propertyId, opts.propertyId));
     const q = db.select().from(leases).orderBy(desc(leases.createdAt));
     return filters.length ? q.where(and(...filters)) : q;
+  }
+  async getSoonestOccupyingLeaseEndByProperty(propertyIds, onOrAfter) {
+    if (propertyIds.length === 0) return {};
+    const rows = await db.select({
+      propertyId: leases.propertyId,
+      minEnd: sql3`min(${leases.endDate})`
+    }).from(leases).where(
+      and(
+        inArray(leases.propertyId, propertyIds),
+        inArray(leases.status, ["PENDING_VERIFICATION", "ACTIVE"]),
+        gte(leases.endDate, onOrAfter)
+      )
+    ).groupBy(leases.propertyId);
+    return Object.fromEntries(rows.map((r) => [r.propertyId, r.minEnd]));
   }
   async createLeaseWithSchedule(args) {
     if (args.rooms.length < 1) {

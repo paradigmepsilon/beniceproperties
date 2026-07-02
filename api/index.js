@@ -26,7 +26,7 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 
 // server/storage.ts
-import { and, asc, desc, eq, inArray, sql as sql3 } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, ne, sql as sql3 } from "drizzle-orm";
 
 // server/db.ts
 import { neon } from "@neondatabase/serverless";
@@ -872,16 +872,16 @@ var ScheduleError = class extends Error {
 };
 var roundCurrency = (v) => Math.round(v * 100) / 100;
 var MS_PER_DAY = 24 * 60 * 60 * 1e3;
-function parseYmd(ymd2) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd2);
-  if (!m) throw new ScheduleError(`Invalid date (expected YYYY-MM-DD): ${ymd2}`);
+function parseYmd(ymd3) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd3);
+  if (!m) throw new ScheduleError(`Invalid date (expected YYYY-MM-DD): ${ymd3}`);
   return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
 }
 function toYmd(d) {
   return d.toISOString().slice(0, 10);
 }
-function addDays(ymd2, days) {
-  return toYmd(new Date(parseYmd(ymd2).getTime() + days * MS_PER_DAY));
+function addDays(ymd3, days) {
+  return toYmd(new Date(parseYmd(ymd3).getTime() + days * MS_PER_DAY));
 }
 function inclusiveDays(startDate, endDate) {
   const diff = Math.round((parseYmd(endDate).getTime() - parseYmd(startDate).getTime()) / MS_PER_DAY);
@@ -1026,6 +1026,18 @@ var Storage = class {
     }
     return db.select().from(bookings).orderBy(desc(bookings.createdAt));
   }
+  async getStrBookingsEndingOnOrAfter(propertyIds, date2) {
+    if (propertyIds.length === 0) return [];
+    return db.select().from(bookings).where(
+      and(
+        inArray(bookings.propertyId, propertyIds),
+        eq(bookings.model, "STR"),
+        ne(bookings.status, "CANCELLED"),
+        // SQL null comparison also drops open-ended stays (null checkOut).
+        gte(bookings.checkOut, date2)
+      )
+    ).orderBy(asc(bookings.checkIn));
+  }
   async createBooking(data) {
     const [row] = await db.insert(bookings).values(data).returning();
     return row;
@@ -1110,6 +1122,20 @@ var Storage = class {
     if (opts?.propertyId) filters.push(eq(leases.propertyId, opts.propertyId));
     const q = db.select().from(leases).orderBy(desc(leases.createdAt));
     return filters.length ? q.where(and(...filters)) : q;
+  }
+  async getSoonestOccupyingLeaseEndByProperty(propertyIds, onOrAfter) {
+    if (propertyIds.length === 0) return {};
+    const rows = await db.select({
+      propertyId: leases.propertyId,
+      minEnd: sql3`min(${leases.endDate})`
+    }).from(leases).where(
+      and(
+        inArray(leases.propertyId, propertyIds),
+        inArray(leases.status, ["PENDING_VERIFICATION", "ACTIVE"]),
+        gte(leases.endDate, onOrAfter)
+      )
+    ).groupBy(leases.propertyId);
+    return Object.fromEntries(rows.map((r) => [r.propertyId, r.minEnd]));
   }
   async createLeaseWithSchedule(args) {
     if (args.rooms.length < 1) {
@@ -1918,6 +1944,25 @@ async function buildLeaseQuote(input) {
   };
 }
 
+// server/lib/nextOpening.ts
+import { addDays as addDays3, parseISO as parseISO3 } from "date-fns";
+var ymd = (d) => d.toISOString().slice(0, 10);
+function dayAfter(isoDate) {
+  return ymd(addDays3(parseISO3(isoDate), 1));
+}
+function strNextOpening(stays, today) {
+  const spans = stays.filter((s) => s.checkOut != null).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+  let open = null;
+  for (const s of spans) {
+    if (open == null) {
+      if (s.checkIn <= today && today < s.checkOut) open = s.checkOut;
+    } else if (s.checkIn <= open && s.checkOut > open) {
+      open = s.checkOut;
+    }
+  }
+  return open;
+}
+
 // server/lib/paymentMetadata.ts
 var NULL = "null";
 var str = (v) => v === null || v === void 0 || v === "" ? NULL : String(v);
@@ -2447,9 +2492,9 @@ async function notifyGuest(opts) {
 
 // server/lib/dunning.ts
 var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
-var ymd = (d) => d.toISOString().slice(0, 10);
+var ymd2 = (d) => d.toISOString().slice(0, 10);
 async function handleChargeFailure(args) {
-  const today = args.today ?? ymd(/* @__PURE__ */ new Date());
+  const today = args.today ?? ymd2(/* @__PURE__ */ new Date());
   if (args.scheduleRow.status !== "FAILED") {
     await storage.updateScheduleRow(args.scheduleRow.id, { status: "FAILED" });
   }
@@ -3893,7 +3938,7 @@ async function registerRoutes(app) {
   app.get("/api/properties", async (_req, res, next) => {
     try {
       const props = await storage.getProperties({ activeOnly: true });
-      const list = await Promise.all(
+      const withRent = await Promise.all(
         props.map(async (p) => {
           let fromWeeklyRent = null;
           if (p.type === "COLIVING") {
@@ -3904,6 +3949,25 @@ async function registerRoutes(app) {
           return { ...p, fromWeeklyRent };
         })
       );
+      const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      const bookedColivingIds = withRent.filter((p) => p.type === "COLIVING" && p.fromWeeklyRent === null).map((p) => p.id);
+      const strIds = withRent.filter((p) => p.type === "STR").map((p) => p.id);
+      const [leaseEnds, strBookings] = await Promise.all([
+        storage.getSoonestOccupyingLeaseEndByProperty(bookedColivingIds, today),
+        storage.getStrBookingsEndingOnOrAfter(strIds, today)
+      ]);
+      const list = withRent.map((p) => {
+        let nextOpening = null;
+        if (p.type === "COLIVING" && p.fromWeeklyRent === null) {
+          nextOpening = leaseEnds[p.id] ? dayAfter(leaseEnds[p.id]) : null;
+        } else if (p.type === "STR") {
+          nextOpening = strNextOpening(
+            strBookings.filter((b) => b.propertyId === p.id),
+            today
+          );
+        }
+        return { ...p, nextOpening };
+      });
       res.json(list);
     } catch (err) {
       next(err);

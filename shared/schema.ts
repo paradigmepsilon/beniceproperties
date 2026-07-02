@@ -254,7 +254,13 @@ export type InsertProperty = z.infer<typeof insertPropertySchema>;
 // co-living, fromWeeklyRent is the lowest weeklyRent among AVAILABLE rooms so
 // the card can show "from $X / week"; null when no room is bookable. STR
 // properties leave it null (they price from their own nightly tiers).
-export type PropertyListItem = Property & { fromWeeklyRent: string | null };
+export type PropertyListItem = Property & {
+  fromWeeklyRent: string | null;
+  /** First bookable ISO date for a currently-unavailable property (COLIVING:
+   *  soonest occupying-lease end + 1; STR: end of the booking chain covering
+   *  today). Null when the property is bookable now or no end is known. */
+  nextOpening: string | null;
+};
 
 // =============================================================================
 // rooms — bookable rooms inside a COLIVING property
