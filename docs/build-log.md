@@ -818,3 +818,10 @@ errors/warnings.
 
 **Tracker:** Build Tracker ticket "Co-living property page — clickable room
 images + inline room-card row" (BNP) → Needs Admin Verification.
+
+**Follow-up (same day, admin kick-back):** the room-card row was still capped at
+704px on desktop — the details/sidebar grid (`lg:grid-cols-[1fr_360px]`) reserved
+a 360px right column even on co-living pages, where no sidebar renders. The
+two-column template now applies only to STR; co-living details (and the card row)
+span the full content width (~1104px, cards ~355px each). STR page verified
+unchanged (details + sticky booking card). tsc clean · 185/185 · smoke re-run.

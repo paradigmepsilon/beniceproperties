@@ -71,7 +71,9 @@ export default function PropertyDetail() {
           </div>
         )}
 
-        <div className="mt-6 grid gap-10 lg:grid-cols-[1fr_360px]">
+        {/* STR reserves a right column for the sticky booking card; co-living has
+            no sidebar, so details — and the room-card row — get the full width. */}
+        <div className={`mt-6 grid gap-10 ${property.type === "STR" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
           {/* Left: details */}
           <div>
             <span className="inline-block rounded-full bg-accent px-3 py-1 text-xs font-semibold text-accent-foreground">
