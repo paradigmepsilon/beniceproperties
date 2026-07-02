@@ -22,6 +22,7 @@ __export(schema_exports, {
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
+  DEPOSIT_STATUSES: () => DEPOSIT_STATUSES,
   ESCALATION_KINDS: () => ESCALATION_KINDS,
   ESCALATION_SEVERITIES: () => ESCALATION_SEVERITIES,
   ESCALATION_STATUSES: () => ESCALATION_STATUSES,
@@ -46,7 +47,10 @@ __export(schema_exports, {
   ROOM_STATUSES: () => ROOM_STATUSES,
   SCHEDULE_PAYMENT_METHODS: () => SCHEDULE_PAYMENT_METHODS,
   SCHEDULE_STATUSES: () => SCHEDULE_STATUSES,
+  US_STATE_CODES: () => US_STATE_CODES,
+  VERIFICATION_STATUSES: () => VERIFICATION_STATUSES,
   adminUsers: () => adminUsers,
+  allowedCadencesForTerm: () => allowedCadencesForTerm,
   appSettings: () => appSettings,
   bookings: () => bookings,
   guestMessages: () => guestMessages,
@@ -68,6 +72,7 @@ __export(schema_exports, {
   insertRoomSchema: () => insertRoomSchema,
   insertSubscriptionSchema: () => insertSubscriptionSchema,
   insertUoEscalationSchema: () => insertUoEscalationSchema,
+  insertVehicleSchema: () => insertVehicleSchema,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
   leaseRooms: () => leaseRooms,
@@ -79,7 +84,8 @@ __export(schema_exports, {
   properties: () => properties,
   rooms: () => rooms,
   subscriptions: () => subscriptions,
-  uoEscalations: () => uoEscalations
+  uoEscalations: () => uoEscalations,
+  vehicles: () => vehicles
 });
 import { sql } from "drizzle-orm";
 import {
@@ -117,15 +123,76 @@ var LEASE_STATUSES = [
   "PENDING_SIGNATURE",
   // presented to guest for signature
   "PENDING_FIRST_PAYMENT",
-  // signed; awaiting schedule_seq 1
+  // signed; awaiting the securing payment (deposit)
+  "PENDING_VERIFICATION",
+  // deposit paid + room secured; awaiting ID approval
   "ACTIVE",
-  // signed AND first payment succeeded
+  // verified (ID approved) AND securing payment succeeded
   "COMPLETED",
   // term finished, fully paid
   "TERMINATED",
   // ended early
   "DEFAULTED"
   // unpaid past the default threshold
+];
+var VERIFICATION_STATUSES = [
+  "NOT_SUBMITTED",
+  "PENDING_REVIEW",
+  "APPROVED",
+  "REJECTED"
+];
+var US_STATE_CODES = [
+  "AL",
+  "AK",
+  "AZ",
+  "AR",
+  "CA",
+  "CO",
+  "CT",
+  "DE",
+  "FL",
+  "GA",
+  "HI",
+  "ID",
+  "IL",
+  "IN",
+  "IA",
+  "KS",
+  "KY",
+  "LA",
+  "ME",
+  "MD",
+  "MA",
+  "MI",
+  "MN",
+  "MS",
+  "MO",
+  "MT",
+  "NE",
+  "NV",
+  "NH",
+  "NJ",
+  "NM",
+  "NY",
+  "NC",
+  "ND",
+  "OH",
+  "OK",
+  "OR",
+  "PA",
+  "RI",
+  "SC",
+  "SD",
+  "TN",
+  "TX",
+  "UT",
+  "VT",
+  "VA",
+  "WA",
+  "WV",
+  "WI",
+  "WY",
+  "DC"
 ];
 var SCHEDULE_STATUSES = [
   "SCHEDULED",
@@ -142,6 +209,7 @@ var SCHEDULE_STATUSES = [
 ];
 var SCHEDULE_PAYMENT_METHODS = ["CARD_ON_FILE", "MANUAL"];
 var LATE_FEE_STATUSES = ["ACCRUED", "BILLED", "PAID", "WAIVED"];
+var DEPOSIT_STATUSES = ["PENDING", "PAID", "REFUNDED", "WAIVED"];
 var CADENCE_WEEKS = {
   WEEKLY: 1,
   BIWEEKLY: 2,
@@ -153,6 +221,11 @@ var CADENCE_DAYS = {
   MONTHLY: 28
 };
 var MAX_LEASE_DAYS = 90;
+function allowedCadencesForTerm(termDays) {
+  if (termDays >= 84) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
+  if (termDays >= 28) return ["WEEKLY", "MONTHLY"];
+  return ["WEEKLY"];
+}
 var LATE_FEE_PER_DAY = 25;
 var NOTIFICATION_KINDS = [
   "REMINDER_7D",
@@ -170,7 +243,13 @@ var NOTIFICATION_KINDS = [
   "LATE_FEE_BILLED",
   "DEFAULTED"
 ];
-var ESCALATION_KINDS = ["PAYMENT_FAILED", "PAYMENT_OVERDUE", "LEASE_DEFAULTED"];
+var ESCALATION_KINDS = [
+  "PAYMENT_FAILED",
+  "PAYMENT_OVERDUE",
+  "LEASE_DEFAULTED",
+  "VERIFICATION_PENDING"
+  // a tenant uploaded a license awaiting admin review
+];
 var ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"];
 var ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"];
 var DEFAULT_DEFAULTED_THRESHOLD_DAYS = 7;
@@ -194,6 +273,37 @@ var properties = pgTable("properties", {
   // STR nightly base price. Null/0 for COLIVING parents (priced per-room).
   basePrice: decimal("base_price", { precision: 10, scale: 2 }),
   cleaningFee: decimal("cleaning_fee", { precision: 10, scale: 2 }).default("0"),
+  // Day/week/month rates (added 2026-06-27, live via additive migration). The
+  // booking flow auto-selects a tier by stay length (>=28 nights monthly, >=7
+  // weekly, else daily) and prorates per night (tierRate / tierDays). Nullable;
+  // chooseRate() falls back to the next shorter tier, and dailyRate falls back to
+  // basePrice for back-compat. See shared/rateSelection.ts.
+  dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
+  weeklyRate: decimal("weekly_rate", { precision: 10, scale: 2 }),
+  monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
+  // Per-night-by-weekday prices (added 2026-06-30, additive nullable). When a stay
+  // resolves to the DAILY tier (<7 nights), each night is priced by the weekday it
+  // falls on and the stay total = SUM of those nightly prices. A missing weekday
+  // price falls back to dailyRate ?? basePrice for that night. WEEKLY/MONTHLY tiers
+  // ignore these (they use the scalar rate). See shared/rateSelection.ts
+  // weekdayStayTotal(). STR (whole-property) only — co-living has no nightly path.
+  monPrice: decimal("mon_price", { precision: 10, scale: 2 }),
+  tuePrice: decimal("tue_price", { precision: 10, scale: 2 }),
+  wedPrice: decimal("wed_price", { precision: 10, scale: 2 }),
+  thuPrice: decimal("thu_price", { precision: 10, scale: 2 }),
+  friPrice: decimal("fri_price", { precision: 10, scale: 2 }),
+  satPrice: decimal("sat_price", { precision: 10, scale: 2 }),
+  sunPrice: decimal("sun_price", { precision: 10, scale: 2 }),
+  // Street address (structured beyond the free-text `location` market label).
+  // Added 2026-06-28 for the Unified-Ops Inventory manager. Additive, nullable.
+  address: text("address"),
+  // Prior Airbnb listing names this property has carried (Alex re-lists when a
+  // rating drops). Populated when duplicate Airbnb listings are merged onto this
+  // property. string[] of past names. Additive.
+  priorNames: jsonb("prior_names").$type().default(sql`'[]'::jsonb`),
+  // The Airbnb listing_room_id this STR property maps to (entire-home listing).
+  // Links live inventory to the airbnb_reservations staging data. Additive.
+  airbnbListingRoomId: text("airbnb_listing_room_id"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull()
@@ -217,14 +327,29 @@ var rooms = pgTable(
     photos: jsonb("photos").$type().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
     depositAmount: decimal("deposit_amount", { precision: 10, scale: 2 }).notNull(),
+    // Day/month rates (added 2026-06-27). weekly_rent is the weekly value used by
+    // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
+    // next shorter tier. See shared/rateSelection.ts.
+    dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
+    monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
     // "AVAILABLE" | "OCCUPIED" | "HOLD"
     status: text("status").notNull().default("AVAILABLE"),
+    // Street address for this specific room (when it differs from / refines the
+    // parent property's). Added 2026-06-28 for the Inventory manager. Additive.
+    address: text("address"),
+    // Prior Airbnb listing names this room has carried (populated on merge of
+    // duplicate Airbnb listings). string[]. Additive.
+    priorNames: jsonb("prior_names").$type().default(sql`'[]'::jsonb`),
+    // The Airbnb listing_room_id this room maps to (private-room listing). Links
+    // live inventory to airbnb_reservations staging data. Additive.
+    airbnbListingRoomId: text("airbnb_listing_room_id"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull()
   },
   (table) => ({
     propertyIdx: index("rooms_property_idx").on(table.propertyId),
-    statusIdx: index("rooms_status_idx").on(table.status)
+    statusIdx: index("rooms_status_idx").on(table.status),
+    airbnbIdx: index("rooms_airbnb_listing_idx").on(table.airbnbListingRoomId)
   })
 );
 var insertRoomSchema = createInsertSchema(rooms, {
@@ -410,6 +535,29 @@ var leases = pgTable(
     // at signing time with the signature block, timestamp, and IP. Stored inline
     // (no external blob store wired yet). Reference-only; contains no card data.
     signedDocumentHtml: text("signed_document_html"),
+    // --- Refundable security deposit (secures the room). Snapshotted at lease
+    // creation from the included room(s) so a later re-price never changes a
+    // signed lease. The deposit is the SECURING payment: paying it flips the
+    // room(s) to OCCUPIED. It is held separately and never counted as rent. ---
+    depositAmountSnapshot: decimal("deposit_amount_snapshot", { precision: 10, scale: 2 }),
+    // "PENDING" | "PAID" | "REFUNDED" | "WAIVED"
+    depositStatus: text("deposit_status").notNull().default("PENDING"),
+    depositStripePaymentIntentId: text("deposit_stripe_payment_intent_id"),
+    depositPaidAt: timestamp("deposit_paid_at"),
+    // --- Tenant identity verification (driver's license review). The tenant
+    // uploads a license from the portal; an admin reviews it against signedName
+    // and APPROVES to activate the lease. The license image lives in R2 (private);
+    // only the object key is stored here — no image bytes, no PII beyond the key. ---
+    // One of VERIFICATION_STATUSES.
+    verificationStatus: text("verification_status").notNull().default("NOT_SUBMITTED"),
+    // R2 object key for the uploaded license (bnp/licenses/<leaseId>/<uuid>.<ext>).
+    licenseR2Key: text("license_r2_key"),
+    licenseUploadedAt: timestamp("license_uploaded_at"),
+    verificationReviewedAt: timestamp("verification_reviewed_at"),
+    // Admin id/email who approved or rejected.
+    verificationReviewedBy: text("verification_reviewed_by"),
+    // Reason surfaced to the tenant on rejection (why to re-upload).
+    verificationRejectionReason: text("verification_rejection_reason"),
     // --- Saved payment method (Phase 4). Stripe REFERENCES only, never card data. ---
     stripeCustomerId: text("stripe_customer_id"),
     stripePaymentMethodId: text("stripe_payment_method_id"),
@@ -428,7 +576,8 @@ var leases = pgTable(
 );
 var insertLeaseSchema = createInsertSchema(leases, {
   paymentCadence: z.enum(PAYMENT_CADENCES),
-  status: z.enum(LEASE_STATUSES).optional()
+  status: z.enum(LEASE_STATUSES).optional(),
+  verificationStatus: z.enum(VERIFICATION_STATUSES).optional()
 }).omit({ id: true, createdAt: true, updatedAt: true });
 var leaseRooms = pgTable(
   "lease_rooms",
@@ -449,6 +598,35 @@ var insertLeaseRoomSchema = createInsertSchema(leaseRooms).omit({
   id: true,
   createdAt: true
 });
+var vehicles = pgTable(
+  "vehicles",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    leaseId: varchar("lease_id").notNull().references(() => leases.id),
+    // False when the tenant declares they have no vehicle (car fields null).
+    hasVehicle: boolean("has_vehicle").notNull().default(true),
+    make: text("make"),
+    model: text("model"),
+    year: integer("year"),
+    color: text("color"),
+    plate: text("plate"),
+    // Two-letter US state/territory code (US_STATE_CODES).
+    plateState: text("plate_state"),
+    // R2 object key for an optional vehicle photo (bnp/vehicles/<leaseId>/<uuid>.<ext>).
+    photoR2Key: text("photo_r2_key"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    leaseIdx: index("vehicles_lease_idx").on(table.leaseId)
+  })
+);
+var insertVehicleSchema = createInsertSchema(vehicles, {
+  plateState: z.enum(US_STATE_CODES).nullish(),
+  // Reasonable bounds; a plausible vehicle year range. Nullable (cleared when the
+  // tenant declares no vehicle).
+  year: z.number().int().min(1900).max(2100).nullish()
+}).omit({ id: true, createdAt: true, updatedAt: true });
 var paymentSchedule = pgTable(
   "payment_schedule",
   {
@@ -617,6 +795,8 @@ var insertGuestMessageSchema = createInsertSchema(guestMessages, {
   status: z.enum(MESSAGE_STATUSES).optional()
 }).omit({ id: true, createdAt: true, updatedAt: true });
 var LIFECYCLE_EVENT_TYPES = [
+  "DEPOSIT_RECEIPT",
+  // on deposit paid — room secured (guest)
   "COLIVING_WELCOME",
   // on lease activation (guest)
   "COLIVING_SCHEDULE_RECAP",
@@ -688,6 +868,8 @@ var ROOM_BLOCKING_LEASE_STATUSES = [
   "DRAFT",
   "PENDING_SIGNATURE",
   "PENDING_FIRST_PAYMENT",
+  "PENDING_VERIFICATION",
+  // deposit paid, room secured, awaiting ID approval
   "ACTIVE"
 ];
 var StorageError = class extends Error {
@@ -894,6 +1076,20 @@ var Storage = class {
   }
   async getLeaseRooms(leaseId) {
     return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+  // --- Vehicles (one row per lease; upsert keyed on lease_id) ---
+  async getVehicleByLease(leaseId) {
+    const [row] = await db.select().from(vehicles).where(eq(vehicles.leaseId, leaseId));
+    return row;
+  }
+  async upsertVehicleByLease(leaseId, data) {
+    const existing = await this.getVehicleByLease(leaseId);
+    if (existing) {
+      const [row2] = await db.update(vehicles).set({ ...data, leaseId, updatedAt: /* @__PURE__ */ new Date() }).where(eq(vehicles.id, existing.id)).returning();
+      return row2;
+    }
+    const [row] = await db.insert(vehicles).values({ ...data, leaseId }).returning();
+    return row;
   }
   // --- Guest messages ---
   async getMessageThreadsByLease(leaseId) {
@@ -1230,7 +1426,8 @@ function buildLeaseChargeMetadata(args) {
     room_number: str(roomNumbers),
     lease_id: str(args.lease.id),
     payment_kind: args.paymentKind,
-    schedule_seq: str(args.scheduleSeq)
+    schedule_seq: str(args.scheduleSeq),
+    rate_cadence: str(args.rateCadence ?? null)
   };
 }
 var REQUIRED_METADATA_KEYS = [
@@ -1289,6 +1486,9 @@ async function chargeSavedCard(opts) {
     { idempotencyKey: opts.idempotencyKey }
   );
 }
+
+// shared/rateSelection.ts
+import { addDays, getDay, parseISO } from "date-fns";
 
 // server/lib/notifications.ts
 function isEmailConfigured() {
@@ -1643,6 +1843,12 @@ Payments on a saved card are charged automatically on each due date. Manage ever
     subject: `Payment received \u2014 ${v.property}`,
     body: `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ${v.property}. Thank you! A record is available in your portal.`
   }),
+  depositReceipt: (v) => ({
+    subject: `Your room is secured \u2014 ${v.property} \u{1F512}`,
+    body: `Hi ${v.name}, we received your refundable security deposit of ${v.amount} \u2014 your room (${v.room}) at ${v.property} is now secured and held for you. The deposit is returned at the end of your lease per the agreement.
+
+One last step to activate your lease: upload a photo of your driver's license from your portal so we can verify your identity. Once we approve it, your lease goes active and your first week's rent is charged. Upload here: ${v.portalUrl}`
+  }),
   leaseEnding: (v) => ({
     subject: `Your lease ends in ${v.days} days`,
     body: `Hi ${v.name}, your lease at ${v.property} ends on ${v.end} (${v.days} days away). If you'd like to renew or extend, reply or reach out through your portal: ${v.portalUrl}. We'd love to have you stay.`
@@ -1724,7 +1930,6 @@ async function runScheduledRentSweep(today = todayYmd()) {
     const rooms2 = await storage.getLeaseRooms(lease.id);
     const schedule = await storage.getScheduleByLease(lease.id);
     for (const row of schedule) {
-      if (row.scheduleSeq === 1) continue;
       if (row.paymentMethod !== "CARD_ON_FILE") continue;
       if (row.dueDate > today) continue;
       if (!CHARGEABLE_STATUSES.has(row.status)) {
