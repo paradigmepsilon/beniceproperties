@@ -59,7 +59,7 @@ export default function PropertyDetail() {
             rounded="rounded-3xl"
           />
         ) : (
-          <div className="relative aspect-[16/7] w-full overflow-hidden rounded-3xl">
+          <div className="relative aspect-[3/2] w-full overflow-hidden rounded-3xl">
             <ListingImage
               id={property.id}
               photos={property.photos}

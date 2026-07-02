@@ -33,7 +33,7 @@ export function ListingGallery({ id, photos, alt, location, kind, rounded = "rou
   // 0 photos → identical branded placeholder behavior as before.
   if (pics.length === 0) {
     return (
-      <div className={cn("relative aspect-[16/7] w-full overflow-hidden", rounded)}>
+      <div className={cn("relative aspect-[3/2] w-full overflow-hidden", rounded)}>
         <ListingImage id={id} photos={pics} alt={alt} location={location} kind={kind} rounded={rounded} />
       </div>
     );
@@ -42,7 +42,7 @@ export function ListingGallery({ id, photos, alt, location, kind, rounded = "rou
   // 1 photo → plain hero, no thumbnails, no lightbox.
   if (pics.length === 1) {
     return (
-      <div className={cn("relative aspect-[16/7] w-full overflow-hidden", rounded)}>
+      <div className={cn("relative aspect-[3/2] w-full overflow-hidden", rounded)}>
         <img src={pics[0]} alt={alt} className={cn("h-full w-full object-cover", rounded)} loading="lazy" />
       </div>
     );
@@ -55,7 +55,7 @@ export function ListingGallery({ id, photos, alt, location, kind, rounded = "rou
         type="button"
         onClick={() => setLightboxOpen(true)}
         className={cn(
-          "group relative block aspect-[16/7] w-full overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-primary",
+          "group relative block aspect-[3/2] w-full overflow-hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-primary",
           rounded,
         )}
         aria-label={`View all ${pics.length} photos of ${alt}`}

@@ -899,3 +899,25 @@ worth collapsing to a single grouped query if the property count grows.
 
 **Tracker:** BNP ticket "Home page — co-living 'from $X/week' price + filter
 locations by city" covers the filter; layout + city-data added same session.
+
+---
+
+## 2026-07-01 — Fix: hero image ratio 16:7 → 3:2 (room + property heroes)
+
+**What:** The detail-page hero (a selected room image, or a property hero) was
+`aspect-[16/7]` (~2.29:1) — a short letterbox that cropped too much vertical off
+room/property photos. Changed to `aspect-[3/2]` (1.5:1, ~50% taller), matching the
+gallery thumbnails and the home-page room cards. Applied to all hero surfaces:
+ListingGallery's three hero branches (0/1/2+ photos — covers the STR property hero
+and the co-living room hero) and the co-living property hero (ListingImage wrapper
+in property-detail). Thumbnail strips stay 3:2 (unchanged).
+
+**Files:** `client/src/components/listing-gallery.tsx` (lines 36, 45, 58),
+`client/src/pages/property-detail.tsx` (co-living hero wrapper). Branch
+`fix/hero-aspect-3-2`.
+
+**Tests + results:** `npm run check` clean (no test surface — visual only).
+Verified live (dev :3005): room hero 976×651, STR property hero 1104×736,
+co-living property hero 1104×736 — all exactly 3:2; 0 console errors.
+
+**Tracker:** BNP quick fix off the room-cards work.
