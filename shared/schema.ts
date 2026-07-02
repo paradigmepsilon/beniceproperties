@@ -993,3 +993,39 @@ export const insertLifecycleEventSchema = createInsertSchema(lifecycleEvents).om
 
 export type LifecycleEvent = typeof lifecycleEvents.$inferSelect;
 export type InsertLifecycleEvent = z.infer<typeof insertLifecycleEventSchema>;
+
+// =============================================================================
+// hero_images — homepage hero SLIDER images (BT-24, added 2026-07-02).
+// Managed in Unified Ops (upload/reorder/toggle/delete, stored in R2); the public
+// homepage READS the active rows in display_order to render the rotating hero
+// (BT-22). Like property/room photos, these are read-only on the site side.
+// s3_url is the public R2 URL. Additive table.
+// =============================================================================
+
+export const heroImages = pgTable(
+  "hero_images",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    s3Url: text("s3_url").notNull(),
+    // Overlay/accessibility label; nullable.
+    altText: text("alt_text"),
+    // Rotation order (ascending). New images append to the end.
+    displayOrder: integer("display_order").notNull().default(0),
+    // Whether this slide shows on the public homepage.
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    activeOrderIdx: index("hero_images_active_order_idx").on(table.isActive, table.displayOrder),
+  }),
+);
+
+export const insertHeroImageSchema = createInsertSchema(heroImages).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type HeroImage = typeof heroImages.$inferSelect;
+export type InsertHeroImage = z.infer<typeof insertHeroImageSchema>;

@@ -30,9 +30,11 @@ import {
   uoEscalations,
   guestMessages,
   lifecycleEvents,
+  heroImages,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
+  type HeroImage,
   type Room,
   type InsertRoom,
   type Guest,
@@ -87,6 +89,9 @@ export class StorageError extends Error {
 }
 
 export interface IStorage {
+  // --- Hero images (BT-22): active homepage-hero slides, in display order. ---
+  getActiveHeroImages(): Promise<HeroImage[]>;
+
   // --- Properties ---
   getProperties(opts?: { activeOnly?: boolean }): Promise<Property[]>;
   getProperty(id: string): Promise<Property | undefined>;
@@ -244,6 +249,15 @@ export interface IStorage {
 }
 
 class Storage implements IStorage {
+  // --- Hero images (BT-22) ---
+  async getActiveHeroImages(): Promise<HeroImage[]> {
+    return db
+      .select()
+      .from(heroImages)
+      .where(eq(heroImages.isActive, true))
+      .orderBy(asc(heroImages.displayOrder), asc(heroImages.createdAt));
+  }
+
   // --- Properties ---
   async getProperties(opts?: { activeOnly?: boolean }): Promise<Property[]> {
     if (opts?.activeOnly) {

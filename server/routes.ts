@@ -172,6 +172,21 @@ export async function registerRoutes(app: Express): Promise<void> {
   // =========================================================================
   // PUBLIC — inventory
   // =========================================================================
+
+  // Homepage hero slideshow images (BT-22) — active slides in display order.
+  // Managed in Unified Ops (upload/reorder/toggle); the homepage reads this to
+  // rotate the hero. Returns only the fields the client needs.
+  app.get("/api/hero-images", async (_req, res, next) => {
+    try {
+      const imgs = await storage.getActiveHeroImages();
+      res.json(
+        imgs.map((h) => ({ id: h.id, url: h.s3Url, alt: h.altText ?? "" })),
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get("/api/properties", async (_req, res, next) => {
     try {
       const props = await storage.getProperties({ activeOnly: true });
