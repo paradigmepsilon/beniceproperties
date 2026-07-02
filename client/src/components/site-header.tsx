@@ -25,18 +25,19 @@ export function SiteHeader() {
             }
           />
         </Link>
-        <nav className="flex items-center gap-6 text-sm font-medium text-muted-foreground">
-          <Link href="/" className="transition-colors hover:text-foreground">
+        {/* BT-23 mobile: min-h-11 on each link so nav items are 44px tap targets. */}
+        <nav className="flex items-center gap-4 text-sm font-medium text-muted-foreground sm:gap-6">
+          <Link href="/" className="inline-flex min-h-11 items-center transition-colors hover:text-foreground">
             Browse stays
           </Link>
           {/* Plain anchor: wouter Link doesn't scroll to hashes; a real
               navigation to /#how lands and scrolls natively. */}
-          <a href="/#how" className="hidden transition-colors hover:text-foreground sm:inline">
+          <a href="/#how" className="hidden min-h-11 items-center transition-colors hover:text-foreground sm:inline-flex">
             How it works
           </a>
           <Link
             href="/lookup"
-            className="rounded-full bg-primary px-5 py-2 font-semibold text-primary-foreground transition-colors hover:bg-accent-foreground"
+            className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 font-semibold text-primary-foreground transition-colors hover:bg-accent-foreground"
           >
             My booking
           </Link>
@@ -89,8 +90,9 @@ export function SiteFooter() {
 }
 
 function FooterCol({ title, children }: { title: string; children: React.ReactNode }) {
+  // BT-23 mobile: each footer link is a 44px-tall tap target (flex + min-h-11).
   return (
-    <div className="flex min-w-[140px] flex-col gap-2.5 text-sm [&>a]:text-white/70 [&>a:hover]:text-white">
+    <div className="flex min-w-[140px] flex-col text-sm [&>a:hover]:text-white [&>a]:flex [&>a]:min-h-11 [&>a]:items-center [&>a]:text-white/70">
       <h4 className="text-xs font-bold uppercase tracking-wider text-white/90">{title}</h4>
       {children}
     </div>

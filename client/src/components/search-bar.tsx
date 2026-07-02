@@ -32,7 +32,7 @@ export function SearchBar({ cities, value, onChange, onSearch }: Props) {
           id="search-city"
           value={value.city}
           onChange={(e) => set({ city: e.target.value })}
-          className="w-full cursor-pointer bg-transparent text-sm text-foreground focus:outline-none"
+          className="min-h-[2.75rem] w-full cursor-pointer bg-transparent text-sm text-foreground focus:outline-none sm:min-h-0"
           data-testid="search-city"
         >
           <option value="ALL">All locations</option>
@@ -50,7 +50,7 @@ export function SearchBar({ cities, value, onChange, onSearch }: Props) {
           min={today}
           value={value.checkIn}
           onChange={(e) => set({ checkIn: e.target.value })}
-          className="w-full bg-transparent text-sm text-foreground focus:outline-none"
+          className="min-h-[2.75rem] w-full bg-transparent text-sm text-foreground focus:outline-none sm:min-h-0"
           data-testid="search-checkin"
         />
       </SearchField>
@@ -61,7 +61,7 @@ export function SearchBar({ cities, value, onChange, onSearch }: Props) {
           min={value.checkIn || today}
           value={value.checkOut}
           onChange={(e) => set({ checkOut: e.target.value })}
-          className="w-full bg-transparent text-sm text-foreground focus:outline-none"
+          className="min-h-[2.75rem] w-full bg-transparent text-sm text-foreground focus:outline-none sm:min-h-0"
           data-testid="search-checkout"
         />
       </SearchField>

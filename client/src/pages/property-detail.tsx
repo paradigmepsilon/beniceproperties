@@ -54,7 +54,7 @@ export default function PropertyDetail() {
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
       <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
-        <Link href="/" className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+        <Link href="/" className="mb-5 inline-flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
           <ArrowLeft className="h-4 w-4" /> All stays
         </Link>
 
@@ -130,12 +130,12 @@ export default function PropertyDetail() {
                         </p>
                         {room.status === "AVAILABLE" ? (
                           <Link href={`/room/${room.id}`}>
-                            <Button className="mt-3 w-full" size="sm" data-testid={`button-room-${room.id}`}>
+                            <Button className="mt-3 min-h-11 w-full" data-testid={`button-room-${room.id}`}>
                               Reserve this room
                             </Button>
                           </Link>
                         ) : (
-                          <Button className="mt-3 w-full" size="sm" variant="secondary" disabled>
+                          <Button className="mt-3 w-full" variant="secondary" disabled>
                             Not available
                           </Button>
                         )}
@@ -176,11 +176,11 @@ export default function PropertyDetail() {
                 <div className="mt-4 grid grid-cols-2 gap-3">
                   <div>
                     <Label htmlFor="checkIn" className="text-xs">Check-in</Label>
-                    <Input id="checkIn" type="date" min={today} value={checkIn} onChange={(e) => setCheckIn(e.target.value)} data-testid="input-checkin" />
+                    <Input id="checkIn" type="date" min={today} value={checkIn} onChange={(e) => setCheckIn(e.target.value)} data-testid="input-checkin" className="min-h-11" />
                   </div>
                   <div>
                     <Label htmlFor="checkOut" className="text-xs">Check-out</Label>
-                    <Input id="checkOut" type="date" min={checkIn || today} value={checkOut} onChange={(e) => setCheckOut(e.target.value)} data-testid="input-checkout" />
+                    <Input id="checkOut" type="date" min={checkIn || today} value={checkOut} onChange={(e) => setCheckOut(e.target.value)} data-testid="input-checkout" className="min-h-11" />
                   </div>
                 </div>
                 <Button className="mt-4 w-full" size="lg" disabled={!datesValid} onClick={continueToCheckout} data-testid="button-continue-checkout">
