@@ -70,6 +70,9 @@
     font-family: Inter, system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
     text-rendering: optimizeLegibility;
+    /* BT-23 mobile: never allow horizontal scroll — a single stray wide element
+       shouldn't let the whole page slide sideways on a phone. */
+    overflow-x: hidden;
   }
 
   h1, h2, h3 {
@@ -91,13 +94,15 @@
 
   /* Pill filter button. */
   .bnp-pill {
-    @apply rounded-full border px-4 py-1.5 text-sm font-medium transition-colors;
+    /* BT-23 mobile: min-h-11 (44px) tap target. */
+    @apply inline-flex min-h-11 items-center rounded-full border px-4 py-1.5 text-sm font-medium transition-colors;
   }
 
   /* Filter chip (listings section head). Pair with an inline color dot child
      for segment chips. */
   .bnp-chip {
-    @apply rounded-full border bg-card px-4 py-1.5 text-sm font-medium transition-colors;
+    /* BT-23 mobile: min-h-11 (44px) so filter chips meet the tap-target minimum. */
+    @apply inline-flex min-h-11 items-center rounded-full border bg-card px-4 py-1.5 text-sm font-medium transition-colors;
   }
   .bnp-chip:hover {
     @apply border-primary;
