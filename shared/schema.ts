@@ -250,6 +250,12 @@ export const insertPropertySchema = createInsertSchema(properties, {
 export type Property = typeof properties.$inferSelect;
 export type InsertProperty = z.infer<typeof insertPropertySchema>;
 
+// Property as returned by the public list endpoint (/api/properties). For
+// co-living, fromWeeklyRent is the lowest weeklyRent among AVAILABLE rooms so
+// the card can show "from $X / week"; null when no room is bookable. STR
+// properties leave it null (they price from their own nightly tiers).
+export type PropertyListItem = Property & { fromWeeklyRent: string | null };
+
 // =============================================================================
 // rooms — bookable rooms inside a COLIVING property
 // =============================================================================

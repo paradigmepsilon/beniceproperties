@@ -825,3 +825,41 @@ a 360px right column even on co-living pages, where no sidebar renders. The
 two-column template now applies only to STR; co-living details (and the card row)
 span the full content width (~1104px, cards ~355px each). STR page verified
 unchanged (details + sticky booking card). tsc clean · 185/185 · smoke re-run.
+
+---
+
+## 2026-07-01 — Enhancement: home-page listing display (co-living "from" price + city filter)
+
+**What (two related home-page fixes):**
+1. **Co-living "from" price.** Co-living cards showed a static "Rooms available";
+   they now show "from $X / week" where $X is the lowest `weeklyRent` among the
+   property's AVAILABLE rooms — mirroring the STR "from $X / night" pattern. If no
+   room is AVAILABLE the card reads "Fully booked". Computed server-side: the
+   `/api/properties` list endpoint now returns `fromWeeklyRent` per property (new
+   `PropertyListItem` type = `Property & { fromWeeklyRent: string | null }`); the
+   raw `Property` table type is untouched. STR pricing unchanged.
+2. **Location filter → city.** The "Where" filter matched the raw `location`
+   string, which is inconsistent free-text (full street address vs. bare city), so
+   the same city listed under two different pills and never grouped. Added
+   `cityOf(location)` (client/src/lib/format.ts): take the segment before the
+   first comma, strip a leading street part (keep text after the last "."), fall
+   back to the trimmed input for name-only locations. Filter list + match now use
+   `cityOf`. The two Atlanta properties (one full address, one bare "Atlanta") now
+   collapse into a single "Atlanta" pill and filter together.
+
+**Files:** `shared/schema.ts`, `server/routes.ts`, `client/src/pages/home.tsx`,
+`client/src/lib/format.ts` (+ `format.test.ts`). Branch `feat/room-cards-inline`.
+
+**Tests + results:** `npm run check` clean; `npm test` → 191/191 pass (added 6
+`cityOf` unit tests). Verified live (dev :3005): API returns fromWeeklyRent 300 /
+300 / null; home grid shows "from $300.00 / week" (both co-living) and "from
+$92.86 / night" (STR); "Where" shows one "Atlanta" pill; selecting it shows both
+Atlanta properties and hides Antigua; 0 console errors.
+
+**Known data issue (not a code bug):** the Antigua STR has no street address — its
+`location` is the property name "ANTIGUAN VILLAGE RETREAT", so that string appears
+as a city pill. Fix is data (give it a real city/location in Unified Ops), or add
+a dedicated `city` column later.
+
+**Tracker:** BNP ticket "Home page — co-living cards show 'from $X/week'…" → Needs
+Admin Verification.

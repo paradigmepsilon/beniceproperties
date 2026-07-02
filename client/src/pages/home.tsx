@@ -5,26 +5,27 @@ import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, Star } from "lucide-react";
-import type { Property } from "@shared/schema";
+import type { PropertyListItem } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingImage } from "@/components/listing-image";
-import { money } from "@/lib/format";
+import { money, cityOf } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 type TypeFilter = "ALL" | "STR" | "COLIVING";
 
 export default function Home() {
-  const { data, isLoading, error } = useQuery<Property[]>({ queryKey: ["/api/properties"] });
+  const { data, isLoading, error } = useQuery<PropertyListItem[]>({ queryKey: ["/api/properties"] });
   const [location, setLocation] = useState<string>("ALL");
   const [type, setType] = useState<TypeFilter>("ALL");
 
+  // Filter by city, not the raw (often full-address) location string.
   const locations = useMemo(() => {
-    const set = new Set((data ?? []).map((p) => p.location));
+    const set = new Set((data ?? []).map((p) => cityOf(p.location)));
     return ["ALL", ...Array.from(set).sort()];
   }, [data]);
 
   const filtered = (data ?? []).filter(
-    (p) => (location === "ALL" || p.location === location) && (type === "ALL" || p.type === type),
+    (p) => (location === "ALL" || cityOf(p.location) === location) && (type === "ALL" || p.type === type),
   );
 
   return (
@@ -139,8 +140,14 @@ export default function Home() {
                           </>
                         );
                       })()
+                    ) : p.fromWeeklyRent ? (
+                      <>
+                        <span className="text-muted-foreground">from </span>
+                        <span className="font-semibold">{money(p.fromWeeklyRent)}</span>
+                        <span className="text-muted-foreground"> / week</span>
+                      </>
                     ) : (
-                      <span className="font-medium text-foreground">Rooms available</span>
+                      <span className="font-medium text-foreground">Fully booked</span>
                     )}
                   </p>
                 </div>

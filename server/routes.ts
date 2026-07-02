@@ -24,6 +24,7 @@ import {
   insertPropertySchema,
   insertRoomSchema,
   US_STATE_CODES,
+  type PropertyListItem,
 } from "@shared/schema";
 import {
   resolveBooking,
@@ -172,7 +173,24 @@ export async function registerRoutes(app: Express): Promise<void> {
   // =========================================================================
   app.get("/api/properties", async (_req, res, next) => {
     try {
-      res.json(await storage.getProperties({ activeOnly: true }));
+      const props = await storage.getProperties({ activeOnly: true });
+      const list: PropertyListItem[] = await Promise.all(
+        props.map(async (p) => {
+          // Co-living cards price "from" the cheapest room a guest can actually
+          // book (AVAILABLE only); null → card shows "Fully booked".
+          let fromWeeklyRent: string | null = null;
+          if (p.type === "COLIVING") {
+            const rooms = await storage.getRoomsByProperty(p.id);
+            const rates = rooms
+              .filter((r) => r.status === "AVAILABLE")
+              .map((r) => parseFloat(r.weeklyRent))
+              .filter((n) => Number.isFinite(n) && n > 0);
+            if (rates.length) fromWeeklyRent = String(Math.min(...rates));
+          }
+          return { ...p, fromWeeklyRent };
+        }),
+      );
+      res.json(list);
     } catch (err) {
       next(err);
     }
