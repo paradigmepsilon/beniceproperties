@@ -7,6 +7,7 @@ import { ArrowLeft } from "lucide-react";
 import type { Property, Room } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingGallery } from "@/components/listing-gallery";
+import { RichText } from "@/components/rich-text";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { money } from "@/lib/format";
@@ -65,7 +66,8 @@ export default function RoomDetail() {
             <span className={`mt-3 inline-block rounded-full px-3 py-1 text-xs font-bold ${room.status === "AVAILABLE" ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
               {room.status === "AVAILABLE" ? "Available" : room.status === "HOLD" ? "On hold" : "Occupied"}
             </span>
-            {room.description && <p className="mt-6 max-w-2xl leading-relaxed text-foreground/90">{room.description}</p>}
+            {/* BT-21: full long-form description with paragraph breaks preserved. */}
+            <RichText text={room.description} className="mt-6 max-w-2xl" />
           </div>
 
           <aside>

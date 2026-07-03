@@ -10,6 +10,7 @@ import type { Property, Room } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingImage } from "@/components/listing-image";
 import { ListingGallery } from "@/components/listing-gallery";
+import { RichText } from "@/components/rich-text";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -104,7 +105,9 @@ export default function PropertyDetail() {
             <p className="mt-1 flex items-center gap-1.5 text-muted-foreground">
               <MapPin className="h-4 w-4" /> {property.location}
             </p>
-            <p className="mt-6 max-w-2xl leading-relaxed text-foreground/90">{property.description}</p>
+            {/* BT-21: full long-form description with paragraph breaks preserved
+                (renders nothing when empty). */}
+            <RichText text={property.description} className="mt-6 max-w-2xl" />
 
             {property.type === "COLIVING" && (
               <section className="mt-10">
