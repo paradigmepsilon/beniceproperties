@@ -73,11 +73,13 @@ __export(schema_exports, {
   bookings: () => bookings,
   guestMessages: () => guestMessages,
   guests: () => guests,
+  heroImages: () => heroImages,
   insertAdminUserSchema: () => insertAdminUserSchema,
   insertAppSettingSchema: () => insertAppSettingSchema,
   insertBookingSchema: () => insertBookingSchema,
   insertGuestMessageSchema: () => insertGuestMessageSchema,
   insertGuestSchema: () => insertGuestSchema,
+  insertHeroImageSchema: () => insertHeroImageSchema,
   insertKpiSnapshotSchema: () => insertKpiSnapshotSchema,
   insertLateFeeSchema: () => insertLateFeeSchema,
   insertLeaseRoomSchema: () => insertLeaseRoomSchema,
@@ -856,6 +858,29 @@ var insertLifecycleEventSchema = createInsertSchema(lifecycleEvents).omit({
   id: true,
   createdAt: true
 });
+var heroImages = pgTable(
+  "hero_images",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    s3Url: text("s3_url").notNull(),
+    // Overlay/accessibility label; nullable.
+    altText: text("alt_text"),
+    // Rotation order (ascending). New images append to the end.
+    displayOrder: integer("display_order").notNull().default(0),
+    // Whether this slide shows on the public homepage.
+    isActive: boolean("is_active").notNull().default(true),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    activeOrderIdx: index("hero_images_active_order_idx").on(table.isActive, table.displayOrder)
+  })
+);
+var insertHeroImageSchema = createInsertSchema(heroImages).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true
+});
 
 // server/db.ts
 var databaseUrl = process.env.DATABASE_URL;
@@ -958,6 +983,10 @@ var StorageError = class extends Error {
   }
 };
 var Storage = class {
+  // --- Hero images (BT-22) ---
+  async getActiveHeroImages() {
+    return db.select().from(heroImages).where(eq(heroImages.isActive, true)).orderBy(asc(heroImages.displayOrder), asc(heroImages.createdAt));
+  }
   // --- Properties ---
   async getProperties(opts) {
     if (opts?.activeOnly) {
@@ -3934,6 +3963,16 @@ async function registerRoutes(app) {
       stripe: isStripeConfigured() ? "configured" : "test-placeholder",
       time: (/* @__PURE__ */ new Date()).toISOString()
     });
+  });
+  app.get("/api/hero-images", async (_req, res, next) => {
+    try {
+      const imgs = await storage.getActiveHeroImages();
+      res.json(
+        imgs.map((h) => ({ id: h.id, url: h.s3Url, alt: h.altText ?? "" }))
+      );
+    } catch (err) {
+      next(err);
+    }
   });
   app.get("/api/properties", async (_req, res, next) => {
     try {
