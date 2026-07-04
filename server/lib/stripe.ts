@@ -182,6 +182,39 @@ export async function createFirstPaymentIntent(opts: {
 }
 
 /**
+ * Create a ONE-TIME PaymentIntent for a short stay (STR whole-property, or a
+ * short 7–28-night co-living reservation paid in full upfront). Unlike the
+ * lease first-payment, this does NOT save the card (`setup_future_usage` omitted)
+ * and needs no Stripe Customer — the guest pays once and is done. The client
+ * confirms it on-page with Elements using the returned client_secret; the
+ * booking is only marked CONFIRMED by the webhook (payment_intent.succeeded).
+ *
+ * `reference` is stamped into the PI metadata so the webhook can correlate the
+ * charge back to the booking (mirrors how the old Checkout Session carried it).
+ */
+export async function createOneTimePaymentIntent(opts: {
+  amount: number; // final charged total in dollars (already includes surcharge)
+  guestEmail: string;
+  reference: string;
+  metadata: StripeChargeMetadata;
+  idempotencyKey: string;
+}): Promise<Stripe.PaymentIntent> {
+  const s = requireStripe();
+  assertCompleteMetadata(opts.metadata);
+  return s.paymentIntents.create(
+    {
+      amount: toCents(opts.amount),
+      currency: "usd",
+      receipt_email: opts.guestEmail,
+      automatic_payment_methods: { enabled: true },
+      // Carry the booking reference alongside the contract for webhook correlation.
+      metadata: { ...opts.metadata, reference: opts.reference },
+    },
+    { idempotencyKey: opts.idempotencyKey },
+  );
+}
+
+/**
  * Charge a saved card OFF-SESSION for a scheduled rent installment or a late fee.
  * Uses the customer's default saved payment method. Throws on decline (caller
  * maps that to the FAILED path). Idempotency key prevents double-charging on

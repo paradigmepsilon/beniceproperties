@@ -45,8 +45,18 @@ export function applyBaseMiddleware(app: Express): void {
     }),
   );
 
-  app.use(express.json({ limit: "10mb" }));
-  app.use(express.urlencoded({ extended: false, limit: "10mb" }));
+  // The Stripe webhook needs its RAW body for signature verification (it mounts
+  // its own express.raw in registerRoutes). Skip the global JSON/urlencoded
+  // parsers for that path so the raw bytes survive — otherwise express.json()
+  // consumes the stream first and every webhook signature check fails.
+  const STRIPE_WEBHOOK_PATH = "/api/stripe/webhook";
+  const skipWebhook =
+    (parser: express.RequestHandler): express.RequestHandler =>
+    (req, res, next) =>
+      req.path === STRIPE_WEBHOOK_PATH ? next() : parser(req, res, next);
+
+  app.use(skipWebhook(express.json({ limit: "10mb" })));
+  app.use(skipWebhook(express.urlencoded({ extended: false, limit: "10mb" })));
 
   // Concise /api request logging.
   app.use((req, res, next) => {

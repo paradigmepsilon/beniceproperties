@@ -1297,3 +1297,194 @@ Neon (dev server):** `GET /api/properties/<Hutchens>?checkIn=2026-07-05&checkOut
 (stay starting on the block's exclusive DTEND) → free; STR detail → `rooms:[]`.
 
 COLIVING-ROOM-CARDS: COMPLETE — tests green
+
+---
+
+## 2026-07-04 — Enforce co-living 7-night minimum in the UI (BT ticket)
+
+**What was built:** The 7-night co-living minimum (already enforced server-side on
+booking/quote) is now enforced UP FRONT in the UI: (1) the co-living date picker won't
+let a guest commit a checkout fewer than 7 nights out, and (2) a home search under 7
+nights disqualifies all co-living properties (greyed + demoted, with a reason message).
+STR is untouched (no minimum). Reuses `COLIVING_MIN_DAYS`; no new schema field.
+
+**Files touched:**
+- `client/src/components/date-range-picker.tsx` — new optional `minNights` prop (in
+  NIGHTS) → react-day-picker v8 `min`. **Off-by-one fixed:** rdp's range `min` counts
+  SELECTED DAYS (both endpoints inclusive) = nights + 1, so a 7-night floor needs
+  `min=8`. The prop stays guest-facing NIGHTS; we convert `min={minNights + 1}`
+  internally. Omitted for STR call sites (unchanged).
+- `client/src/pages/lease-booking.tsx` — pass `minNights={COLIVING_MIN_DAYS}` (co-living).
+- `client/src/pages/property-detail.tsx` — STR picker deliberately left with no min.
+- `server/routes.ts` — `GET /api/properties`: compute searched `searchNights`; when a
+  dated co-living search is under `COLIVING_MIN_DAYS`, force `availableForDates=false`
+  (short-circuit). Added `date-fns` + `COLIVING_MIN_DAYS` imports.
+- `client/src/components/property-card.tsx` — `belowColivingMin` derives the reason;
+  badge reads "7-night minimum" and copy reads "Co-living properties have a 7-day
+  minimum stay requirement" instead of the generic date-blocked text.
+
+**Tests + results:** `npm run check` clean; `vitest run` — **269 pass / 23 files**
+(no test-facing logic altered). **Live API vs real Neon** (dev server):
+`GET /api/properties?checkIn=2026-08-01&checkOut=…` — 3 nights → both co-living
+`availableForDates:false`, STR `true`; **6 nights (boundary)** → co-living `false`;
+**7 nights (boundary)** → co-living `true`; no-dates → unchanged. **Picker `min` proven**
+against react-day-picker's own disable logic (its `date-fns` calls): `minNights=7` →
+earliest checkout Aug 8 = exactly 7 nights; Aug 7 (6 nights) blocked, Aug 8 (7 nights)
+allowed. Naive `min=7` would have wrongly allowed a 6-night stay. **Not yet visually
+confirmed in a browser** — the Playwright MCP profile was locked by another session;
+API + boundary math were driven instead. Left for the admin gate.
+
+COLIVING-MIN-UI: COMPLETE — tests green
+
+---
+
+## UX: scroll-to-top on navigation + live stay total on property page (2026-07-04)
+
+**Problem.** (1) Wouter v3.10 does no scroll restoration and the app had zero
+scroll-to-top logic, so navigating from deep in one page (e.g. the property page's
+sticky booking card) landed the guest mid-page on the next (checkout most visibly).
+(2) On the STR property page, selecting dates jumped the page to the top — the
+date-driven `/api/properties/:id` refetch flipped `isLoading` true, and the full-page
+loading Shell early-return unmounted/remounted the tree, resetting scroll. The card
+also showed only a static "from / night" price, never a stay total.
+
+**Built.**
+- **New** `client/src/components/scroll-to-top.tsx` — subscribes to Wouter
+  `useLocation()` and calls `window.scrollTo(0,0)` in a `useEffect` keyed on the
+  pathname. Mounted once in `App.tsx` inside `QueryClientProvider`, before `<Router />`.
+  Fixes checkout AND every other route. Keyed on pathname (not search), so in-page
+  query-string updates like checkout's `?paymentMethod` don't scroll.
+- `client/src/pages/property-detail.tsx`:
+  - Added `placeholderData: (prev) => prev` to the detail `useQuery` so the prior
+    property stays mounted across a date-driven refetch → `isLoading` only true on
+    first visit → tree never remounts → **no scroll jump** on date select.
+  - Added a second `useQuery<QuoteResponse>` hitting the SAME `POST /api/quote` the
+    checkout page uses (STR whole-property → no `roomId`, `paymentMethod: "STRIPE"`,
+    `enabled: datedSearch`). Renders **`dueNow.subtotal`** as "Stay total" (base +
+    cleaning − discount, i.e. BEFORE tax & the card surcharge) once a valid bookable
+    range is picked, with the note "Taxes & card fees shown at checkout."
+
+**Decisions.** Date-select behavior = stay put (fix the remount; no scroll-into-view —
+the card is already where the guest is looking). Stay-total source = server
+`/api/quote` (not a client recompute) so the number is guaranteed identical to
+checkout's subtotal. Property page never renders `tax`, `surcharge`, or `total`.
+
+**Files touched.** `client/src/components/scroll-to-top.tsx` (new),
+`client/src/App.tsx`, `client/src/pages/property-detail.tsx`. No server/schema/pricing
+changes, no new deps. Reused `/api/quote`, `apiRequest`, `QuoteResponse`, `money()`.
+
+**Tests / verification.** `npx tsc --noEmit` clean. `vitest run shared/pricing.test.ts`
+→ 5/5 green. Live `POST /api/quote` for the STR property with no `roomId` (3-night
+range) returned `subtotal: 379`, `surcharge: 13.27`, `total: 392.27` — confirms the
+property page will show $379.00 and checkout reconciles to $392.27 from the same
+source. Routes `/`, `/property/:id`, `/checkout?...` all render 200; Vite serves the
+updated source for all three edited/new files (no transform error). **Scroll behavior
+NOT visually confirmed in a browser** — the Playwright MCP browser profile was locked
+by a concurrent session; verified by code-path reasoning + render/API checks instead.
+Left for the admin gate.
+
+---
+
+## Co-living room page: pick dates + show stay total (2026-07-04)
+
+**Problem.** The co-living room detail page (`/room/:id`) had **no date picker and no
+stay total** — it showed a static deposit/weekly-rent card and jumped straight to
+`/lease` to pick dates. A guest couldn't see what a stay would cost from the room page.
+(The STR property page already got its stay total in the entry above; this brings the
+co-living room page to parity.)
+
+**Built.** `client/src/pages/room-detail.tsx` only — client-only, mirrors the
+`lease-booking.tsx` patterns; no server/schema/shared-type/deps changes.
+- Added an interactive `DateRangePicker` (Move-in / Move-out, `minNights=COLIVING_MIN_DAYS`,
+  already-booked days greyed via `busyToDisabledMatchers(..., halfOpen:false)`) into the
+  Reserve card. **Removed** the old read-only `mode="single"` availability calendar — the
+  interactive picker greys the same busy set, so two calendars were redundant.
+- Term-gating copied from `lease-booking.tsx` (`requiresLease` / `isDirectCoLivingStay` /
+  `COLIVING_MIN_DAYS`): <7 below-min, 7–28 short stay, >28 lease.
+- Two quote queries, gated exactly like `lease-booking`: short stay → `POST /api/quote`
+  (roomId + dates, `paymentMethod:"STRIPE"`) → renders **`dueNow.subtotal`** as "Stay total"
+  with the same "Taxes & card fees shown at checkout" note as the STR page; lease → `POST
+  /api/lease-quote` → renders **`totalLeaseValue`** as "Total lease value" with a "Due now:
+  {depositTotal} deposit" note (the full schedule stays on `/lease`).
+- The deposit/weekly summary stays as the always-visible empty-state anchor; the total is
+  added below it once a valid, bookable range is picked.
+- CTA label + target adapt: not-AVAILABLE → disabled "Not available"; no/invalid dates →
+  disabled "Select your dates"; below-min → disabled "Minimum 7 nights"; short stay →
+  "Continue to checkout" → `/checkout`; lease → "Review & sign lease" → `/lease`. Both nav
+  paths **always** carry the picked `checkIn`/`checkOut`. CTA also gated on the relevant
+  quote being loaded so a click never runs ahead of a known price.
+
+**Gotchas handled.** `availReady = !availLoading && !!avail` (not `!!avail`) so a booked
+range can't look free on first paint. New hooks declared BEFORE the loading early-return
+(Rules of Hooks) with `room = data?.room` feeding the quote bodies and `enabled:!!room`
+gating. `halfOpen:false` everywhere (co-living occupies its lease end date).
+
+**Decisions.** Room page shows ONE total (short-stay subtotal or total lease value), NOT
+the full schedule — the schedule/cadence/guest-form stays on `/lease` (least duplication).
+Empty state keeps the deposit/weekly anchor. Short-stay total uses `dueNow.subtotal`
+(matches the STR page's choice, excludes tax/surcharge shown at checkout).
+
+**Tests / verification.** `npm run check` (tsc) clean. **Live `/api/quote` + `/api/lease-quote`
+vs real Neon** (dev server), Hutchens "Cozy Oasis" room ($300/wk, $200 deposit): 14-night
+short stay → `dueNow.subtotal:600` (total 621 incl. $21 Stripe fee) → page shows **$600.00
+"Stay total"**; 35-night (36 termDays) lease → `totalLeaseValue:1542.86`, `depositTotal:200`
+→ page shows **$1,542.86 "Total lease value"** + "Due now: $200.00 deposit". Route renders
+200 and Vite transforms `room-detail.tsx` with no error. **NOT visually confirmed in a
+browser** — the Playwright MCP profile was locked by a concurrent session; verified by
+tsc + real-data API proof + render/compile checks instead. Left for the admin gate.
+
+COLIVING-ROOM-TOTAL: COMPLETE — tests green
+
+---
+
+## POST-PHASE — On-page embedded Stripe checkout for short stays (2026-07-04)
+
+**What was built.** Converted the short-stay checkout (STR whole-property + short co-living
+7–28 nights) from a **hosted Stripe Checkout redirect** to an **on-page embedded Payment
+Element**, matching the TRAD reference pattern (guest never leaves beniceproperties.com). The
+term-length branch the request described already exists as a gate: `<7` blocked, `7–28` →
+`/checkout` (this work), `>28` → the existing lease flow (untouched). Add-ons/upsells were
+explicitly out of scope (BNP has no add-on schema); the short checkout stays **dates + guest
+info + pay**.
+
+**Files touched.**
+- `server/lib/stripe.ts` — new `createOneTimePaymentIntent()` (sibling of
+  `createFirstPaymentIntent`, minus `setup_future_usage`/customer — a short stay saves no card).
+  `automatic_payment_methods` enabled; full metadata contract enforced; `reference` stamped for
+  webhook correlation.
+- `server/routes.ts` — `POST /api/bookings` STRIPE branch now mints a PaymentIntent and returns
+  `{ clientSecret, publishableKey, paymentIntentId }` instead of `checkoutUrl`. Webhook
+  `payment_intent.succeeded` extended: BOOKING_DEPOSIT **without** a `lease_id` (STR / short
+  co-living) now confirms the booking (PENDING_PAYMENT → CONFIRMED for STR, ACTIVE for co-living),
+  marks payment PAID, occupies the room — keyed by the `reference` in PI metadata. Idempotent
+  (guards on current status). Co-living-with-`lease_id` path unchanged.
+- `shared/api-types.ts` — `CreateBookingResponse` gains `clientSecret?` / `publishableKey?` /
+  `paymentIntentId?`; `checkoutUrl?` kept for back-compat but no longer populated.
+- `client/src/pages/checkout.tsx` — STRIPE path mounts `<Elements>`/`<PaymentElement>` on-page
+  (mirrors `lease-pay.tsx`), confirms with `redirect: "if_required"`, then navigates to
+  `/confirmation/:reference`. CashApp/Zelle manual paths unchanged.
+- **`server/app.ts` — fixed a pre-existing webhook bug:** the global `express.json()` ran before
+  the webhook's `express.raw`, consuming the raw body so **every** Stripe signature verification
+  failed (400 Invalid signature). Now the JSON/urlencoded parsers skip `/api/stripe/webhook` so
+  the raw bytes survive. This blocked the co-living deposit webhook too; the new STR flow made it
+  load-bearing, so it had to be fixed.
+- `api/index.js` — committed Vercel bundle rebuilt (`npm run build:api`) to include all of the above.
+
+**Tests / verification.** `tsc` clean. `vitest` 269/269 pass (twice — after code + after the
+app.ts middleware change). Client `vite build` + `build:api` green. **End-to-end against real
+Neon + Stripe TEST mode** (dev server, `livemode:false` confirmed on every PI — no live money):
+- STR 3-night → `/api/bookings` returns real `clientSecret` (`pi_…`) + publishableKey, `checkoutUrl`
+  null; PI amount = quote ($392.27), `setup_future_usage` null, full metadata (`STR_WHOLE`,
+  `lease_id:"null"`, `reference` stamped).
+- Signed `payment_intent.succeeded` (Stripe SDK `generateTestHeaderString`) → webhook **HTTP 200**,
+  booking **PENDING_PAYMENT → CONFIRMED**, payment **PENDING → PAID** with `paidAt` set.
+- Short co-living 14-night → PI metadata `COLIVING_ROOM`, room fields populated, `lease_id:"null"`,
+  `rate_cadence:WEEKLY`.
+- Decline (`tok_chargeDeclined` → `card_declined`) → no webhook, booking **stays PENDING_PAYMENT**.
+
+**Not done here (admin gate).** No live-browser click-through of the on-page Element (Playwright
+profile was locked by a concurrent session; verified by real-data API + signed-webhook proof
+instead). Confirm the Element renders and pays on the live TEST deployment before flipping to live
+keys. Per repo governance, moving to live Stripe keys is a manual human step.
+
+CHECKOUT-EMBEDDED-STRIPE: COMPLETE — tests green

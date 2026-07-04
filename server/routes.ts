@@ -80,6 +80,7 @@ import { stripePublishableConfigured } from "./lib/stripe";
 import {
   isStripeConfigured,
   createCheckoutSession,
+  createOneTimePaymentIntent,
   createWeeklySubscriptionCheckout,
   constructWebhookEvent,
 } from "./lib/stripe";
@@ -1006,20 +1007,21 @@ export async function registerRoutes(app: Express): Promise<void> {
                 rateCadence: resolved.rateTier ?? null,
               });
 
-        const session = await createCheckoutSession({
+        // On-page embedded payment: create a one-time PaymentIntent and hand the
+        // client its client_secret. The client confirms it with Stripe Elements
+        // (no redirect); the booking is only marked CONFIRMED by the webhook
+        // (payment_intent.succeeded), never by the client.
+        const paymentIntent = await createOneTimePaymentIntent({
           amount: dueNow,
-          description:
-            resolved.model === "COLIVING"
-              ? `Stay — ${resolved.room!.name}, ${resolved.property.name}`
-              : `Stay — ${resolved.property.name}`,
-          reference,
           guestEmail: guest.email,
-          successUrl: appUrl(req, `/confirmation/${reference}`),
-          cancelUrl: appUrl(req, `/property/${resolved.property.id}`),
+          reference,
           metadata: chargeMetadata,
+          idempotencyKey: `booking:${reference}:one_time`,
         });
-        await storage.updatePayment(payment.id, { stripeRef: session.id });
-        response.checkoutUrl = session.url ?? undefined;
+        await storage.updatePayment(payment.id, { stripeRef: paymentIntent.id });
+        response.clientSecret = paymentIntent.client_secret ?? undefined;
+        response.publishableKey = process.env.VITE_STRIPE_PUBLIC_KEY;
+        response.paymentIntentId = paymentIntent.id;
       } else {
         // CASHAPP / ZELLE — manual, no surcharge, pending until admin confirms.
         await storage.createPayment({
@@ -1504,10 +1506,47 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
     case "payment_intent.succeeded": {
       const pi = event.data.object as import("stripe").Stripe.PaymentIntent;
       const kind = pi.metadata?.payment_kind;
-      if (kind === "BOOKING_DEPOSIT" && pi.metadata?.lease_id) {
+      const hasLease = pi.metadata?.lease_id && pi.metadata.lease_id !== "null";
+      if (kind === "BOOKING_DEPOSIT" && !hasLease) {
+        // Short-stay one-time payment (STR whole-property, or a short 7–28-night
+        // co-living reservation). These carry no lease_id and are now paid on-page
+        // via a PaymentIntent (previously a hosted Checkout Session settled by
+        // checkout.session.completed). Confirm the booking here, keyed by the
+        // reference stamped into the PI metadata. Idempotent: safe to re-run.
+        const reference = pi.metadata?.reference;
+        const booking = reference ? await storage.getBookingByReference(reference) : null;
+        if (booking) {
+          const payment = await storage.getPaymentByStripeRef(pi.id);
+          if (payment && payment.status !== "PAID") {
+            await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
+          }
+          if (booking.status === "PENDING_PAYMENT") {
+            await storage.updateBooking(booking.id, {
+              status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
+            });
+            if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
+            const confirmedGuest = await storage.getGuest(booking.guestId);
+            if (confirmedGuest) {
+              posthog.capture({
+                distinctId: confirmedGuest.email,
+                event: "booking_confirmed",
+                properties: {
+                  reference,
+                  booking_id: booking.id,
+                  property_id: booking.propertyId,
+                  property_type: booking.model,
+                  room_id: booking.roomId ?? null,
+                  check_in: booking.checkIn,
+                  check_out: booking.checkOut,
+                  payment_intent_id: pi.id,
+                },
+              });
+            }
+          }
+          log(`booking ${reference} confirmed via payment_intent.succeeded`, "stripe");
+        }
+      } else if (kind === "BOOKING_DEPOSIT" && hasLease) {
         // Co-living deposit succeeded → secure the room(s) + charge first week.
-        // (STR bookings also use BOOKING_DEPOSIT but carry no lease_id; those are
-        // settled by checkout.session.completed, not here.)
         await finalizeDepositPayment(pi.id);
         const depositedLease = await storage.getLease(pi.metadata.lease_id);
         if (depositedLease) {

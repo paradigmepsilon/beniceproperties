@@ -2629,32 +2629,6 @@ function requireStripe() {
   return stripe;
 }
 var toCents = (dollars) => Math.round(dollars * 100);
-async function createCheckoutSession(opts) {
-  const s = requireStripe();
-  assertCompleteMetadata(opts.metadata);
-  const sessionMetadata = { ...opts.metadata, reference: opts.reference, kind: "one_time" };
-  return s.checkout.sessions.create({
-    mode: "payment",
-    customer_email: opts.guestEmail,
-    line_items: [
-      {
-        quantity: 1,
-        price_data: {
-          currency: "usd",
-          unit_amount: toCents(opts.amount),
-          product_data: { name: opts.description }
-        }
-      }
-    ],
-    client_reference_id: opts.reference,
-    metadata: sessionMetadata,
-    // The contract must live on the PaymentIntent itself (the charge), not only
-    // the session, so reconciliation by metadata works against the charge.
-    payment_intent_data: { metadata: opts.metadata },
-    success_url: opts.successUrl,
-    cancel_url: opts.cancelUrl
-  });
-}
 function constructWebhookEvent(rawBody, signature) {
   const s = requireStripe();
   const whSecret = process.env.STRIPE_WEBHOOK_SECRET;
@@ -2681,6 +2655,21 @@ async function createFirstPaymentIntent(opts) {
       setup_future_usage: "off_session",
       automatic_payment_methods: { enabled: true },
       metadata: opts.metadata
+    },
+    { idempotencyKey: opts.idempotencyKey }
+  );
+}
+async function createOneTimePaymentIntent(opts) {
+  const s = requireStripe();
+  assertCompleteMetadata(opts.metadata);
+  return s.paymentIntents.create(
+    {
+      amount: toCents(opts.amount),
+      currency: "usd",
+      receipt_email: opts.guestEmail,
+      automatic_payment_methods: { enabled: true },
+      // Carry the booking reference alongside the contract for webhook correlation.
+      metadata: { ...opts.metadata, reference: opts.reference }
     },
     { idempotencyKey: opts.idempotencyKey }
   );
@@ -4201,11 +4190,6 @@ async function buildAndPushSnapshot() {
 }
 
 // server/routes.ts
-function appUrl(req, path) {
-  const proto = req.protocol;
-  const host = req.get("host");
-  return `${proto}://${host}${path}`;
-}
 var upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 12 * 1024 * 1024 }
@@ -4907,17 +4891,17 @@ async function registerRoutes(app) {
           paymentKind: "BOOKING_DEPOSIT",
           rateCadence: resolved.rateTier ?? null
         });
-        const session2 = await createCheckoutSession({
+        const paymentIntent = await createOneTimePaymentIntent({
           amount: dueNow,
-          description: resolved.model === "COLIVING" ? `Stay \u2014 ${resolved.room.name}, ${resolved.property.name}` : `Stay \u2014 ${resolved.property.name}`,
-          reference,
           guestEmail: guest.email,
-          successUrl: appUrl(req, `/confirmation/${reference}`),
-          cancelUrl: appUrl(req, `/property/${resolved.property.id}`),
-          metadata: chargeMetadata
+          reference,
+          metadata: chargeMetadata,
+          idempotencyKey: `booking:${reference}:one_time`
         });
-        await storage.updatePayment(payment.id, { stripeRef: session2.id });
-        response.checkoutUrl = session2.url ?? void 0;
+        await storage.updatePayment(payment.id, { stripeRef: paymentIntent.id });
+        response.clientSecret = paymentIntent.client_secret ?? void 0;
+        response.publishableKey = process.env.VITE_STRIPE_PUBLIC_KEY;
+        response.paymentIntentId = paymentIntent.id;
       } else {
         await storage.createPayment({
           bookingId: booking.id,
@@ -5350,7 +5334,41 @@ async function handleStripeEvent(event) {
     case "payment_intent.succeeded": {
       const pi = event.data.object;
       const kind = pi.metadata?.payment_kind;
-      if (kind === "BOOKING_DEPOSIT" && pi.metadata?.lease_id) {
+      const hasLease = pi.metadata?.lease_id && pi.metadata.lease_id !== "null";
+      if (kind === "BOOKING_DEPOSIT" && !hasLease) {
+        const reference = pi.metadata?.reference;
+        const booking = reference ? await storage.getBookingByReference(reference) : null;
+        if (booking) {
+          const payment = await storage.getPaymentByStripeRef(pi.id);
+          if (payment && payment.status !== "PAID") {
+            await storage.updatePayment(payment.id, { status: "PAID", paidAt: /* @__PURE__ */ new Date() });
+          }
+          if (booking.status === "PENDING_PAYMENT") {
+            await storage.updateBooking(booking.id, {
+              status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"
+            });
+            if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
+            const confirmedGuest = await storage.getGuest(booking.guestId);
+            if (confirmedGuest) {
+              posthog.capture({
+                distinctId: confirmedGuest.email,
+                event: "booking_confirmed",
+                properties: {
+                  reference,
+                  booking_id: booking.id,
+                  property_id: booking.propertyId,
+                  property_type: booking.model,
+                  room_id: booking.roomId ?? null,
+                  check_in: booking.checkIn,
+                  check_out: booking.checkOut,
+                  payment_intent_id: pi.id
+                }
+              });
+            }
+          }
+          log(`booking ${reference} confirmed via payment_intent.succeeded`, "stripe");
+        }
+      } else if (kind === "BOOKING_DEPOSIT" && hasLease) {
         await finalizeDepositPayment(pi.id);
         const depositedLease = await storage.getLease(pi.metadata.lease_id);
         if (depositedLease) {
@@ -5479,8 +5497,10 @@ function applyBaseMiddleware(app) {
       crossOriginEmbedderPolicy: false
     })
   );
-  app.use(express2.json({ limit: "10mb" }));
-  app.use(express2.urlencoded({ extended: false, limit: "10mb" }));
+  const STRIPE_WEBHOOK_PATH = "/api/stripe/webhook";
+  const skipWebhook = (parser) => (req, res, next) => req.path === STRIPE_WEBHOOK_PATH ? next() : parser(req, res, next);
+  app.use(skipWebhook(express2.json({ limit: "10mb" })));
+  app.use(skipWebhook(express2.urlencoded({ extended: false, limit: "10mb" })));
   app.use((req, res, next) => {
     const start = Date.now();
     res.on("finish", () => {

@@ -96,7 +96,14 @@ export interface CreateBookingResponse {
   reference: string;
   bookingId: string;
   paymentMethod: "STRIPE" | "CASHAPP" | "ZELLE";
-  // Stripe path: a Checkout URL to redirect to. Manual path: undefined.
+  // Stripe path (on-page embedded): the PaymentIntent client_secret + publishable
+  // key the client uses to mount Stripe Elements and confirm the charge on-page.
+  // The booking is confirmed server-side by the webhook, never the client.
+  clientSecret?: string;
+  publishableKey?: string;
+  paymentIntentId?: string;
+  // Legacy hosted-Checkout redirect URL. No longer populated (kept for
+  // backward-compat with any older client build). Manual path: undefined.
   checkoutUrl?: string;
   // Manual path: the instructions to show the guest.
   manualInstructions?: {
