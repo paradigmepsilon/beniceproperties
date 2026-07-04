@@ -8,21 +8,25 @@
 
 import { customAlphabet } from "nanoid";
 import { differenceInCalendarDays, parseISO } from "date-fns";
-import {
-  calculateBreakdown,
-  calculateWeeklyCharge,
-  type PaymentMethod,
-} from "@shared/pricing";
+import { calculateBreakdown, type PaymentMethod } from "@shared/pricing";
 import {
   chooseRate,
   hasAnyWeekdayRate,
+  shortStayPrice,
   weekdayStayTotal,
+  RateError,
   type RateTier,
   type WeekdayRates,
 } from "@shared/rateSelection";
 import type { QuoteResponse } from "@shared/api-types";
 import { storage } from "../storage";
-import type { Property, Room } from "@shared/schema";
+import {
+  COLIVING_MIN_DAYS,
+  isDirectCoLivingStay,
+  requiresLease,
+  type Property,
+  type Room,
+} from "@shared/schema";
 
 // Human-friendly booking reference, e.g. "BNP-7QK4-2F9X". Used in CashApp/Zelle
 // memos and guest lookup. Avoids ambiguous chars (no 0/O/1/I).
@@ -112,9 +116,12 @@ export class BookingError extends Error {
 
 /**
  * Does a whole-property STR have any conflicting booking in [checkIn, checkOut)?
- * Open-ended co-living bookings are excluded (they belong to rooms).
+ * Open-ended co-living bookings are excluded (they belong to rooms). Exported so
+ * the date-aware property grid (GET /api/properties?checkIn=&checkOut=) can mark
+ * a whole-property STR unavailable for a searched range — same overlap rule the
+ * booking flow enforces at checkout.
  */
-async function strHasConflict(
+export async function strHasConflict(
   propertyId: string,
   checkIn: string,
   checkOut: string,
@@ -149,13 +156,15 @@ export interface ResolvedBooking {
   room?: Room;
   checkIn: string;
   checkOut: string | null;
-  baseAmount: number; // STR: stay total at the chosen tier. COLIVING: deposit.
+  baseAmount: number; // STR: stay total at the chosen tier. COLIVING: stay total (weeks + daily remainder).
   cleaningFee: number;
   nights?: number;
   /** STR only: the rate tier the stay length landed in. */
   rateTier?: RateTier;
   /** STR only: per-night price the stay billed at (tierRate / tierDays). */
   effectiveNightly?: number;
+  /** COLIVING short stay only: whole weeks + daily-remainder breakdown for the quote line. */
+  shortStay?: { weeks: number; remainderDays: number; weeklyRate: number; dailyRate: number };
 }
 
 /**
@@ -173,6 +182,11 @@ export async function resolveBooking(input: {
   if (!property.active) throw new BookingError("Property is not available", 409);
 
   // ---- Co-living (by-the-room) ----
+  // A short co-living stay (7–28 nights) is a lease-LESS direct booking priced
+  // as whole weeks + a daily remainder, paid in full upfront. Stays over 28
+  // nights require a lease (routed to the lease flow); under 7 nights aren't
+  // offered. The lease-vs-booking gate is the shared requiresLease/
+  // isDirectCoLivingStay in @shared/schema — one source of truth with the client.
   if (property.type === "COLIVING") {
     if (!input.roomId) throw new BookingError("Select a room to reserve");
     const room = await storage.getRoom(input.roomId);
@@ -182,14 +196,55 @@ export async function resolveBooking(input: {
     if (room.status !== "AVAILABLE") {
       throw new BookingError("That room is no longer available", 409);
     }
+    if (!input.checkIn || !input.checkOut) {
+      throw new BookingError("Select move-in and move-out dates");
+    }
+    const n = nights(input.checkIn, input.checkOut);
+    if (n < 1) throw new BookingError("Move-out must be after move-in");
+    if (n < COLIVING_MIN_DAYS) {
+      throw new BookingError(`Co-living stays have a ${COLIVING_MIN_DAYS}-night minimum`);
+    }
+    if (requiresLease(n)) {
+      // Over a month → this is a lease, not a direct booking. Route the guest back.
+      throw new BookingError(
+        "Stays over 28 nights are booked as a lease — start from the room page to choose a payment schedule.",
+        409,
+      );
+    }
+    // n is now guaranteed 7–28 (isDirectCoLivingStay). Room must be free for the range.
+    const free = await storage.isRoomAvailableForRange({
+      roomId: room.id,
+      startDate: input.checkIn,
+      endDate: input.checkOut,
+    });
+    if (!free) throw new BookingError("Those dates are not available for this room", 409);
+
+    let priced;
+    try {
+      priced = shortStayPrice({
+        nights: n,
+        weeklyRent: room.weeklyRent,
+        dailyRate: room.dailyRate,
+      });
+    } catch (err) {
+      if (err instanceof RateError) throw new BookingError(err.message, 422);
+      throw err;
+    }
     return {
       model: "COLIVING",
       property,
       room,
-      checkIn: input.checkIn ?? new Date().toISOString().slice(0, 10),
-      checkOut: null, // open-ended
-      baseAmount: parseFloat(room.depositAmount),
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      baseAmount: priced.baseAmount,
       cleaningFee: 0,
+      nights: n,
+      shortStay: {
+        weeks: priced.weeks,
+        remainderDays: priced.remainderDays,
+        weeklyRate: priced.weeklyRate,
+        dailyRate: priced.dailyRate,
+      },
     };
   }
 
@@ -245,26 +300,41 @@ export function buildQuote(
     };
   }
 
-  // Co-living: deposit now + recurring weekly rent.
-  const deposit = calculateBreakdown({ baseAmount: resolved.baseAmount, paymentMethod });
-  const weeklyRent = parseFloat(resolved.room!.weeklyRent);
-  const weekly = calculateWeeklyCharge(weeklyRent, paymentMethod);
-  const depositLines = [{ label: "Move-in deposit", amount: resolved.baseAmount }];
-  if (deposit.surcharge > 0) depositLines.push({ label: "Card processing (3.5%)", amount: deposit.surcharge });
+  // Co-living SHORT STAY (7–28 nights): a lease-less reservation paid in full
+  // upfront — whole weeks at the weekly rent + a daily remainder. No deposit and
+  // no recurring rent (that's the lease path, for stays over a month).
+  const b = calculateBreakdown({ baseAmount: resolved.baseAmount, paymentMethod });
+  const ss = resolved.shortStay;
+  const lines: QuoteResponse["dueNow"]["lines"] = [];
+  if (ss) {
+    if (ss.weeks > 0) {
+      lines.push({
+        label: `${ss.weeks} week${ss.weeks === 1 ? "" : "s"} @ ${money(ss.weeklyRate)}/wk`,
+        amount: Math.round(ss.weeks * ss.weeklyRate * 100) / 100,
+      });
+    }
+    if (ss.remainderDays > 0) {
+      lines.push({
+        label: `${ss.remainderDays} day${ss.remainderDays === 1 ? "" : "s"} @ ${money(ss.dailyRate)}/day`,
+        amount: Math.round(ss.remainderDays * ss.dailyRate * 100) / 100,
+      });
+    }
+  } else {
+    // Defensive fallback (should not happen for a resolved short stay).
+    lines.push({ label: `Stay (${resolved.nights} nights)`, amount: resolved.baseAmount });
+  }
+  if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
   return {
     model: "COLIVING",
-    dueNow: {
-      lines: depositLines,
-      subtotal: deposit.subtotal,
-      tax: deposit.tax,
-      surcharge: deposit.surcharge,
-      total: deposit.total,
-    },
-    recurring: {
-      label: "Weekly rent (billed weekly after move-in)",
-      weeklyRent,
-      surcharge: weekly.surcharge,
-      weeklyTotal: weekly.total,
-    },
+    nights: resolved.nights,
+    dueNow: { lines, subtotal: b.subtotal, tax: b.tax, surcharge: b.surcharge, total: b.total },
   };
+}
+
+/** Format a number as a plain dollar amount for quote line labels, e.g. "$210". */
+function money(n: number): string {
+  return `$${(Math.round(n * 100) / 100).toLocaleString("en-US", {
+    minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+    maximumFractionDigits: 2,
+  })}`;
 }

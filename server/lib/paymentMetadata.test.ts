@@ -7,6 +7,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildLeaseChargeMetadata,
   buildStrChargeMetadata,
+  buildRoomBookingChargeMetadata,
   assertCompleteMetadata,
   productTypeFor,
   REQUIRED_METADATA_KEYS,
@@ -102,6 +103,44 @@ describe("buildStrChargeMetadata", () => {
       schedule_seq: "null",
       payment_kind: "BOOKING_DEPOSIT",
     });
+    expect(() => assertCompleteMetadata(meta)).not.toThrow();
+  });
+});
+
+describe("buildRoomBookingChargeMetadata — short co-living stay (no lease)", () => {
+  it("populates the room fields, COLIVING_ROOM product_type, and null lease/schedule", () => {
+    const meta = buildRoomBookingChargeMetadata({
+      entity: "BNP",
+      property: PROP,
+      room: { id: "r1", name: "Room 2 - Garden", roomNumber: "2" },
+      paymentKind: "BOOKING_DEPOSIT",
+      rateCadence: "WEEKLY",
+    });
+    expect(meta).toMatchObject({
+      entity: "BNP",
+      product_type: "COLIVING_ROOM",
+      property_id: "prop-1",
+      property_name: "Old Bill Cook",
+      room_id: "r1",
+      room_name: "Room 2 - Garden",
+      room_number: "2",
+      lease_id: "null", // lease-less reservation
+      schedule_seq: "null",
+      payment_kind: "BOOKING_DEPOSIT",
+      rate_cadence: "WEEKLY",
+    });
+    // The contract guardrail must pass for this new charge shape.
+    expect(() => assertCompleteMetadata(meta)).not.toThrow();
+  });
+
+  it("serializes a null room_number as 'null' so the guard still passes", () => {
+    const meta = buildRoomBookingChargeMetadata({
+      entity: "BNP",
+      property: PROP,
+      room: { id: "r1", name: "Room 2", roomNumber: null },
+      paymentKind: "BOOKING_DEPOSIT",
+    });
+    expect(meta.room_number).toBe("null");
     expect(() => assertCompleteMetadata(meta)).not.toThrow();
   });
 });

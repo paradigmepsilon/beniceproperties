@@ -30,14 +30,16 @@ import {
   resolveBooking,
   buildQuote,
   generateReference,
+  strHasConflict,
   BookingError,
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
 import { buildStrAvailability, buildRoomAvailability } from "./lib/availability";
-import { dayAfter, strNextOpening } from "./lib/nextOpening";
+import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./lib/nextOpening";
 import {
   buildStrChargeMetadata,
   buildLeaseChargeMetadata,
+  buildRoomBookingChargeMetadata,
 } from "./lib/paymentMetadata";
 import { createDraftLease, previewLease, signLease } from "./lib/leaseFlow";
 import {
@@ -188,29 +190,71 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
-  app.get("/api/properties", async (_req, res, next) => {
+  app.get("/api/properties", async (req, res, next) => {
     try {
+      const today = new Date().toISOString().slice(0, 10);
+      // Optional date-aware search. When BOTH checkIn+checkOut are present, valid,
+      // forward, and not in the past, the grid filters + re-prices for that range
+      // (STR: no direct/Airbnb conflict; COLIVING: from-price = cheapest room free
+      // for the range, availability = ≥1 room free). With no/invalid dates the
+      // grid behaves exactly as before — status-based availability + from-price.
+      const ISO = /^\d{4}-\d{2}-\d{2}$/;
+      const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
+      const co = typeof req.query.checkOut === "string" ? req.query.checkOut : "";
+      const dated =
+        ISO.test(ci) && ISO.test(co) && co > ci && ci >= today
+          ? { checkIn: ci, checkOut: co }
+          : null;
+
       const props = await storage.getProperties({ activeOnly: true });
       const withRent = await Promise.all(
         props.map(async (p) => {
           // Co-living cards price "from" the cheapest room a guest can actually
-          // book (AVAILABLE only); null → card shows "Fully booked".
+          // book. Date-blind default: AVAILABLE rooms. Dated search: rooms that
+          // are AVAILABLE *and* free for [checkIn, checkOut) (leases ∪ Airbnb).
+          // null fromWeeklyRent → card shows "Fully booked" / unavailable.
           let fromWeeklyRent: string | null = null;
+          let availableForDates = true;
           if (p.type === "COLIVING") {
             const rooms = await storage.getRoomsByProperty(p.id);
-            const rates = rooms
-              .filter((r) => r.status === "AVAILABLE")
-              .map((r) => parseFloat(r.weeklyRent))
-              .filter((n) => Number.isFinite(n) && n > 0);
-            if (rates.length) fromWeeklyRent = String(Math.min(...rates));
+            const openRooms = rooms.filter((r) => r.status === "AVAILABLE");
+            // Pair each open room with whether it's free for the searched range
+            // (date-blind default: all open rooms count as free). The pure
+            // cheapestAvailableWeeklyRent picks the from-price + availability.
+            let free: boolean[];
+            if (dated) {
+              free = await Promise.all(
+                openRooms.map((r) =>
+                  storage.isRoomAvailableForRange({
+                    roomId: r.id,
+                    startDate: dated.checkIn,
+                    endDate: dated.checkOut,
+                  }),
+                ),
+              );
+            } else {
+              free = openRooms.map(() => true);
+            }
+            const priced = cheapestAvailableWeeklyRent(
+              openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] })),
+            );
+            fromWeeklyRent = priced.fromWeeklyRent;
+            // Only assert unavailability for a dated search; with no dates the card
+            // falls back to status/nextOpening (availableForDates stays true).
+            if (dated) availableForDates = priced.available;
+          } else if (p.type === "STR" && dated) {
+            // Whole-property STR: available iff no direct/Airbnb conflict for the
+            // searched range — same overlap rule the checkout flow enforces.
+            availableForDates = !(await strHasConflict(p.id, dated.checkIn, dated.checkOut));
           }
-          return { ...p, fromWeeklyRent };
+          return { ...p, fromWeeklyRent, availableForDates };
         }),
       );
 
       // "Next opening" for currently-unavailable inventory — two batched
       // queries across all properties, then pure math (lib/nextOpening.ts).
-      const today = new Date().toISOString().slice(0, 10);
+      // Independent of the searched range: it answers "when does this open",
+      // always relative to today.
       const bookedColivingIds = withRent
         .filter((p) => p.type === "COLIVING" && p.fromWeeklyRent === null)
         .map((p) => p.id);
@@ -747,17 +791,12 @@ export async function registerRoutes(app: Express): Promise<void> {
       }
       const { propertyId, roomId, checkIn, checkOut, paymentMethod, guest } = parsed.data;
 
+      // resolveBooking applies the lease-vs-booking gate: STR whole-property
+      // stays and SHORT co-living stays (7–28 nights, paid in full upfront, no
+      // lease) resolve here; a co-living stay over 28 nights is rejected with a
+      // 409 pointing back to the lease flow, and under 7 nights is rejected as
+      // below the co-living minimum. So anything that resolves is bookable here.
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-
-      // Co-living rooms are booked through the LEASE flow (deposit secures the
-      // room → first week → schedule), not this one-time deposit checkout. This
-      // endpoint now serves STR (whole-property) only. Reject co-living so there
-      // is a single co-living money path and no divergent legacy deposit.
-      if (resolved.model === "COLIVING") {
-        return res.status(409).json({
-          message: "Co-living rooms are booked through the lease flow. Start from the room page.",
-        });
-      }
 
       const quote = buildQuote(resolved, paymentMethod);
       const reference = generateReference();
@@ -808,17 +847,33 @@ export async function registerRoutes(app: Express): Promise<void> {
           paidAt: null,
         });
 
-        // Full Stripe Metadata Contract on the STR (whole-property) charge.
-        const chargeMetadata = buildStrChargeMetadata({
-          entity: resolved.property.entity,
-          property: resolved.property,
-          paymentKind: "BOOKING_DEPOSIT",
-          rateCadence: resolved.rateTier ?? null,
-        });
+        // Full Stripe Metadata Contract. STR whole-property → STR_WHOLE (no room);
+        // short co-living → COLIVING_ROOM with the room fields populated and
+        // lease_id "null" (lease-less reservation). Built by the single-source
+        // helpers so the contract can never be partially populated.
+        const chargeMetadata =
+          resolved.model === "COLIVING"
+            ? buildRoomBookingChargeMetadata({
+                entity: resolved.property.entity,
+                property: resolved.property,
+                room: resolved.room!,
+                paymentKind: "BOOKING_DEPOSIT",
+                // Short stays price off the weekly rent; label the basis WEEKLY.
+                rateCadence: "WEEKLY",
+              })
+            : buildStrChargeMetadata({
+                entity: resolved.property.entity,
+                property: resolved.property,
+                paymentKind: "BOOKING_DEPOSIT",
+                rateCadence: resolved.rateTier ?? null,
+              });
 
         const session = await createCheckoutSession({
           amount: dueNow,
-          description: `Stay — ${resolved.property.name}`,
+          description:
+            resolved.model === "COLIVING"
+              ? `Stay — ${resolved.room!.name}, ${resolved.property.name}`
+              : `Stay — ${resolved.property.name}`,
           reference,
           guestEmail: guest.email,
           successUrl: appUrl(req, `/confirmation/${reference}`),

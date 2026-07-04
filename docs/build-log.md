@@ -1133,3 +1133,76 @@ repo build log.
 
 **Tracker:** BNP "Manage Airbnb iCal from Unified-Ops + reconcile duplicate feed
 store" → Needs Admin Verification.
+
+---
+
+## Date-driven availability — booked dates block bookings (STR + co-living), grid + pricing (2026-07-04)
+
+**Goal:** Airbnb-booked (and directly-booked) dates must make a property/room
+**unbookable for those dates everywhere the guest looks**, before they move
+through the flow — closing two double-booking holes and making the home grid +
+"from" price date-aware. Three pieces (co-living enforcement first).
+
+**Piece 1 — closed the double-booking holes (server guard + STR client gate):**
+- `server/lib/lease.ts` `buildLeaseQuote`: added an **external-block-only** guard
+  in the per-room loop (`storage.getExternalBlocksForRoom` + the room-external
+  overlap rule `start < b.endDate && b.startDate <= end`) → `LeaseError(…booked
+  for those dates on Airbnb, 409)`. Deliberately NOT a lease-overlap check (that
+  stays at `createLease()` so a stale/own DRAFT never false-blocks the preview).
+  `previewLease` + `createDraftLease` + the `/api/lease-quote` route all inherit
+  it. Matches `isRoomAvailableForRange`'s sign-time math exactly.
+- `client/src/pages/property-detail.tsx`: fixed the STR **premature-enable bug** —
+  the loading gate only waited on the property query, so `busy` was `[]` until
+  `/availability` resolved and "Continue" enabled on booked dates. Now
+  `datesValid` is false until availability has loaded (new pure
+  `datesBookable(availReady, …)` in `client/src/lib/availability.ts`), with a
+  "Checking availability…" state.
+- `client/src/pages/lease-booking.tsx`: mirrored the availability-loaded gate
+  (`availReady` = all room availability queries settled).
+- `client/src/pages/room-detail.tsx`: surfaced the read-only availability
+  calendar **above** the reserve card (Reserve still gated on `room.status`; no
+  hard-disable on future blocks, per decision).
+- `client/src/components/date-range-picker.tsx`: corrected the stale header
+  comment (v8 has no `excludeDisabled`).
+
+**Piece 2 — date-first home grid:**
+- `server/routes.ts` `GET /api/properties` now accepts optional
+  `?checkIn=&checkOut=` (validated: ISO, forward, not-past). Dated → per-property
+  availability for the range (STR: exported `strHasConflict`; COLIVING: ≥1 room
+  free via `isRoomAvailableForRange`). New `availableForDates` on
+  `PropertyListItem` (`shared/schema.ts`). No/invalid dates → **identical to
+  before** (back-compat).
+- `client/src/pages/home.tsx`: pushes a complete date range into the
+  `/api/properties` query (re-fetches date-aware) + the sort.
+- `client/src/components/property-card.tsx`: `cardUnavailable(p, checkIn,
+  checkOut)`; when blocked for the searched range the card **greys + badges
+  "Unavailable for your dates"** and shows "Not available for these dates"
+  (kept visible, per decision).
+
+**Piece 3 — availability-aware "from" price:**
+- Pure `cheapestAvailableWeeklyRent(rooms[])` in `server/lib/nextOpening.ts` —
+  min `weeklyRent` among rooms **free for the range**; all booked → null →
+  card reads unavailable. Handler pairs each open room with its availability and
+  delegates. No dates → cheapest AVAILABLE room (unchanged).
+
+**Files touched:** `server/lib/lease.ts`, `server/lib/booking.ts` (export
+`strHasConflict`), `server/lib/nextOpening.ts`, `server/routes.ts`,
+`shared/schema.ts`, `client/src/lib/availability.ts`,
+`client/src/pages/{home,property-detail,lease-booking,room-detail}.tsx`,
+`client/src/components/{property-card,date-range-picker}.tsx`. Tests:
+`server/lib/{lease,leaseFlow,nextOpening}.test.ts`,
+`client/src/lib/availability.test.ts`.
+
+**Tests + results:** `npm run check` clean; **`vitest run` — 269 pass / 23 files**
+(includes new co-living external-block 409 cases incl. same-day-turnover-free +
+multi-room, `datesBookable` pending-gate cases, and `cheapestAvailableWeeklyRent`
+re-pricing/all-booked cases). API bundle rebuilt. **Live vs the real Neon DB**
+(dev server): `GET /api/properties?checkIn=2026-07-07&checkOut=2026-07-09` →
+Antigua (inside its Jul 4–18 Airbnb block) `availableForDates=false`, co-living
+unaffected; no-dates request unchanged. `POST /api/lease-quote` for the
+Airbnb-blocked Hutchens room (Jul 5–8) → **409**; the free room → **200**;
+multi-room with one blocked room → **409**, clear window → **200**. No
+production data mutated (a planned block-injection test was aborted because every
+room carries an Airbnb feed URL the hourly cron could race).
+
+DATE-AVAILABILITY: COMPLETE — tests green

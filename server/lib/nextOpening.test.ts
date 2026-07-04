@@ -1,6 +1,6 @@
 // server/lib/nextOpening.test.ts
 import { describe, expect, it } from "vitest";
-import { dayAfter, strNextOpening } from "./nextOpening";
+import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./nextOpening";
 
 describe("dayAfter", () => {
   it("returns the day after an inclusive end date", () => {
@@ -81,5 +81,47 @@ describe("strNextOpening", () => {
         today,
       ),
     ).toBe("2026-07-05");
+  });
+});
+
+describe("cheapestAvailableWeeklyRent — date-aware from-price", () => {
+  it("prices from the cheapest room when all are free", () => {
+    const r = cheapestAvailableWeeklyRent([
+      { weeklyRent: "300.00", available: true },
+      { weeklyRent: "325.00", available: true },
+      { weeklyRent: "350.00", available: true },
+    ]);
+    expect(r).toEqual({ fromWeeklyRent: "300", available: true });
+  });
+
+  it("skips a booked cheapest room → next cheapest FREE room sets the price", () => {
+    // The $300 room is taken for the range; the next open room is $325.
+    const r = cheapestAvailableWeeklyRent([
+      { weeklyRent: "300.00", available: false },
+      { weeklyRent: "325.00", available: true },
+      { weeklyRent: "350.00", available: true },
+    ]);
+    expect(r).toEqual({ fromWeeklyRent: "325", available: true });
+  });
+
+  it("reports unavailable (null price) when every room is booked for the range", () => {
+    const r = cheapestAvailableWeeklyRent([
+      { weeklyRent: "300.00", available: false },
+      { weeklyRent: "350.00", available: false },
+    ]);
+    expect(r).toEqual({ fromWeeklyRent: null, available: false });
+  });
+
+  it("reports unavailable for a property with no rooms", () => {
+    expect(cheapestAvailableWeeklyRent([])).toEqual({ fromWeeklyRent: null, available: false });
+  });
+
+  it("ignores non-positive or unparseable rents", () => {
+    const r = cheapestAvailableWeeklyRent([
+      { weeklyRent: "0.00", available: true },
+      { weeklyRent: "not-a-number", available: true },
+      { weeklyRent: "400.00", available: true },
+    ]);
+    expect(r).toEqual({ fromWeeklyRent: "400", available: true });
   });
 });

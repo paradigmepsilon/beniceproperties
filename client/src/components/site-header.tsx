@@ -27,9 +27,11 @@ export function SiteHeader() {
         </Link>
         {/* BT-23 mobile: min-h-11 on each link so nav items are 44px tap targets. */}
         <nav className="flex items-center gap-4 text-sm font-medium text-muted-foreground sm:gap-6">
-          <Link href="/" className="inline-flex min-h-11 items-center transition-colors hover:text-foreground">
+          {/* Plain anchor: wouter Link doesn't scroll to hashes; a real
+              navigation to /#stays lands on home and scrolls to the listings. */}
+          <a href="/#stays" className="inline-flex min-h-11 items-center transition-colors hover:text-foreground">
             Browse stays
-          </Link>
+          </a>
           {/* Plain anchor: wouter Link doesn't scroll to hashes; a real
               navigation to /#how lands and scrolls natively. */}
           <a href="/#how" className="hidden min-h-11 items-center transition-colors hover:text-foreground sm:inline-flex">

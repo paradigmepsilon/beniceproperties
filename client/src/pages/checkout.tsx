@@ -208,7 +208,7 @@ export default function Checkout() {
                   ))}
                   <Separator />
                   <div className="flex justify-between font-semibold">
-                    <span>{quote.model === "COLIVING" ? "Due now (deposit)" : "Total due now"}</span>
+                    <span>Total due now</span>
                     <span data-testid="text-total">{money(quote.dueNow.total)}</span>
                   </div>
                   {quote.recurring && (

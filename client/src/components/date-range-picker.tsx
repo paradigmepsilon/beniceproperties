@@ -1,9 +1,11 @@
 // client/src/components/date-range-picker.tsx
 // Mobile-first check-in / check-out range picker built on the shadcn Calendar
 // (react-day-picker v8, mode="range"). Disabled days come from the caller (busy
-// ranges → matchers); `excludeDisabled` stops a selected range from spanning a
-// blocked day. Emits ISO `YYYY-MM-DD` strings so it drops into the existing
-// checkIn/checkOut string state without Date/TZ juggling.
+// ranges → matchers) and can't be picked as endpoints. v8 has no
+// `excludeDisabled`, so a range CAN still span a disabled day — the caller's
+// `rangeHitsBusy` guard rejects that (and the server re-validates on submit).
+// Emits ISO `YYYY-MM-DD` strings so it drops into the existing checkIn/checkOut
+// string state without Date/TZ juggling.
 
 import { useState } from "react";
 import { format, parseISO } from "date-fns";

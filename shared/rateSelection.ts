@@ -136,6 +136,60 @@ export function baseAmountForStay(input: RateInput): number {
 }
 
 // =============================================================================
+// Short co-living stay pricing (7–28 nights) — added 2026-07-04.
+//
+// A co-living stay UNDER the lease threshold is a lease-less direct booking. Its
+// price is NOT chooseRate()'s per-night tier proration; it is the owner's rule:
+//   full weeks  = floor(nights / 7) charged at the weekly rent
+//   remainder   = nights % 7 charged at a DAILY rate
+//   daily rate  = explicit room.dailyRate if set, else weeklyRent / 7
+// e.g. 10 nights = 1 × weeklyRent + 3 × dailyRate. Kept here (pure, shared) so
+// the client preview and the server charge compute the identical number.
+// =============================================================================
+
+export interface ShortStayInput {
+  /** Total nights of the stay (>= 1). */
+  nights: number;
+  /** Room weekly rent (decimal string from the DB or number). Required. */
+  weeklyRent: string | number;
+  /** Optional explicit per-day rate for remainder days; falls back to weekly/7. */
+  dailyRate?: string | number | null;
+}
+
+export interface ShortStayPrice {
+  /** Total base amount (pre-fees), rounded to cents. */
+  baseAmount: number;
+  /** Whole weeks billed at the weekly rent. */
+  weeks: number;
+  /** Leftover days billed at the daily rate. */
+  remainderDays: number;
+  /** The weekly rent used. */
+  weeklyRate: number;
+  /** The per-day rate used for remainder days (explicit dailyRate ?? weekly/7). */
+  dailyRate: number;
+}
+
+/**
+ * Price a short co-living stay as whole weeks + a daily remainder. Throws
+ * RateError if the weekly rent is missing/zero (a co-living room always has one).
+ */
+export function shortStayPrice(input: ShortStayInput): ShortStayPrice {
+  if (!(input.nights >= 1)) throw new RateError("Stay must be at least 1 night");
+  const weeklyRate = parseRate(input.weeklyRent);
+  if (weeklyRate === null) {
+    throw new RateError("Room has no weekly rent set — cannot price a short stay.");
+  }
+  // Explicit daily rate wins; otherwise derive from the weekly rent.
+  const dailyRate = parseRate(input.dailyRate) ?? weeklyRate / 7;
+
+  const weeks = Math.floor(input.nights / 7);
+  const remainderDays = input.nights % 7;
+  const baseAmount = roundCurrency(weeks * weeklyRate + remainderDays * dailyRate);
+
+  return { baseAmount, weeks, remainderDays, weeklyRate, dailyRate };
+}
+
+// =============================================================================
 // Per-weekday pricing (DAILY tier only) — added 2026-06-30.
 // =============================================================================
 

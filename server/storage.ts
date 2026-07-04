@@ -230,9 +230,10 @@ export interface IStorage {
 
   /**
    * Is `roomId` free for [startDate, endDate]? False if any room-blocking lease
-   * (DRAFT, PENDING_SIGNATURE, PENDING_FIRST_PAYMENT, or ACTIVE) includes that
-   * room with an overlapping date range. `excludeLeaseId` lets a lease ignore
-   * itself when re-checking.
+   * (DRAFT, PENDING_SIGNATURE, PENDING_FIRST_PAYMENT, or ACTIVE) OR any
+   * non-cancelled short co-living booking for that room overlaps the range, or an
+   * external iCal block does. `excludeLeaseId` lets a lease ignore itself when
+   * re-checking.
    */
   isRoomAvailableForRange(args: {
     roomId: string;
@@ -240,6 +241,9 @@ export interface IStorage {
     endDate: string;
     excludeLeaseId?: string;
   }): Promise<boolean>;
+
+  /** Non-cancelled co-living direct bookings for a room (short-stay overlap guard). */
+  getColivingBookingsForRoom(roomId: string): Promise<Booking[]>;
 
   // --- Airbnb iCal listings + synced blocks (URL lives on properties/rooms) ---
   /** Active listings with a non-null airbnb_ical_url — the sync work-list.
@@ -937,12 +941,40 @@ class Storage implements IStorage {
       return false;
     }
 
-    // (2) External iCal blocks for this ROOM listing (Airbnb). Airbnb DTEND is
+    // (2) Short co-living direct bookings for this room. A booking's check_out is
+    //     the departure day (half-open), so overlap is start < otherCheckOut &&
+    //     otherCheckIn ≤ end — same-day turnover stays free. Open-ended rows
+    //     (legacy deposit bookings with null check_out) can't be range-checked and
+    //     are skipped; the short-stay path always writes a real check_out.
+    const roomBookings = await this.getColivingBookingsForRoom(args.roomId);
+    if (
+      roomBookings.some(
+        (b) => b.checkOut !== null && args.startDate < b.checkOut && b.checkIn <= args.endDate,
+      )
+    ) {
+      return false;
+    }
+
+    // (3) External iCal blocks for this ROOM listing (Airbnb). Airbnb DTEND is
     //     exclusive (checkout morning), so for a room lease that OCCUPIES its end
     //     date we treat the block as [startDate, endDate) — overlap is
     //     start < otherEnd && otherStart ≤ end. Keeps a same-day turnover free.
     const blocks = await this.getExternalBlocksForRoom(args.roomId);
     return !blocks.some((b) => args.startDate < b.endDate && b.startDate <= args.endDate);
+  }
+
+  async getColivingBookingsForRoom(roomId: string): Promise<Booking[]> {
+    return db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.roomId, roomId),
+          eq(bookings.model, "COLIVING"),
+          ne(bookings.status, "CANCELLED"),
+        ),
+      )
+      .orderBy(asc(bookings.checkIn));
   }
 
   // ---------------------------------------------------------------------------

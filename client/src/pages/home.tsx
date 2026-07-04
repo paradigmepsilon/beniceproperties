@@ -10,7 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, CalendarCheck, Handshake, ShieldCheck, Star } from "lucide-react";
 import type { PropertyListItem } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
-import { PropertyCard, isBookedNow } from "@/components/property-card";
+import { PropertyCard, cardUnavailable } from "@/components/property-card";
 import { SearchBar } from "@/components/search-bar";
 import { HeroSlideshow } from "@/components/hero-slideshow";
 import { cityOf } from "@/lib/format";
@@ -52,12 +52,26 @@ function scrollToStays() {
 }
 
 export default function Home() {
-  const { data, isLoading, error } = useQuery<PropertyListItem[]>({ queryKey: ["/api/properties"] });
   const searchStr = useSearch();
   const [city, setCity] = useState<string>("ALL");
   const [type, setType] = useState<TypeFilter>("ALL");
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
+
+  // Only send dates to the grid when BOTH are set and form a forward range — a
+  // complete search. Partial dates keep the default (date-blind) listing. The
+  // query key includes the range so a date search re-fetches a date-aware list;
+  // clearing the dates falls back to the cached default response.
+  const datedSearch = Boolean(checkIn && checkOut && checkOut > checkIn);
+  const { data, isLoading, error } = useQuery<PropertyListItem[]>({
+    queryKey: ["/api/properties", { checkIn: datedSearch ? checkIn : "", checkOut: datedSearch ? checkOut : "" }],
+    queryFn: async () => {
+      const qs = datedSearch ? `?checkIn=${checkIn}&checkOut=${checkOut}` : "";
+      const res = await fetch(`/api/properties${qs}`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      return res.json();
+    },
+  });
 
   // Honor deep links from the footer/doors: /?type=COLIVING&city=Atlanta#stays
   useEffect(() => {
@@ -86,9 +100,12 @@ export default function Home() {
     const matches = (data ?? []).filter(
       (p) => (city === "ALL" || cityOf(p.location) === city) && (type === "ALL" || p.type === type),
     );
-    // Available inventory first; booked cards demoted to the tail (stable).
-    return [...matches].sort((a, b) => Number(isBookedNow(a)) - Number(isBookedNow(b)));
-  }, [data, city, type]);
+    // Available inventory first; unavailable cards demoted to the tail (stable).
+    // During a date search this demotes cards unavailable for the searched range;
+    // otherwise it demotes date-blind "booked now" cards.
+    const unavail = (p: PropertyListItem) => Number(cardUnavailable(p, checkIn, checkOut));
+    return [...matches].sort((a, b) => unavail(a) - unavail(b));
+  }, [data, city, type, checkIn, checkOut]);
 
   function pickDoor(t: TypeFilter) {
     setType(t);
@@ -106,21 +123,26 @@ export default function Home() {
       <header className="relative overflow-hidden">
         {/* Backmost: rotating hero images (renders nothing if none configured). */}
         <HeroSlideshow />
-        {/* Scrim: keeps the overlay text legible over photos, and is the visible
-            background when there are no images. */}
+        {/* Scrim: a translucent dark overlay that keeps the light headline
+            legible over ANY hero photo (bright or busy) while still letting the
+            image show through, and reads as an intentional dark hero band when
+            there are no images. A low base wash lifts overall contrast; the
+            bottom-anchored gradient adds depth right where the text sits. */}
+        <div className="pointer-events-none absolute inset-0 bg-black/25" aria-hidden />
         <div
-          className="pointer-events-none absolute inset-0 bg-gradient-to-b from-accent/60 to-transparent"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/75 via-black/40 to-black/15"
           aria-hidden
         />
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-background/85 via-background/40 to-background/10" aria-hidden />
-        <div className="relative z-10 mx-auto w-full max-w-6xl px-6 pb-12 pt-14 sm:pt-20">
-          <p className="text-sm font-bold uppercase tracking-widest text-primary">
+        {/* A whisper of brand accent, low enough not to fight legibility. */}
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-accent/25 to-transparent mix-blend-multiply" aria-hidden />
+        <div className="relative z-10 mx-auto w-full max-w-6xl px-6 pb-12 pt-14 sm:pt-20 [text-shadow:0_1px_16px_rgba(0,0,0,0.35)]">
+          <p className="text-sm font-bold uppercase tracking-widest text-white/90">
             Atlanta · Antigua · and growing
           </p>
-          <h1 className="mt-4 max-w-[16ch] font-display text-4xl font-semibold leading-[1.08] tracking-tight sm:text-6xl">
+          <h1 className="mt-4 max-w-[16ch] font-display text-4xl font-semibold leading-[1.08] tracking-tight text-white sm:text-6xl">
             A place to stay that already feels like yours.
           </h1>
-          <p className="mt-4 max-w-[46ch] text-lg text-muted-foreground sm:text-xl">
+          <p className="mt-4 max-w-[46ch] text-lg text-white/85 sm:text-xl">
             Whole-home getaways and by-the-room co-living, booked direct in minutes — no platform
             fees, no surprises.
           </p>

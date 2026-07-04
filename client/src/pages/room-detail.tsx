@@ -82,7 +82,32 @@ export default function RoomDetail() {
             />
           </div>
 
-          <aside>
+          <aside className="space-y-5">
+            {/* Read-only availability FIRST — greys out dates this room is taken
+                (existing leases + this room's Airbnb calendar) so the guest sees
+                openings before they start the lease. Surfaced above the reserve
+                card so booked dates are visible up front; the lease page is where
+                dates are actually picked and enforced. Shown only when something
+                is booked. */}
+            {(avail?.busy?.length ?? 0) > 0 && (
+              <div className="bnp-card p-4" data-testid="room-availability">
+                <h3 className="px-1 font-display text-sm font-semibold">Availability</h3>
+                <p className="px-1 text-xs text-muted-foreground">
+                  Greyed dates are already booked (direct or Airbnb). You'll pick your exact dates on
+                  the next step.
+                </p>
+                <Calendar
+                  mode="single"
+                  numberOfMonths={1}
+                  disabled={busyToDisabledMatchers(avail!.busy, {
+                    minDate: avail!.minDate,
+                    halfOpen: false, // a lease occupies its end date
+                  })}
+                  className="mt-1"
+                />
+              </div>
+            )}
+
             <div className="bnp-card sticky top-24 overflow-hidden p-6">
               <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
               <h2 className="font-display text-lg font-semibold">Reserve this room</h2>
@@ -102,26 +127,6 @@ export default function RoomDetail() {
               </Button>
               <p className="mt-3 text-center text-xs text-muted-foreground">Weekly billing starts after move-in.</p>
             </div>
-
-            {/* Read-only availability — greys out dates this room is taken
-                (existing leases + this room's Airbnb calendar) so the guest sees
-                openings before starting the lease. Shown only when something is
-                booked; the lease page enforces the dates. */}
-            {(avail?.busy?.length ?? 0) > 0 && (
-              <div className="bnp-card mt-5 p-4" data-testid="room-availability">
-                <h3 className="px-1 font-display text-sm font-semibold">Availability</h3>
-                <p className="px-1 text-xs text-muted-foreground">Greyed dates are already booked.</p>
-                <Calendar
-                  mode="single"
-                  numberOfMonths={1}
-                  disabled={busyToDisabledMatchers(avail!.busy, {
-                    minDate: avail!.minDate,
-                    halfOpen: false, // a lease occupies its end date
-                  })}
-                  className="mt-1"
-                />
-              </div>
-            )}
           </aside>
         </div>
       </main>

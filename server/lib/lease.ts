@@ -68,7 +68,8 @@ export interface LeaseQuoteInput {
  * Validate the selection and build the full schedule preview. Checks:
  *  - property exists, is active, and is COLIVING,
  *  - every roomId belongs to that property and is AVAILABLE,
- *  - the term is ≤ 90 days and each room is free for that range (overlap guard),
+ *  - no room is blocked by an external (Airbnb/OTA) reservation for the range,
+ *  - the term is ≤ 90 days,
  *  - the schedule generates cleanly.
  */
 export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuoteResponse> {
@@ -92,6 +93,24 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     if (room.status !== "AVAILABLE") {
       throw new LeaseError(`Room ${room.name} is no longer available`, 409);
     }
+    // External (Airbnb/OTA) block guard — EXTERNAL BLOCKS ONLY, never lease
+    // overlaps. A room synced-blocked on Airbnb for these dates must not be
+    // quotable/bookable, or the guest can price+proceed on top of an OTA
+    // reservation → double-booking. We deliberately do NOT check lease overlaps
+    // here (that stays at createLease() time) so a stale DRAFT or the guest's
+    // own in-progress lease never false-blocks the quote. Overlap math matches
+    // isRoomAvailableForRange's room-external rule: the stored DTEND is
+    // checkout-morning-exclusive, so a selection abutting b.endDate is free.
+    const blocks = await storage.getExternalBlocksForRoom(room.id);
+    const conflict = blocks.some(
+      (b) => input.startDate < b.endDate && b.startDate <= input.endDate,
+    );
+    if (conflict) {
+      throw new LeaseError(
+        `${room.name} is booked for those dates on Airbnb. Pick different dates.`,
+        409,
+      );
+    }
     rooms.push(room);
   }
 
@@ -101,11 +120,13 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     throw new LeaseError(`Lease term cannot exceed ${MAX_LEASE_DAYS} days`, 422);
   }
 
-  // NOTE: no availability/overlap guard here. This function only PRICES a stay;
-  // it must never fail because a room looks "taken" — otherwise a guest can't
-  // even preview a schedule, and a stale DRAFT/pending lease (or the guest's own
-  // in-progress one) would block the quote. The real overlap guard runs at lease
-  // creation time in storage.createLease(), which is where a room is committed.
+  // NOTE: the ONLY availability guard in this pricing path is the external-block
+  // (Airbnb/OTA) check above — a synced OTA reservation must block the quote to
+  // prevent double-booking. We intentionally do NOT check *lease* overlaps here:
+  // this function only PRICES a stay, and a stale DRAFT/pending lease (or the
+  // guest's own in-progress one) must never false-block the preview. The lease
+  // overlap guard runs at commit time in storage.createLease(), where a room is
+  // actually taken.
 
   // Combined per-tier rates across rooms (supports rooms with different rents).
   // weekly falls back from room.weekly_rent (always set); daily/monthly are the

@@ -15,7 +15,7 @@ import { DateRangePicker } from "@/components/date-range-picker";
 import { Button } from "@/components/ui/button";
 import { fromNightly, money } from "@/lib/format";
 import { usePropertyAvailability } from "@/hooks/use-availability";
-import { busyToDisabledMatchers, rangeHitsBusy } from "@/lib/availability";
+import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
 
 interface DetailResponse {
   property: Property;
@@ -28,8 +28,11 @@ export default function PropertyDetail() {
   const { data, isLoading } = useQuery<DetailResponse>({ queryKey: ["/api/properties", id!] });
   // Busy ranges (direct bookings ∪ Airbnb iCal blocks) so booked dates disable in
   // the calendar. Empty for co-living (endpoint returns no busy set); the picker
-  // only renders for STR anyway.
-  const { data: avail } = usePropertyAvailability(id);
+  // only renders for STR anyway. `availLoading` gates the CTA: until the busy set
+  // has actually loaded we must treat every range as not-yet-known and keep
+  // "Continue" disabled, or a booked range would look bookable on first paint
+  // (busy defaults to [] before the query resolves).
+  const { data: avail, isLoading: availLoading } = usePropertyAvailability(id);
   const searchStr = useSearch();
   const today = new Date().toISOString().slice(0, 10);
   // Seed dates from the home hero search (?checkIn=&checkOut=) when they're
@@ -54,13 +57,20 @@ export default function PropertyDetail() {
     minDate: avail?.minDate ?? today,
     halfOpen: true, // STR: checkout day is free to check in
   });
-  // Valid = a real forward range that doesn't straddle a booked block. The
-  // calendar already prevents picking disabled days; this also rejects a range
-  // spanning them. Server re-validates on POST regardless.
-  const datesValid =
-    !!checkIn && !!checkOut && checkOut > checkIn && !rangeHitsBusy(checkIn, checkOut, busy, true);
+  // Valid = availability is known AND a real forward range that doesn't straddle
+  // a booked block. Until `avail` has loaded the busy set is unknown (defaults to
+  // []), so we must NOT treat any range as bookable — otherwise a booked range
+  // looks valid on first paint and "Continue" wrongly enables. The calendar also
+  // prevents picking disabled days; this rejects a range spanning them. Server
+  // re-validates on POST regardless.
+  const availReady = !availLoading && !!avail;
+  const datesValid = datesBookable(availReady, checkIn, checkOut, busy, true);
   const spansBooked =
-    !!checkIn && !!checkOut && checkOut > checkIn && rangeHitsBusy(checkIn, checkOut, busy, true);
+    availReady &&
+    !!checkIn &&
+    !!checkOut &&
+    checkOut > checkIn &&
+    rangeHitsBusy(checkIn, checkOut, busy, true);
 
   function continueToCheckout() {
     const params = new URLSearchParams({ propertyId: property.id, checkIn, checkOut });
@@ -216,8 +226,12 @@ export default function PropertyDetail() {
                   <p className="mt-2 text-xs text-destructive">
                     Those dates include already-booked nights. Pick an open range.
                   </p>
+                ) : !availReady && (checkIn || checkOut) ? (
+                  <p className="mt-2 text-xs text-muted-foreground">Checking availability…</p>
                 ) : (
-                  !datesValid && (checkIn || checkOut) && (
+                  availReady &&
+                  !datesValid &&
+                  (checkIn || checkOut) && (
                     <p className="mt-2 text-xs text-destructive">Check-out must be after check-in.</p>
                   )
                 )}

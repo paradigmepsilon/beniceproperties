@@ -41,3 +41,26 @@ export function strNextOpening(
   }
   return open;
 }
+
+/**
+ * Date-aware "from" price + availability for a co-living property's grid card.
+ * Each entry is one AVAILABLE-status room paired with whether it is actually free
+ * for the searched date range (from storage.isRoomAvailableForRange). The card
+ * prices "from" the cheapest room a guest can actually book for those dates, so a
+ * booked cheapest room yields the next cheapest FREE room's rate; when every room
+ * is taken for the range, `fromWeeklyRent` is null and the card reads unavailable.
+ *
+ * Pure so it is unit-tested directly; the /api/properties handler pairs each room
+ * with its availability and delegates the min/availability decision here. Rents
+ * are decimal strings (schema `weekly_rent`); non-positive/unparseable are ignored.
+ */
+export function cheapestAvailableWeeklyRent(
+  rooms: Array<{ weeklyRent: string; available: boolean }>,
+): { fromWeeklyRent: string | null; available: boolean } {
+  const rates = rooms
+    .filter((r) => r.available)
+    .map((r) => parseFloat(r.weeklyRent))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  if (rates.length === 0) return { fromWeeklyRent: null, available: false };
+  return { fromWeeklyRent: String(Math.min(...rates)), available: true };
+}

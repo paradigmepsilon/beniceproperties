@@ -20,6 +20,21 @@ export function isBookedNow(p: PropertyListItem): boolean {
   return p.type === "COLIVING" ? !p.fromWeeklyRent : p.nextOpening != null;
 }
 
+/** Is a complete date search active (both dates set, forward range)? */
+export function isDatedSearch(checkIn?: string, checkOut?: string): boolean {
+  return Boolean(checkIn && checkOut && checkOut > checkIn);
+}
+
+/**
+ * Should the card read as unavailable? During a date search, availability is
+ * governed by the searched range (`availableForDates`); with no dates, by the
+ * date-blind "booked now" status. Used by both the card and the home-grid sort
+ * so they agree on which cards are demoted.
+ */
+export function cardUnavailable(p: PropertyListItem, checkIn?: string, checkOut?: string): boolean {
+  return isDatedSearch(checkIn, checkOut) ? !p.availableForDates : isBookedNow(p);
+}
+
 interface Props {
   property: PropertyListItem;
   /** Hero-search dates; carried into the detail link so booking can prefill. */
@@ -29,13 +44,17 @@ interface Props {
 
 export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
   const isRoom = p.type === "COLIVING";
-  const booked = isBookedNow(p);
+  const dated = isDatedSearch(checkIn, checkOut);
+  // During a date search the searched range decides availability; otherwise the
+  // date-blind "booked now" status. `dateBlocked` = specifically unavailable for
+  // the searched dates (drives the "Unavailable for your dates" badge/copy).
+  const booked = cardUnavailable(p, checkIn, checkOut);
+  const dateBlocked = dated && !p.availableForDates;
   const nightly = p.type === "STR" ? fromNightly(p) : null;
 
-  const datesQuery =
-    checkIn && checkOut && checkOut > checkIn
-      ? `?${new URLSearchParams({ checkIn, checkOut }).toString()}`
-      : "";
+  const datesQuery = dated
+    ? `?${new URLSearchParams({ checkIn: checkIn!, checkOut: checkOut! }).toString()}`
+    : "";
 
   return (
     <Link href={`/property/${p.id}${datesQuery}`}>
@@ -81,7 +100,7 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
               booked ? "bg-secondary text-muted-foreground" : "bg-good-bg text-good",
             )}
           >
-            {booked ? "Fully booked" : "Available"}
+            {dateBlocked ? "Unavailable for your dates" : booked ? "Fully booked" : "Available"}
           </span>
         </div>
 
@@ -97,7 +116,11 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
           )}
           <div className="mt-auto flex items-center justify-between pt-3">
             <p className="text-sm">
-              {p.type === "STR" ? (
+              {dateBlocked ? (
+                // Specifically blocked for the searched range — say so instead of
+                // a price. (The card is greyed via .is-booked; keep it visible.)
+                <span className="font-medium text-muted-foreground">Not available for these dates</span>
+              ) : p.type === "STR" ? (
                 nightly ? (
                   <>
                     {nightly.multiTier && <span className="text-muted-foreground">from </span>}

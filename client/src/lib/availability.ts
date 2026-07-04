@@ -50,3 +50,26 @@ export function rangeHitsBusy(
     halfOpen ? checkIn < r.end && r.start < checkOut : checkIn <= r.end && r.start < checkOut,
   );
 }
+
+/**
+ * Whether a selected [checkIn, checkOut) range is bookable — the single source of
+ * truth for enabling a "Continue"/"Reserve" CTA. Returns false unless:
+ *   - availability has actually loaded (`availReady`) — until then the busy set is
+ *     unknown (defaults to []) and a booked range would falsely look free on first
+ *     paint. This is the fix for the STR premature-enable bug.
+ *   - both dates are set and form a real forward range (checkOut > checkIn), and
+ *   - the range doesn't straddle any busy span (rangeHitsBusy).
+ *
+ * The server always re-validates on submit; this only governs the client CTA.
+ */
+export function datesBookable(
+  availReady: boolean,
+  checkIn: string,
+  checkOut: string,
+  busy: BusyRange[],
+  halfOpen: boolean,
+): boolean {
+  if (!availReady) return false;
+  if (!checkIn || !checkOut || checkOut <= checkIn) return false;
+  return !rangeHitsBusy(checkIn, checkOut, busy, halfOpen);
+}

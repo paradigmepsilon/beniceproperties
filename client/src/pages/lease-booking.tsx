@@ -13,12 +13,23 @@
 // =============================================================================
 
 import { useMemo, useState } from "react";
+import { differenceInCalendarDays, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { apiRequest, getQueryFn } from "@/lib/queryClient";
-import type { LeaseQuoteResponse, AvailabilityResponse, BusyRange } from "@shared/api-types";
-import { PAYMENT_CADENCES } from "@shared/schema";
+import type {
+  LeaseQuoteResponse,
+  AvailabilityResponse,
+  BusyRange,
+  QuoteResponse,
+} from "@shared/api-types";
+import {
+  PAYMENT_CADENCES,
+  COLIVING_MIN_DAYS,
+  requiresLease,
+  isDirectCoLivingStay,
+} from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,7 +38,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { money } from "@/lib/format";
-import { busyToDisabledMatchers, rangeHitsBusy } from "@/lib/availability";
+import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
 
 type Cadence = (typeof PAYMENT_CADENCES)[number];
 
@@ -88,12 +99,31 @@ export default function LeaseBooking() {
     () => busyToDisabledMatchers(busy, { minDate: today, halfOpen: false }),
     [busy, today],
   );
+  // Until EVERY room's availability has loaded, the busy set is unknown (each
+  // query's data defaults to undefined → []), so a booked range would look free
+  // on first paint. Treat "not yet loaded" as not-ready: the quote query stays
+  // gated (below) and the range can't validate until we actually know the blocks.
+  const availReady =
+    roomIds.length > 0 && availabilityQueries.every((q) => q.isSuccess);
 
   const spansBooked =
+    availReady &&
     Boolean(startDate && endDate && endDate >= startDate) &&
     rangeHitsBusy(startDate, endDate, busy, false);
-  const datesValid =
-    Boolean(startDate && endDate && endDate >= startDate) && !spansBooked;
+  const datesValid = datesBookable(availReady, startDate, endDate, busy, false);
+
+  // Term length (NIGHTS) decides the path — mirrors the server's shared gate:
+  //   < 7 nights  → below the co-living minimum (not offered)
+  //   7–28 nights → SHORT direct booking (no lease); CTA → /checkout, full total upfront
+  //   > 28 nights → LEASE (the flow below, unchanged): cadence + schedule + signature
+  const termNights =
+    startDate && endDate && endDate >= startDate
+      ? differenceInCalendarDays(parseISO(endDate), parseISO(startDate))
+      : 0;
+  const isLeaseTerm = requiresLease(termNights);
+  const isShortStay = isDirectCoLivingStay(termNights);
+  const isBelowMin = termNights > 0 && termNights < COLIVING_MIN_DAYS;
+
   // Cadence is the guest's choice, gated by term length; sent to the quote so the
   // schedule reflects it. Blank until chosen (server defaults to shortest allowed).
   const quoteBody = { propertyId, roomIds, startDate, endDate, ...(cadence ? { cadence } : {}) };
@@ -108,8 +138,30 @@ export default function LeaseBooking() {
       const res = await apiRequest("POST", "/api/lease-quote", quoteBody);
       return res.json();
     },
-    enabled: Boolean(propertyId) && roomIds.length > 0 && datesValid,
+    // Only fetch the lease schedule for lease-length stays. Short stays (7–28
+    // nights) go through /checkout instead and never need a lease quote.
+    enabled: Boolean(propertyId) && roomIds.length > 0 && datesValid && isLeaseTerm,
   });
+
+  // Short-stay price preview (7–28 nights). Uses the same /api/quote the checkout
+  // page uses, at the STRIPE method, so the guest sees the full-upfront total
+  // before proceeding. Only the first room is booked short-stay (single-room).
+  const shortQuoteBody = {
+    propertyId,
+    roomId: roomIds[0],
+    checkIn: startDate,
+    checkOut: endDate,
+    paymentMethod: "STRIPE" as const,
+  };
+  const { data: shortQuote, isLoading: shortLoading, error: shortError } =
+    useQuery<QuoteResponse>({
+      queryKey: ["/api/quote", JSON.stringify(shortQuoteBody)],
+      queryFn: async () => {
+        const res = await apiRequest("POST", "/api/quote", shortQuoteBody);
+        return res.json();
+      },
+      enabled: Boolean(propertyId) && roomIds.length > 0 && datesValid && isShortStay,
+    });
 
   const guestValid = name.trim() !== "" && /\S+@\S+\.\S+/.test(email);
   const canProceed = Boolean(quote) && guestValid;
@@ -124,6 +176,19 @@ export default function LeaseBooking() {
     if (chosen) qs.set("cadence", chosen);
     for (const id of roomIds) qs.append("roomId", id);
     navigate(`/lease/sign?${qs.toString()}`);
+  }
+
+  function proceedToCheckout() {
+    // Short co-living stay (7–28 nights) → the same direct-booking checkout STR
+    // uses. No lease, no signature; the guest pays the full stay total upfront.
+    // /checkout collects guest identity + payment method and POSTs /api/bookings.
+    const qs = new URLSearchParams({
+      propertyId,
+      roomId: roomIds[0],
+      checkIn: startDate,
+      checkOut: endDate,
+    });
+    navigate(`/checkout?${qs.toString()}`);
   }
 
   if (!propertyId || roomIds.length === 0) {
@@ -147,11 +212,13 @@ export default function LeaseBooking() {
           <ArrowLeft className="h-4 w-4" /> Back to property
         </Link>
 
-        <h1 className="font-display text-2xl font-semibold tracking-tight">Set up your lease</h1>
+        <h1 className="font-display text-2xl font-semibold tracking-tight">
+          {isShortStay ? "Book your stay" : "Set up your stay"}
+        </h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Choose your dates. We pick the best rate for your stay length automatically — longer
-          stays get the weekly or monthly rate. You'll see every payment before you commit, and you
-          won't be charged until you sign.
+          Choose your dates. Stays of a month or less are booked as a reservation you pay in full at
+          checkout; longer stays are set up as a lease with a payment schedule you sign. We'll show
+          you the price before you commit.
         </p>
 
         <div className="mt-6 grid gap-8 lg:grid-cols-[1fr_400px]">
@@ -159,7 +226,7 @@ export default function LeaseBooking() {
           <div className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Lease term</CardTitle>
+                <CardTitle className="text-base">Your dates</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <DateRangePicker
@@ -178,8 +245,22 @@ export default function LeaseBooking() {
                   <p className="text-xs text-destructive">
                     Those dates include nights this room is already booked. Pick an open range.
                   </p>
+                ) : !availReady && (startDate || endDate) ? (
+                  <p className="text-xs text-muted-foreground">Checking availability…</p>
+                ) : isBelowMin ? (
+                  <p className="text-xs text-destructive" data-testid="text-below-min">
+                    Co-living stays have a {COLIVING_MIN_DAYS}-night minimum. Extend your dates.
+                  </p>
+                ) : isShortStay ? (
+                  <p className="text-xs text-muted-foreground" data-testid="text-mode-short">
+                    Short stay ({termNights} nights) — pay in full at checkout. No lease required.
+                  </p>
+                ) : isLeaseTerm ? (
+                  <p className="text-xs text-muted-foreground" data-testid="text-mode-lease">
+                    Stays over a month are set up as a lease — choose a payment schedule below.
+                  </p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">Lease terms run up to 90 days.</p>
+                  <p className="text-xs text-muted-foreground">Stays run from 7 to 90 nights.</p>
                 )}
               </CardContent>
             </Card>
@@ -228,39 +309,94 @@ export default function LeaseBooking() {
               </Card>
             )}
 
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-base">Your details</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div>
-                  <Label htmlFor="name">Full name</Label>
-                  <Input id="name" value={name} onChange={(e) => setName(e.target.value)} data-testid="input-name" />
-                </div>
-                <div>
-                  <Label htmlFor="email">Email</Label>
-                  <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="input-email" />
-                </div>
-                <div>
-                  <Label htmlFor="phone">Phone (optional)</Label>
-                  <Input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="input-phone" />
-                </div>
-              </CardContent>
-            </Card>
+            {/* Guest identity is collected here only for the lease path; the
+                short-stay path gathers it on the checkout page instead. */}
+            {!isShortStay && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Your details</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <div>
+                    <Label htmlFor="name">Full name</Label>
+                    <Input id="name" value={name} onChange={(e) => setName(e.target.value)} data-testid="input-name" />
+                  </div>
+                  <div>
+                    <Label htmlFor="email">Email</Label>
+                    <Input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} data-testid="input-email" />
+                  </div>
+                  <div>
+                    <Label htmlFor="phone">Phone (optional)</Label>
+                    <Input id="phone" value={phone} onChange={(e) => setPhone(e.target.value)} data-testid="input-phone" />
+                  </div>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* Right: schedule preview */}
           <div>
             <Card className="sticky top-6">
               <CardHeader>
-                <CardTitle className="text-base">Payment schedule</CardTitle>
+                <CardTitle className="text-base">
+                  {isShortStay ? "Price summary" : "Payment schedule"}
+                </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3 text-sm">
                 {!datesValid && (
-                  <p className="text-muted-foreground">Pick your start and end dates to preview every payment.</p>
+                  <p className="text-muted-foreground">Pick your start and end dates to preview your price.</p>
                 )}
-                {datesValid && isLoading && <p className="text-muted-foreground">Building schedule…</p>}
-                {datesValid && error && (
+
+                {/* Below the 7-night co-living minimum. */}
+                {datesValid && isBelowMin && (
+                  <p className="text-destructive">
+                    Co-living stays start at {COLIVING_MIN_DAYS} nights. Extend your dates to book this room.
+                  </p>
+                )}
+
+                {/* Short stay (7–28 nights): pay the full total upfront, no lease. */}
+                {datesValid && isShortStay && (
+                  <>
+                    {shortLoading && <p className="text-muted-foreground">Calculating…</p>}
+                    {shortError && (
+                      <p className="text-destructive" data-testid="text-short-error">{cleanError(shortError)}</p>
+                    )}
+                    {shortQuote && (
+                      <>
+                        <div className="text-xs text-muted-foreground">
+                          Short stay · {termNights} nights · paid in full today
+                        </div>
+                        {shortQuote.dueNow.lines.map((l, i) => (
+                          <div key={i} className="flex justify-between">
+                            <span className="text-muted-foreground">{l.label}</span>
+                            <span>{money(l.amount)}</span>
+                          </div>
+                        ))}
+                        <Separator />
+                        <div className="flex justify-between font-semibold">
+                          <span>Total due at checkout</span>
+                          <span data-testid="text-short-total">{money(shortQuote.dueNow.total)}</span>
+                        </div>
+                        <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+                          Stays of a month or less are booked as a reservation — you pay the full
+                          amount at checkout. No lease or signature required.
+                        </p>
+                        <Button
+                          className="mt-2 w-full"
+                          onClick={proceedToCheckout}
+                          data-testid="button-checkout-short"
+                        >
+                          Continue to checkout
+                        </Button>
+                      </>
+                    )}
+                  </>
+                )}
+
+                {datesValid && isLeaseTerm && isLoading && (
+                  <p className="text-muted-foreground">Building schedule…</p>
+                )}
+                {datesValid && isLeaseTerm && error && (
                   <p className="text-destructive" data-testid="text-quote-error">{cleanError(error)}</p>
                 )}
                 {quote && (

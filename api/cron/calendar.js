@@ -25,6 +25,7 @@ __export(schema_exports, {
   BOOKING_STATUSES: () => BOOKING_STATUSES,
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
+  COLIVING_MIN_DAYS: () => COLIVING_MIN_DAYS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
   DEPOSIT_STATUSES: () => DEPOSIT_STATUSES,
   ESCALATION_KINDS: () => ESCALATION_KINDS,
@@ -33,6 +34,7 @@ __export(schema_exports, {
   LATE_FEE_PER_DAY: () => LATE_FEE_PER_DAY,
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
   LEASE_ENDING_NOTICE_DAYS: () => LEASE_ENDING_NOTICE_DAYS,
+  LEASE_REQUIRED_ABOVE_DAYS: () => LEASE_REQUIRED_ABOVE_DAYS,
   LEASE_STATUSES: () => LEASE_STATUSES,
   LIFECYCLE_EVENT_TYPES: () => LIFECYCLE_EVENT_TYPES,
   LIFECYCLE_SEND_STATUSES: () => LIFECYCLE_SEND_STATUSES,
@@ -81,6 +83,7 @@ __export(schema_exports, {
   insertSubscriptionSchema: () => insertSubscriptionSchema,
   insertUoEscalationSchema: () => insertUoEscalationSchema,
   insertVehicleSchema: () => insertVehicleSchema,
+  isDirectCoLivingStay: () => isDirectCoLivingStay,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
   leaseRooms: () => leaseRooms,
@@ -91,6 +94,7 @@ __export(schema_exports, {
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
   properties: () => properties,
+  requiresLease: () => requiresLease,
   rooms: () => rooms,
   subscriptions: () => subscriptions,
   uoEscalations: () => uoEscalations,
@@ -234,6 +238,14 @@ function allowedCadencesForTerm(termDays) {
   if (termDays >= 84) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
   if (termDays >= 28) return ["WEEKLY", "MONTHLY"];
   return ["WEEKLY"];
+}
+var COLIVING_MIN_DAYS = 7;
+var LEASE_REQUIRED_ABOVE_DAYS = 28;
+function requiresLease(termDays) {
+  return termDays > LEASE_REQUIRED_ABOVE_DAYS;
+}
+function isDirectCoLivingStay(termDays) {
+  return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
 var LATE_FEE_PER_DAY = 25;
 var NOTIFICATION_KINDS = [
@@ -1377,8 +1389,23 @@ var Storage = class {
     if (blocking.some((l) => args.startDate <= l.endDate && l.startDate <= args.endDate)) {
       return false;
     }
+    const roomBookings = await this.getColivingBookingsForRoom(args.roomId);
+    if (roomBookings.some(
+      (b) => b.checkOut !== null && args.startDate < b.checkOut && b.checkIn <= args.endDate
+    )) {
+      return false;
+    }
     const blocks = await this.getExternalBlocksForRoom(args.roomId);
     return !blocks.some((b) => args.startDate < b.endDate && b.startDate <= args.endDate);
+  }
+  async getColivingBookingsForRoom(roomId) {
+    return db.select().from(bookings).where(
+      and(
+        eq(bookings.roomId, roomId),
+        eq(bookings.model, "COLIVING"),
+        ne(bookings.status, "CANCELLED")
+      )
+    ).orderBy(asc(bookings.checkIn));
   }
   // ---------------------------------------------------------------------------
   // Airbnb iCal listings (URL on properties/rooms) + synced date blocks

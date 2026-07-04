@@ -13,6 +13,7 @@ const mockStorage = vi.hoisted(() => ({
   getProperty: vi.fn(),
   getRoom: vi.fn(),
   isRoomAvailableForRange: vi.fn(),
+  getExternalBlocksForRoom: vi.fn(),
   upsertGuestByEmail: vi.fn(),
   createLeaseWithSchedule: vi.fn(),
   getLease: vi.fn(),
@@ -32,6 +33,9 @@ const ROOM = { id: "r1", name: "Room 1", roomNumber: "1", weeklyRent: "250.00", 
 beforeEach(() => {
   vi.clearAllMocks();
   mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+  // buildLeaseQuote (called by createDraftLease) now checks external blocks;
+  // default to none so the flow tests exercise the happy path.
+  mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
 });
 
 describe("createDraftLease", () => {

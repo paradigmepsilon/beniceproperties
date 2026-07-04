@@ -3,13 +3,28 @@
 // a ResolvedBooking, so we test it directly (no storage needed). The tier math
 // itself is covered in shared/rateSelection.test.ts.
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // booking.ts imports ../storage, which throws at import time without DATABASE_URL.
-// buildQuote is pure (no storage), but the import chain still needs storage stubbed.
-vi.mock("../storage", () => ({ storage: {} }));
+// buildQuote is pure (no storage); resolveBooking needs a few methods stubbed.
+// vi.mock is hoisted above module init, so the mock object must come from
+// vi.hoisted() (mirrors the pattern in lease.test.ts / leaseFlow.test.ts).
+const mockStorage = vi.hoisted(() => ({
+  getProperty: vi.fn(),
+  getRoom: vi.fn(),
+  isRoomAvailableForRange: vi.fn(),
+  getBookings: vi.fn(async () => []),
+  getExternalBlocksForProperty: vi.fn(async () => []),
+}));
+vi.mock("../storage", () => ({ storage: mockStorage }));
 
-import { buildQuote, strBaseTotal, type ResolvedBooking } from "./booking";
+import {
+  buildQuote,
+  strBaseTotal,
+  resolveBooking,
+  BookingError,
+  type ResolvedBooking,
+} from "./booking";
 import { calculateBreakdown } from "@shared/pricing";
 import type { Property } from "@shared/schema";
 
@@ -141,5 +156,107 @@ describe("strBaseTotal — per-weekday pricing (DAILY tier only)", () => {
     );
     expect(r.tier).toBe("MONTHLY");
     expect(r.baseAmount).toBe(3200); // (2240 / 28) × 40
+  });
+});
+
+describe("resolveBooking — co-living term gate (7–28 = booking, else rejected)", () => {
+  const COLIVING = { id: "p2", name: "Old Bill Cook", type: "COLIVING", active: true } as never;
+  const ROOM = {
+    id: "r1",
+    propertyId: "p2",
+    name: "Room 2 - Garden",
+    roomNumber: "2",
+    status: "AVAILABLE",
+    weeklyRent: "700",
+    depositAmount: "500",
+    dailyRate: null,
+  } as never;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStorage.getProperty.mockResolvedValue(COLIVING);
+    mockStorage.getRoom.mockResolvedValue(ROOM);
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+  });
+
+  it("prices a 10-night stay as 1 week + 3 days (weekly/7 daily fallback)", async () => {
+    // 2026-07-01 → 2026-07-11 = 10 nights (differenceInCalendarDays).
+    const r = await resolveBooking({
+      propertyId: "p2",
+      roomId: "r1",
+      checkIn: "2026-07-01",
+      checkOut: "2026-07-11",
+    });
+    expect(r.model).toBe("COLIVING");
+    expect(r.nights).toBe(10);
+    expect(r.checkOut).toBe("2026-07-11");
+    // 1 × 700 + 3 × (700/7 = 100) = 1000
+    expect(r.baseAmount).toBe(1000);
+    expect(r.shortStay).toMatchObject({ weeks: 1, remainderDays: 3 });
+  });
+
+  it("rejects a stay under the 7-night minimum", async () => {
+    await expect(
+      resolveBooking({ propertyId: "p2", roomId: "r1", checkIn: "2026-07-01", checkOut: "2026-07-06" }),
+    ).rejects.toThrow(/7-night minimum/i);
+  });
+
+  it("rejects a stay over 28 nights (routes to the lease flow)", async () => {
+    await expect(
+      resolveBooking({ propertyId: "p2", roomId: "r1", checkIn: "2026-07-01", checkOut: "2026-08-15" }),
+    ).rejects.toThrow(/lease/i);
+  });
+
+  it("rejects when the room is not free for the range", async () => {
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(false);
+    await expect(
+      resolveBooking({ propertyId: "p2", roomId: "r1", checkIn: "2026-07-01", checkOut: "2026-07-11" }),
+    ).rejects.toThrow(BookingError);
+  });
+
+  it("requires move-in and move-out dates", async () => {
+    await expect(resolveBooking({ propertyId: "p2", roomId: "r1" })).rejects.toThrow(/dates/i);
+  });
+});
+
+describe("buildQuote — co-living short stay (weeks + daily remainder, no recurring)", () => {
+  function coResolved(over: Partial<ResolvedBooking>): ResolvedBooking {
+    return {
+      model: "COLIVING",
+      property: { id: "p2", name: "Old Bill Cook", type: "COLIVING" } as ResolvedBooking["property"],
+      room: { id: "r1", name: "Room 2", weeklyRent: "700" } as ResolvedBooking["room"],
+      checkIn: "2026-07-01",
+      checkOut: "2026-07-11",
+      baseAmount: 1000,
+      cleaningFee: 0,
+      nights: 10,
+      shortStay: { weeks: 1, remainderDays: 3, weeklyRate: 700, dailyRate: 100 },
+      ...over,
+    };
+  }
+
+  it("renders a week line + a day line and no recurring block", () => {
+    const q = buildQuote(coResolved({}), "ZELLE");
+    expect(q.model).toBe("COLIVING");
+    expect(q.recurring).toBeUndefined();
+    expect(q.dueNow.lines.some((l) => /1 week/.test(l.label))).toBe(true);
+    expect(q.dueNow.lines.some((l) => /3 days/.test(l.label))).toBe(true);
+    expect(q.dueNow.total).toBe(1000); // no surcharge for ZELLE
+  });
+
+  it("omits the day line when the stay is whole weeks", () => {
+    const q = buildQuote(
+      coResolved({ nights: 14, baseAmount: 1400, shortStay: { weeks: 2, remainderDays: 0, weeklyRate: 700, dailyRate: 100 } }),
+      "ZELLE",
+    );
+    expect(q.dueNow.lines.filter((l) => /day/.test(l.label))).toHaveLength(0);
+    expect(q.dueNow.total).toBe(1400);
+  });
+
+  it("adds the card surcharge for STRIPE", () => {
+    const q = buildQuote(coResolved({}), "STRIPE");
+    const expected = calculateBreakdown({ baseAmount: 1000, paymentMethod: "STRIPE" });
+    expect(q.dueNow.total).toBe(expected.total);
+    expect(q.dueNow.surcharge).toBeGreaterThan(0);
   });
 });

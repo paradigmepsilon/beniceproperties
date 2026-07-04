@@ -144,6 +144,34 @@ export function allowedCadencesForTerm(
   return ["WEEKLY"];
 }
 
+/**
+ * Term-length gate: whether a co-living stay is booked as a LEASE or a plain
+ * direct-booking RESERVATION. Owner rule (2026-07-04):
+ *
+ *   term < 7 nights          → not offered (7-night co-living minimum)
+ *   7 ≤ term ≤ 28 nights     → direct booking reservation, paid in full upfront,
+ *                              NO lease / signature / payment schedule
+ *   term > 28 nights (>1 mo) → lease required, with the guest's payment cadence
+ *
+ * 28 is the same "1 month" boundary the rate tiers and allowedCadencesForTerm use,
+ * so the switch lines up with the existing MONTHLY tier. One source of truth —
+ * imported by the client (to route the CTA) and the server (to gate the flow).
+ * `termDays` here is NIGHTS stayed (differenceInCalendarDays), matching the STR
+ * booking path, NOT the inclusive-day count the lease schedule uses.
+ */
+export const COLIVING_MIN_DAYS = 7;
+export const LEASE_REQUIRED_ABOVE_DAYS = 28;
+
+/** True when a co-living stay is long enough to require a lease (> 1 month). */
+export function requiresLease(termDays: number): boolean {
+  return termDays > LEASE_REQUIRED_ABOVE_DAYS;
+}
+
+/** True when a co-living stay is a short, lease-less direct booking (7–28 nights). */
+export function isDirectCoLivingStay(termDays: number): boolean {
+  return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
+}
+
 /** Flat daily late fee, in dollars (spec: $25/day, no cap). */
 export const LATE_FEE_PER_DAY = 25.0;
 
@@ -292,6 +320,12 @@ export type PropertyListItem = Property & {
    *  soonest occupying-lease end + 1; STR: end of the booking chain covering
    *  today). Null when the property is bookable now or no end is known. */
   nextOpening: string | null;
+  /** Whether this property is bookable for the searched [checkIn, checkOut).
+   *  Only meaningful when the grid request carried dates; with no dates it is
+   *  always true and the card falls back to its status/nextOpening logic.
+   *  STR: no direct/Airbnb conflict for the range. COLIVING: ≥1 room free for
+   *  the range. When false for a dated search, the card greys out. */
+  availableForDates: boolean;
 };
 
 // =============================================================================

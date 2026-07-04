@@ -13,6 +13,7 @@ import {
   hasAnyWeekdayRate,
   weekdayStayTotal,
   WEEKDAY_FIELDS,
+  shortStayPrice,
 } from "./rateSelection";
 
 describe("tierForNights", () => {
@@ -209,5 +210,48 @@ describe("weekdayStayTotal", () => {
         fallbackNightly: null,
       }),
     ).toBe(200.01); // 200.01 after rounding
+  });
+});
+
+describe("shortStayPrice — whole weeks + daily remainder (7–28 nights)", () => {
+  it("exactly one week bills a single weekly rent, no remainder", () => {
+    const p = shortStayPrice({ nights: 7, weeklyRent: "700" });
+    expect(p).toMatchObject({ weeks: 1, remainderDays: 0, baseAmount: 700 });
+  });
+
+  it("10 nights = 1 week + 3 days at the explicit daily rate", () => {
+    const p = shortStayPrice({ nights: 10, weeklyRent: "700", dailyRate: "120" });
+    // 1 × 700 + 3 × 120 = 1060
+    expect(p).toMatchObject({ weeks: 1, remainderDays: 3, dailyRate: 120, baseAmount: 1060 });
+  });
+
+  it("falls back to weeklyRent / 7 for remainder days when no dailyRate is set", () => {
+    const p = shortStayPrice({ nights: 10, weeklyRent: "700" });
+    // daily = 700/7 = 100 → 700 + 3 × 100 = 1000
+    expect(p.dailyRate).toBe(100);
+    expect(p.baseAmount).toBe(1000);
+  });
+
+  it("explicit dailyRate overrides the weekly-derived fallback", () => {
+    const withRate = shortStayPrice({ nights: 9, weeklyRent: "700", dailyRate: "90" });
+    const derived = shortStayPrice({ nights: 9, weeklyRent: "700" });
+    expect(withRate.dailyRate).toBe(90); // explicit
+    expect(derived.dailyRate).toBe(100); // 700/7
+    expect(withRate.baseAmount).not.toBe(derived.baseAmount);
+  });
+
+  it("28 nights = 4 full weeks, no remainder", () => {
+    const p = shortStayPrice({ nights: 28, weeklyRent: "700" });
+    expect(p).toMatchObject({ weeks: 4, remainderDays: 0, baseAmount: 2800 });
+  });
+
+  it("rounds to cents", () => {
+    const p = shortStayPrice({ nights: 8, weeklyRent: "100" });
+    // 1 × 100 + 1 × (100/7 = 14.2857…) = 114.29
+    expect(p.baseAmount).toBe(114.29);
+  });
+
+  it("throws RateError when the weekly rent is missing", () => {
+    expect(() => shortStayPrice({ nights: 10, weeklyRent: "" })).toThrow(RateError);
   });
 });

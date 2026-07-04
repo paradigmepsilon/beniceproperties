@@ -12,6 +12,7 @@ const mockStorage = vi.hoisted(() => ({
   getProperty: vi.fn(),
   getRoom: vi.fn(),
   isRoomAvailableForRange: vi.fn(),
+  getExternalBlocksForRoom: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
@@ -31,7 +32,14 @@ function room(id: string, name: string, weeklyRent: string, status = "AVAILABLE"
 beforeEach(() => {
   vi.clearAllMocks();
   mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+  // Default: no external (Airbnb/OTA) blocks. Individual tests override.
+  mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
 });
+
+/** An external (Airbnb) block. `end` is the exclusive DTEND (checkout morning). */
+function extBlock(startDate: string, endDate: string) {
+  return { startDate, endDate };
+}
 
 describe("buildLeaseQuote — happy path", () => {
   it("builds a weekly schedule, summing multi-room weekly rent", async () => {
@@ -121,6 +129,90 @@ describe("buildLeaseQuote — guards", () => {
     await expect(
       buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "WEEKLY" }),
     ).rejects.toThrow(/not found in this property/i);
+  });
+});
+
+describe("buildLeaseQuote — external (Airbnb) block guard", () => {
+  // Unlike the intentional NON-guard on lease overlaps (a stale/own draft must
+  // never block the preview), a synced OTA reservation MUST block the quote —
+  // otherwise the guest can price + proceed on top of an Airbnb booking and we
+  // double-book. This guard is external-blocks-only.
+
+  it("rejects a range overlapping this room's Airbnb block (409)", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    // Airbnb block Jul 4 → Jul 18 (DTEND exclusive). Guest asks Jul 7 → Jul 9.
+    mockStorage.getExternalBlocksForRoom.mockResolvedValue([extBlock("2026-07-04", "2026-07-18")]);
+    await expect(
+      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-07", endDate: "2026-07-09" }),
+    ).rejects.toThrow(/booked for those dates on Airbnb/i);
+    await expect(
+      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-07", endDate: "2026-07-09" }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("allows a stay that STARTS on the block's exclusive DTEND (same-day turnover is free)", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    // Block Jul 11 → Jul 18 (DTEND Jul 18 exclusive = prior guest gone Jul 18
+    // morning). A new stay checking in Jul 18 turns over same-day → free. This
+    // mirrors isRoomAvailableForRange exactly: startDate < b.endDate is false.
+    mockStorage.getExternalBlocksForRoom.mockResolvedValue([extBlock("2026-07-11", "2026-07-18")]);
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-18", endDate: "2026-07-25",
+    });
+    expect(q.schedule.length).toBeGreaterThan(0);
+    expect(q.dueToday).toBeGreaterThan(0);
+  });
+
+  it("rejects a stay whose inclusive end day is the block's check-in day (they collide)", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    // Block starts Jul 18 (Airbnb guest arrives Jul 18). Co-living occupies its
+    // end date inclusively, so a stay ending Jul 18 still holds Jul 18 → conflict.
+    // b.startDate (Jul 18) <= input.endDate (Jul 18) is true.
+    mockStorage.getExternalBlocksForRoom.mockResolvedValue([extBlock("2026-07-18", "2026-07-25")]);
+    await expect(
+      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-11", endDate: "2026-07-18" }),
+    ).rejects.toThrow(/booked for those dates on Airbnb/i);
+  });
+
+  it("allows a range fully clear of any Airbnb block", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    mockStorage.getExternalBlocksForRoom.mockResolvedValue([extBlock("2026-08-01", "2026-08-10")]);
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14",
+    });
+    expect(q.schedule.length).toBeGreaterThan(0);
+  });
+
+  it("does NOT block on a lease overlap — only external blocks matter at quote time", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    // Room looks taken by a lease (e.g. the guest's own draft) but has NO Airbnb
+    // block → the quote must still render. (Companion to the guard: proves we
+    // didn't reintroduce the false-block on lease overlaps.)
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(false);
+    mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14",
+    });
+    expect(q.schedule.length).toBeGreaterThan(0);
+  });
+
+  it("multi-room: blocks the whole quote if ANY selected room is Airbnb-booked", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom
+      .mockResolvedValueOnce(room("r1", "Room 1", "250.00"))
+      .mockResolvedValueOnce(room("r2", "Room 2", "200.00"));
+    // r1 clear, r2 blocked for the requested range.
+    mockStorage.getExternalBlocksForRoom
+      .mockResolvedValueOnce([]) // r1
+      .mockResolvedValueOnce([extBlock("2026-07-05", "2026-07-12")]); // r2
+    await expect(
+      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1", "r2"], startDate: "2026-07-07", endDate: "2026-07-10" }),
+    ).rejects.toThrow(/Room 2 is booked for those dates on Airbnb/i);
   });
 });
 

@@ -39,6 +39,7 @@ __export(schema_exports, {
   BOOKING_STATUSES: () => BOOKING_STATUSES,
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
+  COLIVING_MIN_DAYS: () => COLIVING_MIN_DAYS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
   DEPOSIT_STATUSES: () => DEPOSIT_STATUSES,
   ESCALATION_KINDS: () => ESCALATION_KINDS,
@@ -47,6 +48,7 @@ __export(schema_exports, {
   LATE_FEE_PER_DAY: () => LATE_FEE_PER_DAY,
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
   LEASE_ENDING_NOTICE_DAYS: () => LEASE_ENDING_NOTICE_DAYS,
+  LEASE_REQUIRED_ABOVE_DAYS: () => LEASE_REQUIRED_ABOVE_DAYS,
   LEASE_STATUSES: () => LEASE_STATUSES,
   LIFECYCLE_EVENT_TYPES: () => LIFECYCLE_EVENT_TYPES,
   LIFECYCLE_SEND_STATUSES: () => LIFECYCLE_SEND_STATUSES,
@@ -95,6 +97,7 @@ __export(schema_exports, {
   insertSubscriptionSchema: () => insertSubscriptionSchema,
   insertUoEscalationSchema: () => insertUoEscalationSchema,
   insertVehicleSchema: () => insertVehicleSchema,
+  isDirectCoLivingStay: () => isDirectCoLivingStay,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
   leaseRooms: () => leaseRooms,
@@ -105,6 +108,7 @@ __export(schema_exports, {
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
   properties: () => properties,
+  requiresLease: () => requiresLease,
   rooms: () => rooms,
   subscriptions: () => subscriptions,
   uoEscalations: () => uoEscalations,
@@ -248,6 +252,14 @@ function allowedCadencesForTerm(termDays) {
   if (termDays >= 84) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
   if (termDays >= 28) return ["WEEKLY", "MONTHLY"];
   return ["WEEKLY"];
+}
+var COLIVING_MIN_DAYS = 7;
+var LEASE_REQUIRED_ABOVE_DAYS = 28;
+function requiresLease(termDays) {
+  return termDays > LEASE_REQUIRED_ABOVE_DAYS;
+}
+function isDirectCoLivingStay(termDays) {
+  return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
 var LATE_FEE_PER_DAY = 25;
 var NOTIFICATION_KINDS = [
@@ -1451,8 +1463,23 @@ var Storage = class {
     if (blocking.some((l) => args.startDate <= l.endDate && l.startDate <= args.endDate)) {
       return false;
     }
+    const roomBookings = await this.getColivingBookingsForRoom(args.roomId);
+    if (roomBookings.some(
+      (b) => b.checkOut !== null && args.startDate < b.checkOut && b.checkIn <= args.endDate
+    )) {
+      return false;
+    }
     const blocks = await this.getExternalBlocksForRoom(args.roomId);
     return !blocks.some((b) => args.startDate < b.endDate && b.startDate <= args.endDate);
+  }
+  async getColivingBookingsForRoom(roomId) {
+    return db.select().from(bookings).where(
+      and(
+        eq(bookings.roomId, roomId),
+        eq(bookings.model, "COLIVING"),
+        ne(bookings.status, "CANCELLED")
+      )
+    ).orderBy(asc(bookings.checkIn));
   }
   // ---------------------------------------------------------------------------
   // Airbnb iCal listings (URL on properties/rooms) + synced date blocks
@@ -1744,7 +1771,6 @@ var calculateBreakdown = ({
     total
   };
 };
-var calculateWeeklyCharge = (weeklyRent, paymentMethod) => calculateBreakdown({ baseAmount: weeklyRent, paymentMethod });
 
 // shared/rateSelection.ts
 import { addDays as addDays2, getDay, parseISO } from "date-fns";
@@ -1795,6 +1821,18 @@ function chooseRate(input) {
   throw new RateError(
     "No rate configured for this listing \u2014 set a daily, weekly, or monthly rate."
   );
+}
+function shortStayPrice(input) {
+  if (!(input.nights >= 1)) throw new RateError("Stay must be at least 1 night");
+  const weeklyRate = parseRate(input.weeklyRent);
+  if (weeklyRate === null) {
+    throw new RateError("Room has no weekly rent set \u2014 cannot price a short stay.");
+  }
+  const dailyRate = parseRate(input.dailyRate) ?? weeklyRate / 7;
+  const weeks = Math.floor(input.nights / 7);
+  const remainderDays = input.nights % 7;
+  const baseAmount = roundCurrency3(weeks * weeklyRate + remainderDays * dailyRate);
+  return { baseAmount, weeks, remainderDays, weeklyRate, dailyRate };
 }
 var WEEKDAY_FIELDS = [
   "sunPrice",
@@ -1921,15 +1959,52 @@ async function resolveBooking(input) {
     if (room.status !== "AVAILABLE") {
       throw new BookingError("That room is no longer available", 409);
     }
+    if (!input.checkIn || !input.checkOut) {
+      throw new BookingError("Select move-in and move-out dates");
+    }
+    const n2 = nights(input.checkIn, input.checkOut);
+    if (n2 < 1) throw new BookingError("Move-out must be after move-in");
+    if (n2 < COLIVING_MIN_DAYS) {
+      throw new BookingError(`Co-living stays have a ${COLIVING_MIN_DAYS}-night minimum`);
+    }
+    if (requiresLease(n2)) {
+      throw new BookingError(
+        "Stays over 28 nights are booked as a lease \u2014 start from the room page to choose a payment schedule.",
+        409
+      );
+    }
+    const free = await storage.isRoomAvailableForRange({
+      roomId: room.id,
+      startDate: input.checkIn,
+      endDate: input.checkOut
+    });
+    if (!free) throw new BookingError("Those dates are not available for this room", 409);
+    let priced;
+    try {
+      priced = shortStayPrice({
+        nights: n2,
+        weeklyRent: room.weeklyRent,
+        dailyRate: room.dailyRate
+      });
+    } catch (err) {
+      if (err instanceof RateError) throw new BookingError(err.message, 422);
+      throw err;
+    }
     return {
       model: "COLIVING",
       property,
       room,
-      checkIn: input.checkIn ?? (/* @__PURE__ */ new Date()).toISOString().slice(0, 10),
-      checkOut: null,
-      // open-ended
-      baseAmount: parseFloat(room.depositAmount),
-      cleaningFee: 0
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      baseAmount: priced.baseAmount,
+      cleaningFee: 0,
+      nights: n2,
+      shortStay: {
+        weeks: priced.weeks,
+        remainderDays: priced.remainderDays,
+        weeklyRate: priced.weeklyRate,
+        dailyRate: priced.dailyRate
+      }
     };
   }
   if (!input.checkIn || !input.checkOut) {
@@ -1955,48 +2030,58 @@ async function resolveBooking(input) {
 }
 function buildQuote(resolved, paymentMethod) {
   if (resolved.model === "STR") {
-    const b = calculateBreakdown({
+    const b2 = calculateBreakdown({
       baseAmount: resolved.baseAmount,
       cleaningFee: resolved.cleaningFee,
       paymentMethod
     });
     const tierLabel = resolved.rateTier === "MONTHLY" ? " @ monthly rate" : resolved.rateTier === "WEEKLY" ? " @ weekly rate" : "";
-    const lines = [
+    const lines2 = [
       {
         label: `Stay (${resolved.nights} night${resolved.nights === 1 ? "" : "s"}${tierLabel})`,
         amount: resolved.baseAmount
       }
     ];
-    if (resolved.cleaningFee > 0) lines.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
-    if (b.tax > 0) lines.push({ label: "Tax", amount: b.tax });
-    if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
+    if (resolved.cleaningFee > 0) lines2.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
+    if (b2.tax > 0) lines2.push({ label: "Tax", amount: b2.tax });
+    if (b2.surcharge > 0) lines2.push({ label: "Card processing (3.5%)", amount: b2.surcharge });
     return {
       model: "STR",
       nights: resolved.nights,
-      dueNow: { lines, subtotal: b.subtotal, tax: b.tax, surcharge: b.surcharge, total: b.total }
+      dueNow: { lines: lines2, subtotal: b2.subtotal, tax: b2.tax, surcharge: b2.surcharge, total: b2.total }
     };
   }
-  const deposit = calculateBreakdown({ baseAmount: resolved.baseAmount, paymentMethod });
-  const weeklyRent = parseFloat(resolved.room.weeklyRent);
-  const weekly = calculateWeeklyCharge(weeklyRent, paymentMethod);
-  const depositLines = [{ label: "Move-in deposit", amount: resolved.baseAmount }];
-  if (deposit.surcharge > 0) depositLines.push({ label: "Card processing (3.5%)", amount: deposit.surcharge });
+  const b = calculateBreakdown({ baseAmount: resolved.baseAmount, paymentMethod });
+  const ss = resolved.shortStay;
+  const lines = [];
+  if (ss) {
+    if (ss.weeks > 0) {
+      lines.push({
+        label: `${ss.weeks} week${ss.weeks === 1 ? "" : "s"} @ ${money(ss.weeklyRate)}/wk`,
+        amount: Math.round(ss.weeks * ss.weeklyRate * 100) / 100
+      });
+    }
+    if (ss.remainderDays > 0) {
+      lines.push({
+        label: `${ss.remainderDays} day${ss.remainderDays === 1 ? "" : "s"} @ ${money(ss.dailyRate)}/day`,
+        amount: Math.round(ss.remainderDays * ss.dailyRate * 100) / 100
+      });
+    }
+  } else {
+    lines.push({ label: `Stay (${resolved.nights} nights)`, amount: resolved.baseAmount });
+  }
+  if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
   return {
     model: "COLIVING",
-    dueNow: {
-      lines: depositLines,
-      subtotal: deposit.subtotal,
-      tax: deposit.tax,
-      surcharge: deposit.surcharge,
-      total: deposit.total
-    },
-    recurring: {
-      label: "Weekly rent (billed weekly after move-in)",
-      weeklyRent,
-      surcharge: weekly.surcharge,
-      weeklyTotal: weekly.total
-    }
+    nights: resolved.nights,
+    dueNow: { lines, subtotal: b.subtotal, tax: b.tax, surcharge: b.surcharge, total: b.total }
   };
+}
+function money(n) {
+  return `$${(Math.round(n * 100) / 100).toLocaleString("en-US", {
+    minimumFractionDigits: Number.isInteger(n) ? 0 : 2,
+    maximumFractionDigits: 2
+  })}`;
 }
 
 // server/lib/lease.ts
@@ -2042,6 +2127,16 @@ async function buildLeaseQuote(input) {
     }
     if (room.status !== "AVAILABLE") {
       throw new LeaseError(`Room ${room.name} is no longer available`, 409);
+    }
+    const blocks = await storage.getExternalBlocksForRoom(room.id);
+    const conflict = blocks.some(
+      (b) => input.startDate < b.endDate && b.startDate <= input.endDate
+    );
+    if (conflict) {
+      throw new LeaseError(
+        `${room.name} is booked for those dates on Airbnb. Pick different dates.`,
+        409
+      );
     }
     rooms2.push(room);
   }
@@ -2163,6 +2258,11 @@ function strNextOpening(stays, today) {
   }
   return open;
 }
+function cheapestAvailableWeeklyRent(rooms2) {
+  const rates = rooms2.filter((r) => r.available).map((r) => parseFloat(r.weeklyRent)).filter((n) => Number.isFinite(n) && n > 0);
+  if (rates.length === 0) return { fromWeeklyRent: null, available: false };
+  return { fromWeeklyRent: String(Math.min(...rates)), available: true };
+}
 
 // server/lib/paymentMetadata.ts
 var NULL = "null";
@@ -2182,6 +2282,21 @@ function buildLeaseChargeMetadata(args) {
     lease_id: str(args.lease.id),
     payment_kind: args.paymentKind,
     schedule_seq: str(args.scheduleSeq),
+    rate_cadence: str(args.rateCadence ?? null)
+  };
+}
+function buildRoomBookingChargeMetadata(args) {
+  return {
+    entity: str(args.entity),
+    product_type: "COLIVING_ROOM",
+    property_id: str(args.property.id),
+    property_name: str(args.property.name),
+    room_id: str(args.room.id),
+    room_name: str(args.room.name),
+    room_number: str(args.room.roomNumber),
+    lease_id: NULL,
+    payment_kind: args.paymentKind,
+    schedule_seq: NULL,
     rate_cadence: str(args.rateCadence ?? null)
   };
 }
@@ -4146,21 +4261,46 @@ async function registerRoutes(app) {
       next(err);
     }
   });
-  app.get("/api/properties", async (_req, res, next) => {
+  app.get("/api/properties", async (req, res, next) => {
     try {
+      const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      const ISO = /^\d{4}-\d{2}-\d{2}$/;
+      const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
+      const co = typeof req.query.checkOut === "string" ? req.query.checkOut : "";
+      const dated = ISO.test(ci) && ISO.test(co) && co > ci && ci >= today ? { checkIn: ci, checkOut: co } : null;
       const props = await storage.getProperties({ activeOnly: true });
       const withRent = await Promise.all(
         props.map(async (p) => {
           let fromWeeklyRent = null;
+          let availableForDates = true;
           if (p.type === "COLIVING") {
             const rooms2 = await storage.getRoomsByProperty(p.id);
-            const rates = rooms2.filter((r) => r.status === "AVAILABLE").map((r) => parseFloat(r.weeklyRent)).filter((n) => Number.isFinite(n) && n > 0);
-            if (rates.length) fromWeeklyRent = String(Math.min(...rates));
+            const openRooms = rooms2.filter((r) => r.status === "AVAILABLE");
+            let free;
+            if (dated) {
+              free = await Promise.all(
+                openRooms.map(
+                  (r) => storage.isRoomAvailableForRange({
+                    roomId: r.id,
+                    startDate: dated.checkIn,
+                    endDate: dated.checkOut
+                  })
+                )
+              );
+            } else {
+              free = openRooms.map(() => true);
+            }
+            const priced = cheapestAvailableWeeklyRent(
+              openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] }))
+            );
+            fromWeeklyRent = priced.fromWeeklyRent;
+            if (dated) availableForDates = priced.available;
+          } else if (p.type === "STR" && dated) {
+            availableForDates = !await strHasConflict(p.id, dated.checkIn, dated.checkOut);
           }
-          return { ...p, fromWeeklyRent };
+          return { ...p, fromWeeklyRent, availableForDates };
         })
       );
-      const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
       const bookedColivingIds = withRent.filter((p) => p.type === "COLIVING" && p.fromWeeklyRent === null).map((p) => p.id);
       const strIds = withRent.filter((p) => p.type === "STR").map((p) => p.id);
       const [leaseEnds, strBookings] = await Promise.all([
@@ -4588,11 +4728,6 @@ async function registerRoutes(app) {
       }
       const { propertyId, roomId, checkIn, checkOut, paymentMethod, guest } = parsed.data;
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-      if (resolved.model === "COLIVING") {
-        return res.status(409).json({
-          message: "Co-living rooms are booked through the lease flow. Start from the room page."
-        });
-      }
       const quote = buildQuote(resolved, paymentMethod);
       const reference = generateReference();
       const guestRow = await storage.upsertGuestByEmail(guest);
@@ -4634,7 +4769,14 @@ async function registerRoutes(app) {
           confirmedBy: null,
           paidAt: null
         });
-        const chargeMetadata = buildStrChargeMetadata({
+        const chargeMetadata = resolved.model === "COLIVING" ? buildRoomBookingChargeMetadata({
+          entity: resolved.property.entity,
+          property: resolved.property,
+          room: resolved.room,
+          paymentKind: "BOOKING_DEPOSIT",
+          // Short stays price off the weekly rent; label the basis WEEKLY.
+          rateCadence: "WEEKLY"
+        }) : buildStrChargeMetadata({
           entity: resolved.property.entity,
           property: resolved.property,
           paymentKind: "BOOKING_DEPOSIT",
@@ -4642,7 +4784,7 @@ async function registerRoutes(app) {
         });
         const session2 = await createCheckoutSession({
           amount: dueNow,
-          description: `Stay \u2014 ${resolved.property.name}`,
+          description: resolved.model === "COLIVING" ? `Stay \u2014 ${resolved.room.name}, ${resolved.property.name}` : `Stay \u2014 ${resolved.property.name}`,
           reference,
           guestEmail: guest.email,
           successUrl: appUrl(req, `/confirmation/${reference}`),

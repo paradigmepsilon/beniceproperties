@@ -95,6 +95,37 @@ export function buildLeaseChargeMetadata(args: {
 }
 
 /**
+ * Build metadata for a SHORT co-living room reservation (7–28 nights) — a
+ * lease-less direct booking paid in full upfront. product_type is COLIVING_ROOM
+ * with the room fields populated, but there is NO lease and NO schedule, so
+ * lease_id and schedule_seq are "null". Distinct from buildLeaseChargeMetadata
+ * (which requires a lease_id) and buildStrChargeMetadata (which forces the room
+ * fields to "null").
+ */
+export function buildRoomBookingChargeMetadata(args: {
+  entity: string;
+  property: Pick<Property, "id" | "name" | "type">;
+  room: Pick<Room, "id" | "name" | "roomNumber">;
+  paymentKind: Extract<PaymentKind, "BOOKING_DEPOSIT" | "MANUAL_RECONCILE">;
+  /** Rate basis for the short stay (e.g. "WEEKLY"); omit for null. */
+  rateCadence?: string | null;
+}): StripeChargeMetadata {
+  return {
+    entity: str(args.entity),
+    product_type: "COLIVING_ROOM",
+    property_id: str(args.property.id),
+    property_name: str(args.property.name),
+    room_id: str(args.room.id),
+    room_name: str(args.room.name),
+    room_number: str(args.room.roomNumber),
+    lease_id: NULL,
+    payment_kind: args.paymentKind,
+    schedule_seq: NULL,
+    rate_cadence: str(args.rateCadence ?? null),
+  };
+}
+
+/**
  * Build metadata for a whole-property STR charge. No room, no lease, no schedule.
  */
 export function buildStrChargeMetadata(args: {
