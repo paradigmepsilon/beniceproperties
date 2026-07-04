@@ -704,3 +704,4 @@ function AddRoomForm({ propertyId }: { propertyId: string }) {
     </div>
   );
 }
+

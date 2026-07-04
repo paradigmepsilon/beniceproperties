@@ -31,6 +31,7 @@ import {
   guestMessages,
   lifecycleEvents,
   heroImages,
+  externalBookings,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -68,6 +69,8 @@ import {
   type InsertGuestMessage,
   type LifecycleEvent,
   type InsertLifecycleEvent,
+  type ExternalBooking,
+  type InsertExternalBooking,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -237,6 +240,27 @@ export interface IStorage {
     endDate: string;
     excludeLeaseId?: string;
   }): Promise<boolean>;
+
+  // --- Airbnb iCal listings + synced blocks (URL lives on properties/rooms) ---
+  /** Active listings with a non-null airbnb_ical_url — the sync work-list.
+   *  STR properties (kind "property", roomId null) + co-living rooms (kind
+   *  "room"). `url` is the feed to fetch; `label` is a human name for logs. */
+  getListingsWithIcalUrl(): Promise<
+    { kind: "property" | "room"; propertyId: string; roomId: string | null; url: string; label: string }[]
+  >;
+  /** Busy external ranges for an STR whole-property listing (room_id IS NULL). */
+  getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]>;
+  /** Busy external ranges for a co-living room listing. */
+  getExternalBlocksForRoom(roomId: string): Promise<ExternalBooking[]>;
+  /** Upsert on (property_id|room_id, external_id); returns the current row. */
+  upsertExternalBooking(data: InsertExternalBooking): Promise<ExternalBooking>;
+  deleteExternalBooking(id: string): Promise<void>;
+
+  // --- Direct-booking / lease reads used by iCal dedup + availability merge ---
+  /** Non-cancelled STR bookings for a property (external dedup + STR availability). */
+  getStrBookingsForProperty(propertyId: string): Promise<Booking[]>;
+  /** Room-blocking leases that include a given room (external dedup + reused by isRoomAvailableForRange). */
+  getRoomBlockingLeasesForRoom(roomId: string): Promise<Lease[]>;
 
   // --- Aggregates (for KPI rollup; AGGREGATES ONLY, no PII) ---
   getKpiAggregates(): Promise<{
@@ -904,17 +928,142 @@ class Storage implements IStorage {
     endDate: string;
     excludeLeaseId?: string;
   }): Promise<boolean> {
-    // Find every room-blocking lease that includes this room, then check dates.
+    // (1) Room-blocking leases for this room. Inclusive overlap: a lease occupies
+    //     its end date, so start ≤ otherEnd && otherStart ≤ end.
+    const blocking = (await this.getRoomBlockingLeasesForRoom(args.roomId)).filter(
+      (l) => l.id !== args.excludeLeaseId,
+    );
+    if (blocking.some((l) => args.startDate <= l.endDate && l.startDate <= args.endDate)) {
+      return false;
+    }
+
+    // (2) External iCal blocks for this ROOM listing (Airbnb). Airbnb DTEND is
+    //     exclusive (checkout morning), so for a room lease that OCCUPIES its end
+    //     date we treat the block as [startDate, endDate) — overlap is
+    //     start < otherEnd && otherStart ≤ end. Keeps a same-day turnover free.
+    const blocks = await this.getExternalBlocksForRoom(args.roomId);
+    return !blocks.some((b) => args.startDate < b.endDate && b.startDate <= args.endDate);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Airbnb iCal listings (URL on properties/rooms) + synced date blocks
+  // ---------------------------------------------------------------------------
+
+  async getListingsWithIcalUrl(): Promise<
+    { kind: "property" | "room"; propertyId: string; roomId: string | null; url: string; label: string }[]
+  > {
+    // Active STR/co-living properties with a feed URL (whole-property listings).
+    const propRows = await db
+      .select({ id: properties.id, name: properties.name, url: properties.airbnbIcalUrl })
+      .from(properties)
+      .where(and(eq(properties.active, true), sql`${properties.airbnbIcalUrl} IS NOT NULL`));
+    // Rooms with a feed URL (private-room listings), joined to their property.
+    const roomRows = await db
+      .select({
+        id: rooms.id,
+        propertyId: rooms.propertyId,
+        name: rooms.name,
+        url: rooms.airbnbIcalUrl,
+      })
+      .from(rooms)
+      .where(sql`${rooms.airbnbIcalUrl} IS NOT NULL`);
+
+    const listings: {
+      kind: "property" | "room";
+      propertyId: string;
+      roomId: string | null;
+      url: string;
+      label: string;
+    }[] = [];
+    for (const p of propRows) {
+      if (!p.url) continue;
+      listings.push({ kind: "property", propertyId: p.id, roomId: null, url: p.url, label: p.name });
+    }
+    for (const r of roomRows) {
+      if (!r.url) continue;
+      listings.push({ kind: "room", propertyId: r.propertyId, roomId: r.id, url: r.url, label: r.name });
+    }
+    return listings;
+  }
+
+  async getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]> {
+    // Whole-property STR listing → room_id IS NULL.
+    return db
+      .select()
+      .from(externalBookings)
+      .where(
+        and(eq(externalBookings.propertyId, propertyId), sql`${externalBookings.roomId} IS NULL`),
+      );
+  }
+
+  async getExternalBlocksForRoom(roomId: string): Promise<ExternalBooking[]> {
+    return db.select().from(externalBookings).where(eq(externalBookings.roomId, roomId));
+  }
+
+  async upsertExternalBooking(data: InsertExternalBooking): Promise<ExternalBooking> {
+    // Idempotency key is the LISTING + external_id: (room_id, external_id) for a
+    // co-living room, else (property_id, external_id) for a whole-property STR.
+    const listingMatch = data.roomId
+      ? eq(externalBookings.roomId, data.roomId)
+      : and(
+          eq(externalBookings.propertyId, data.propertyId as string),
+          sql`${externalBookings.roomId} IS NULL`,
+        );
+    const [existing] = await db
+      .select({ id: externalBookings.id })
+      .from(externalBookings)
+      .where(and(listingMatch, eq(externalBookings.externalId, data.externalId)))
+      .limit(1);
+
+    if (existing) {
+      const [row] = await db
+        .update(externalBookings)
+        .set({
+          propertyId: data.propertyId ?? null,
+          roomId: data.roomId ?? null,
+          startDate: data.startDate,
+          endDate: data.endDate,
+          summary: data.summary ?? null,
+          lastSynced: data.lastSynced ?? new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(externalBookings.id, existing.id))
+        .returning();
+      return row;
+    }
+    const [row] = await db
+      .insert(externalBookings)
+      .values({ ...data, lastSynced: data.lastSynced ?? new Date() })
+      .returning();
+    return row;
+  }
+
+  async deleteExternalBooking(id: string): Promise<void> {
+    await db.delete(externalBookings).where(eq(externalBookings.id, id));
+  }
+
+  async getStrBookingsForProperty(propertyId: string): Promise<Booking[]> {
+    return db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          eq(bookings.propertyId, propertyId),
+          eq(bookings.model, "STR"),
+          ne(bookings.status, "CANCELLED"),
+        ),
+      )
+      .orderBy(asc(bookings.checkIn));
+  }
+
+  async getRoomBlockingLeasesForRoom(roomId: string): Promise<Lease[]> {
     const links = await db
       .select({ leaseId: leaseRooms.leaseId })
       .from(leaseRooms)
-      .where(eq(leaseRooms.roomId, args.roomId));
-    const leaseIds = links
-      .map((l) => l.leaseId)
-      .filter((id) => id !== args.excludeLeaseId);
-    if (leaseIds.length === 0) return true;
-
-    const blocking = await db
+      .where(eq(leaseRooms.roomId, roomId));
+    const leaseIds = links.map((l) => l.leaseId);
+    if (leaseIds.length === 0) return [];
+    return db
       .select()
       .from(leases)
       .where(
@@ -923,11 +1072,6 @@ class Storage implements IStorage {
           inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]),
         ),
       );
-
-    // Inclusive overlap: start ≤ otherEnd && otherStart ≤ end.
-    return !blocking.some(
-      (l) => args.startDate <= l.endDate && l.startDate <= args.endDate,
-    );
   }
 
   // --- Aggregates ---

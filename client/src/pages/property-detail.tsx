@@ -10,11 +10,12 @@ import type { Property, Room } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingImage } from "@/components/listing-image";
 import { ListingGallery } from "@/components/listing-gallery";
-import { RichText } from "@/components/rich-text";
+import { ListingStory } from "@/components/listing-story";
+import { DateRangePicker } from "@/components/date-range-picker";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { fromNightly, money } from "@/lib/format";
+import { usePropertyAvailability } from "@/hooks/use-availability";
+import { busyToDisabledMatchers, rangeHitsBusy } from "@/lib/availability";
 
 interface DetailResponse {
   property: Property;
@@ -25,6 +26,10 @@ export default function PropertyDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const { data, isLoading } = useQuery<DetailResponse>({ queryKey: ["/api/properties", id!] });
+  // Busy ranges (direct bookings ∪ Airbnb iCal blocks) so booked dates disable in
+  // the calendar. Empty for co-living (endpoint returns no busy set); the picker
+  // only renders for STR anyway.
+  const { data: avail } = usePropertyAvailability(id);
   const searchStr = useSearch();
   const today = new Date().toISOString().slice(0, 10);
   // Seed dates from the home hero search (?checkIn=&checkOut=) when they're
@@ -44,7 +49,18 @@ export default function PropertyDetail() {
   if (!data) return <Shell><p>Property not found.</p></Shell>;
 
   const { property, rooms } = data;
-  const datesValid = checkIn && checkOut && checkOut > checkIn;
+  const busy = avail?.busy ?? [];
+  const disabledDays = busyToDisabledMatchers(busy, {
+    minDate: avail?.minDate ?? today,
+    halfOpen: true, // STR: checkout day is free to check in
+  });
+  // Valid = a real forward range that doesn't straddle a booked block. The
+  // calendar already prevents picking disabled days; this also rejects a range
+  // spanning them. Server re-validates on POST regardless.
+  const datesValid =
+    !!checkIn && !!checkOut && checkOut > checkIn && !rangeHitsBusy(checkIn, checkOut, busy, true);
+  const spansBooked =
+    !!checkIn && !!checkOut && checkOut > checkIn && rangeHitsBusy(checkIn, checkOut, busy, true);
 
   function continueToCheckout() {
     const params = new URLSearchParams({ propertyId: property.id, checkIn, checkOut });
@@ -105,9 +121,14 @@ export default function PropertyDetail() {
             <p className="mt-1 flex items-center gap-1.5 text-muted-foreground">
               <MapPin className="h-4 w-4" /> {property.location}
             </p>
-            {/* BT-21: full long-form description with paragraph breaks preserved
-                (renders nothing when empty). */}
-            <RichText text={property.description} className="mt-6 max-w-2xl" />
+            {/* Editorial listing story when structured content exists; falls
+                back to plain prose. Coral accent for whole-property. */}
+            <ListingStory
+              content={property.listingContent}
+              description={property.description}
+              segment={property.type === "STR" ? "whole" : "room"}
+              className="mt-6"
+            />
 
             {property.type === "COLIVING" && (
               <section className="mt-10">
@@ -176,21 +197,29 @@ export default function PropertyDetail() {
                     </div>
                   );
                 })()}
-                <div className="mt-4 grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="checkIn" className="text-xs">Check-in</Label>
-                    <Input id="checkIn" type="date" min={today} value={checkIn} onChange={(e) => setCheckIn(e.target.value)} data-testid="input-checkin" className="min-h-11" />
-                  </div>
-                  <div>
-                    <Label htmlFor="checkOut" className="text-xs">Check-out</Label>
-                    <Input id="checkOut" type="date" min={checkIn || today} value={checkOut} onChange={(e) => setCheckOut(e.target.value)} data-testid="input-checkout" className="min-h-11" />
-                  </div>
+                <div className="mt-4">
+                  <DateRangePicker
+                    checkIn={checkIn}
+                    checkOut={checkOut}
+                    onChange={({ checkIn: ci, checkOut: co }) => {
+                      setCheckIn(ci);
+                      setCheckOut(co);
+                    }}
+                    disabled={disabledDays}
+                    data-testid="input-date-range"
+                  />
                 </div>
                 <Button className="mt-4 w-full" size="lg" disabled={!datesValid} onClick={continueToCheckout} data-testid="button-continue-checkout">
                   Continue to checkout
                 </Button>
-                {!datesValid && (checkIn || checkOut) && (
-                  <p className="mt-2 text-xs text-destructive">Check-out must be after check-in.</p>
+                {spansBooked ? (
+                  <p className="mt-2 text-xs text-destructive">
+                    Those dates include already-booked nights. Pick an open range.
+                  </p>
+                ) : (
+                  !datesValid && (checkIn || checkOut) && (
+                    <p className="mt-2 text-xs text-destructive">Check-out must be after check-in.</p>
+                  )
                 )}
                 <p className="mt-3 text-center text-xs text-muted-foreground">You won't be charged yet.</p>
               </div>

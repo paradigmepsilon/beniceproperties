@@ -14,18 +14,20 @@
 
 import { useMemo, useState } from "react";
 import { useLocation, useSearch, Link } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueries } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
-import { apiRequest } from "@/lib/queryClient";
-import type { LeaseQuoteResponse } from "@shared/api-types";
+import { apiRequest, getQueryFn } from "@/lib/queryClient";
+import type { LeaseQuoteResponse, AvailabilityResponse, BusyRange } from "@shared/api-types";
 import { PAYMENT_CADENCES } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { DateRangePicker } from "@/components/date-range-picker";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { money } from "@/lib/format";
+import { busyToDisabledMatchers, rangeHitsBusy } from "@/lib/availability";
 
 type Cadence = (typeof PAYMENT_CADENCES)[number];
 
@@ -68,7 +70,30 @@ export default function LeaseBooking() {
   // (shortest allowed) so the first preview renders before the guest chooses.
   const [cadence, setCadence] = useState<Cadence | "">("");
 
-  const datesValid = Boolean(startDate && endDate && endDate >= startDate);
+  // Availability for EVERY selected room (leases ∪ Airbnb blocks), unioned so the
+  // calendar disables any date any chosen room is taken. A lease occupies all its
+  // rooms for the term, so a date taken on any one room blocks the whole request.
+  const availabilityQueries = useQueries({
+    queries: roomIds.map((rid) => ({
+      queryKey: ["/api/rooms", rid, "availability"],
+      queryFn: getQueryFn<AvailabilityResponse>({ on401: "throw" }),
+      enabled: roomIds.length > 0,
+    })),
+  });
+  const busy: BusyRange[] = useMemo(
+    () => availabilityQueries.flatMap((q) => q.data?.busy ?? []),
+    [availabilityQueries],
+  );
+  const disabledDays = useMemo(
+    () => busyToDisabledMatchers(busy, { minDate: today, halfOpen: false }),
+    [busy, today],
+  );
+
+  const spansBooked =
+    Boolean(startDate && endDate && endDate >= startDate) &&
+    rangeHitsBusy(startDate, endDate, busy, false);
+  const datesValid =
+    Boolean(startDate && endDate && endDate >= startDate) && !spansBooked;
   // Cadence is the guest's choice, gated by term length; sent to the quote so the
   // schedule reflects it. Blank until chosen (server defaults to shortest allowed).
   const quoteBody = { propertyId, roomIds, startDate, endDate, ...(cadence ? { cadence } : {}) };
@@ -137,31 +162,25 @@ export default function LeaseBooking() {
                 <CardTitle className="text-base">Lease term</CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <Label htmlFor="start" className="text-xs">Start date</Label>
-                    <Input
-                      id="start"
-                      type="date"
-                      min={today}
-                      value={startDate}
-                      onChange={(e) => setStartDate(e.target.value)}
-                      data-testid="input-start-date"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="end" className="text-xs">End date</Label>
-                    <Input
-                      id="end"
-                      type="date"
-                      min={startDate || today}
-                      value={endDate}
-                      onChange={(e) => setEndDate(e.target.value)}
-                      data-testid="input-end-date"
-                    />
-                  </div>
-                </div>
-                <p className="text-xs text-muted-foreground">Lease terms run up to 90 days.</p>
+                <DateRangePicker
+                  checkIn={startDate}
+                  checkOut={endDate}
+                  onChange={({ checkIn, checkOut }) => {
+                    setStartDate(checkIn);
+                    setEndDate(checkOut);
+                  }}
+                  disabled={disabledDays}
+                  startLabel="Move-in"
+                  endLabel="Move-out"
+                  data-testid="input-lease-dates"
+                />
+                {spansBooked ? (
+                  <p className="text-xs text-destructive">
+                    Those dates include nights this room is already booked. Pick an open range.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">Lease terms run up to 90 days.</p>
+                )}
               </CardContent>
             </Card>
 

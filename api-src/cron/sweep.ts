@@ -13,6 +13,7 @@ import { buildAndPushSnapshot } from "../../server/integrations/kpiRollup";
 import { runScheduledRentSweep } from "../../server/lib/leasePayments";
 import { runDunningSweep } from "../../server/lib/dunning";
 import { runLeaseEndingNotices } from "../../server/lib/lifecycle";
+import { refreshExternalCalendars } from "../../server/lib/icalSync";
 import { log } from "../../server/server-log";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -23,6 +24,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
+    // Refresh Airbnb iCal blocks first so the guest calendar + guards are fresh
+    // even on days the dedicated hourly calendar cron didn't cover something.
+    const calendar = await refreshExternalCalendars();
     // Phase 4: charge due CARD_ON_FILE rent installments (idempotent).
     const rent = await runScheduledRentSweep();
     // Phase 5: reminders, overdue messaging, late fees, defaults (idempotent/day).
@@ -39,7 +43,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const snapshot = await buildAndPushSnapshot();
-    return res.json({ ok: true, rent, dunning, endingNotices, active, pending: pending.length, snapshot });
+    return res.json({ ok: true, calendar, rent, dunning, endingNotices, active, pending: pending.length, snapshot });
   } catch (err) {
     log(`sweep error: ${(err as Error).message}`, "cron");
     return res.status(500).json({ ok: false, message: (err as Error).message });

@@ -33,6 +33,7 @@ import {
   BookingError,
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
+import { buildStrAvailability, buildRoomAvailability } from "./lib/availability";
 import { dayAfter, strNextOpening } from "./lib/nextOpening";
 import {
   buildStrChargeMetadata,
@@ -258,6 +259,36 @@ export async function registerRoutes(app: Express): Promise<void> {
       if (!room) return res.status(404).json({ message: "Room not found" });
       const property = await storage.getProperty(room.propertyId);
       res.json({ room, property });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // --- Availability (calendar disabled-date source) ---
+  // Merged busy ranges (direct bookings/leases ∪ external Airbnb iCal blocks) so
+  // the guest calendar can disable already-booked dates. Public (read-only, no PII).
+  app.get("/api/properties/:id/availability", async (req, res, next) => {
+    try {
+      const property = await storage.getProperty(req.params.id);
+      if (!property || !property.active) {
+        return res.status(404).json({ message: "Property not found" });
+      }
+      // Whole-property STR calendar is meaningless for a co-living parent (rooms
+      // are booked individually) — return an empty busy set rather than error.
+      if (property.type !== "STR") {
+        return res.json({ busy: [], minDate: new Date().toISOString().slice(0, 10) });
+      }
+      res.json(await buildStrAvailability(property.id));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.get("/api/rooms/:id/availability", async (req, res, next) => {
+    try {
+      const room = await storage.getRoom(req.params.id);
+      if (!room) return res.status(404).json({ message: "Room not found" });
+      res.json(await buildRoomAvailability(room.id));
     } catch (err) {
       next(err);
     }
@@ -1113,6 +1144,11 @@ export async function registerRoutes(app: Express): Promise<void> {
       next(err);
     }
   });
+
+  // NOTE: Airbnb iCal feed URLs are managed from Unified-Ops (the primary BNP
+  // admin), written to properties/rooms.airbnb_ical_url directly. BNP's sync
+  // (server/lib/icalSync.ts, driven by the scheduler + hourly cron) reads those
+  // URLs — there is no feed CRUD surface here.
 }
 
 // ===========================================================================

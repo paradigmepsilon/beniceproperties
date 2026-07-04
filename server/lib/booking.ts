@@ -119,18 +119,28 @@ async function strHasConflict(
   checkIn: string,
   checkOut: string,
 ): Promise<boolean> {
-  const existing = await storage.getBookings();
   const inMs = parseISO(checkIn).getTime();
   const outMs = parseISO(checkOut).getTime();
-  return existing.some((b) => {
+  // Overlap if start < otherEnd && otherStart < end (half-open — checkout day
+  // is free to check in).
+  const overlaps = (bIn: string, bOut: string) =>
+    inMs < parseISO(bOut).getTime() && parseISO(bIn).getTime() < outMs;
+
+  // (1) BNP direct bookings for this whole-property listing.
+  const existing = await storage.getBookings();
+  const directHit = existing.some((b) => {
     if (b.propertyId !== propertyId || b.model !== "STR") return false;
     if (b.status === "CANCELLED") return false;
     if (!b.checkOut) return false;
-    const bIn = parseISO(b.checkIn).getTime();
-    const bOut = parseISO(b.checkOut).getTime();
-    // Overlap if start < otherEnd && otherStart < end.
-    return inMs < bOut && bIn < outMs;
+    return overlaps(b.checkIn, b.checkOut);
   });
+  if (directHit) return true;
+
+  // (2) External iCal blocks synced from the listing's Airbnb calendar
+  //     (room_id IS NULL). Airbnb DTEND is exclusive, so the same half-open
+  //     overlap is correct.
+  const blocks = await storage.getExternalBlocksForProperty(propertyId);
+  return blocks.some((b) => overlaps(b.startDate, b.endDate));
 }
 
 export interface ResolvedBooking {

@@ -71,12 +71,14 @@ __export(schema_exports, {
   allowedCadencesForTerm: () => allowedCadencesForTerm,
   appSettings: () => appSettings,
   bookings: () => bookings,
+  externalBookings: () => externalBookings,
   guestMessages: () => guestMessages,
   guests: () => guests,
   heroImages: () => heroImages,
   insertAdminUserSchema: () => insertAdminUserSchema,
   insertAppSettingSchema: () => insertAppSettingSchema,
   insertBookingSchema: () => insertBookingSchema,
+  insertExternalBookingSchema: () => insertExternalBookingSchema,
   insertGuestMessageSchema: () => insertGuestMessageSchema,
   insertGuestSchema: () => insertGuestSchema,
   insertHeroImageSchema: () => insertHeroImageSchema,
@@ -98,6 +100,7 @@ __export(schema_exports, {
   leaseRooms: () => leaseRooms,
   leases: () => leases,
   lifecycleEvents: () => lifecycleEvents,
+  listingContentSchema: () => listingContentSchema,
   notificationLog: () => notificationLog,
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
@@ -286,6 +289,9 @@ var properties = pgTable("properties", {
   // Defaults to BNP; TRAD properties set it explicitly. Additive column.
   entity: text("entity").notNull().default("BNP"),
   description: text("description"),
+  // Structured presentation content for the detail page (hook, essentials,
+  // getting-around, who-for). Additive, nullable; falls back to `description`.
+  listingContent: jsonb("listing_content").$type(),
   // string[] of photo URLs.
   photos: jsonb("photos").$type().default(sql`'[]'::jsonb`),
   // string[] of amenity labels.
@@ -324,15 +330,27 @@ var properties = pgTable("properties", {
   // The Airbnb listing_room_id this STR property maps to (entire-home listing).
   // Links live inventory to the airbnb_reservations staging data. Additive.
   airbnbListingRoomId: text("airbnb_listing_room_id"),
+  // The Airbnb hosting-calendar iCal (.ics) export URL for this listing — the
+  // single source of truth for its inbound calendar sync (server/lib/icalSync.ts
+  // fetches it into external_bookings). Managed from Unified-Ops. Tokenized;
+  // treat as secret-ish (DB only, never logged/committed). Nullable. Additive.
+  airbnbIcalUrl: text("airbnb_ical_url"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull()
+});
+var listingContentSchema = z.object({
+  hook: z.string().optional(),
+  essentials: z.array(z.object({ icon: z.string().optional(), label: z.string() })).optional(),
+  gettingAround: z.array(z.object({ place: z.string(), time: z.string() })).optional(),
+  whoFor: z.string().optional()
 });
 var insertPropertySchema = createInsertSchema(properties, {
   type: z.enum(PROPERTY_TYPES),
   entity: z.enum(PROPERTY_ENTITIES).optional(),
   photos: z.array(z.string()).optional(),
-  amenities: z.array(z.string()).optional()
+  amenities: z.array(z.string()).optional(),
+  listingContent: listingContentSchema.nullish()
 }).omit({ id: true, createdAt: true, updatedAt: true });
 var rooms = pgTable(
   "rooms",
@@ -344,6 +362,9 @@ var rooms = pgTable(
     // e.g. "2". Optional so STR conversions and legacy rows don't break. Additive.
     roomNumber: text("room_number"),
     description: text("description"),
+    // Structured presentation content for the detail page (hook, essentials,
+    // getting-around, who-for). Additive, nullable; falls back to `description`.
+    listingContent: jsonb("listing_content").$type(),
     photos: jsonb("photos").$type().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
     depositAmount: decimal("deposit_amount", { precision: 10, scale: 2 }).notNull(),
@@ -363,6 +384,11 @@ var rooms = pgTable(
     // The Airbnb listing_room_id this room maps to (private-room listing). Links
     // live inventory to airbnb_reservations staging data. Additive.
     airbnbListingRoomId: text("airbnb_listing_room_id"),
+    // The Airbnb hosting-calendar iCal (.ics) export URL for this room listing —
+    // single source of truth for its inbound calendar sync. Managed from
+    // Unified-Ops. Tokenized; secret-ish. Nullable. Additive. See
+    // properties.airbnbIcalUrl.
+    airbnbIcalUrl: text("airbnb_ical_url"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull()
   },
@@ -374,7 +400,8 @@ var rooms = pgTable(
 );
 var insertRoomSchema = createInsertSchema(rooms, {
   status: z.enum(ROOM_STATUSES),
-  photos: z.array(z.string()).optional()
+  photos: z.array(z.string()).optional(),
+  listingContent: listingContentSchema.nullish()
 }).omit({ id: true, createdAt: true, updatedAt: true });
 var guests = pgTable(
   "guests",
@@ -881,6 +908,51 @@ var insertHeroImageSchema = createInsertSchema(heroImages).omit({
   createdAt: true,
   updatedAt: true
 });
+var externalBookings = pgTable(
+  "external_bookings",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // The listing this block belongs to. STR: property set, room null.
+    // Co-living: room set + property set (property denormalized for query).
+    propertyId: varchar("property_id"),
+    roomId: varchar("room_id"),
+    // iCal UID (or component key fallback) — the idempotency key within a listing.
+    externalId: text("external_id").notNull(),
+    startDate: date("start_date").notNull(),
+    // iCal DTEND is EXCLUSIVE (checkout morning) — stored as-is; STR overlap is
+    // half-open, co-living normalizes to inclusive at read time.
+    endDate: date("end_date").notNull(),
+    summary: text("summary"),
+    lastSynced: timestamp("last_synced"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    // Hot path — STR availability: property + date range.
+    propertyRangeIdx: index("ext_bookings_property_range_idx").on(
+      table.propertyId,
+      table.startDate,
+      table.endDate
+    ),
+    // Hot path — co-living availability: room + date range.
+    roomRangeIdx: index("ext_bookings_room_range_idx").on(
+      table.roomId,
+      table.startDate,
+      table.endDate
+    ),
+    // Idempotency / safe-delete keys (upsert on the listing + iCal UID).
+    propertyExternalIdx: index("ext_bookings_property_external_idx").on(
+      table.propertyId,
+      table.externalId
+    ),
+    roomExternalIdx: index("ext_bookings_room_external_idx").on(table.roomId, table.externalId)
+  })
+);
+var insertExternalBookingSchema = createInsertSchema(externalBookings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true
+});
 
 // server/db.ts
 var databaseUrl = process.env.DATABASE_URL;
@@ -1373,17 +1445,87 @@ var Storage = class {
     return row;
   }
   async isRoomAvailableForRange(args) {
-    const links = await db.select({ leaseId: leaseRooms.leaseId }).from(leaseRooms).where(eq(leaseRooms.roomId, args.roomId));
-    const leaseIds = links.map((l) => l.leaseId).filter((id) => id !== args.excludeLeaseId);
-    if (leaseIds.length === 0) return true;
-    const blocking = await db.select().from(leases).where(
+    const blocking = (await this.getRoomBlockingLeasesForRoom(args.roomId)).filter(
+      (l) => l.id !== args.excludeLeaseId
+    );
+    if (blocking.some((l) => args.startDate <= l.endDate && l.startDate <= args.endDate)) {
+      return false;
+    }
+    const blocks = await this.getExternalBlocksForRoom(args.roomId);
+    return !blocks.some((b) => args.startDate < b.endDate && b.startDate <= args.endDate);
+  }
+  // ---------------------------------------------------------------------------
+  // Airbnb iCal listings (URL on properties/rooms) + synced date blocks
+  // ---------------------------------------------------------------------------
+  async getListingsWithIcalUrl() {
+    const propRows = await db.select({ id: properties.id, name: properties.name, url: properties.airbnbIcalUrl }).from(properties).where(and(eq(properties.active, true), sql3`${properties.airbnbIcalUrl} IS NOT NULL`));
+    const roomRows = await db.select({
+      id: rooms.id,
+      propertyId: rooms.propertyId,
+      name: rooms.name,
+      url: rooms.airbnbIcalUrl
+    }).from(rooms).where(sql3`${rooms.airbnbIcalUrl} IS NOT NULL`);
+    const listings = [];
+    for (const p of propRows) {
+      if (!p.url) continue;
+      listings.push({ kind: "property", propertyId: p.id, roomId: null, url: p.url, label: p.name });
+    }
+    for (const r of roomRows) {
+      if (!r.url) continue;
+      listings.push({ kind: "room", propertyId: r.propertyId, roomId: r.id, url: r.url, label: r.name });
+    }
+    return listings;
+  }
+  async getExternalBlocksForProperty(propertyId) {
+    return db.select().from(externalBookings).where(
+      and(eq(externalBookings.propertyId, propertyId), sql3`${externalBookings.roomId} IS NULL`)
+    );
+  }
+  async getExternalBlocksForRoom(roomId) {
+    return db.select().from(externalBookings).where(eq(externalBookings.roomId, roomId));
+  }
+  async upsertExternalBooking(data) {
+    const listingMatch = data.roomId ? eq(externalBookings.roomId, data.roomId) : and(
+      eq(externalBookings.propertyId, data.propertyId),
+      sql3`${externalBookings.roomId} IS NULL`
+    );
+    const [existing] = await db.select({ id: externalBookings.id }).from(externalBookings).where(and(listingMatch, eq(externalBookings.externalId, data.externalId))).limit(1);
+    if (existing) {
+      const [row2] = await db.update(externalBookings).set({
+        propertyId: data.propertyId ?? null,
+        roomId: data.roomId ?? null,
+        startDate: data.startDate,
+        endDate: data.endDate,
+        summary: data.summary ?? null,
+        lastSynced: data.lastSynced ?? /* @__PURE__ */ new Date(),
+        updatedAt: /* @__PURE__ */ new Date()
+      }).where(eq(externalBookings.id, existing.id)).returning();
+      return row2;
+    }
+    const [row] = await db.insert(externalBookings).values({ ...data, lastSynced: data.lastSynced ?? /* @__PURE__ */ new Date() }).returning();
+    return row;
+  }
+  async deleteExternalBooking(id) {
+    await db.delete(externalBookings).where(eq(externalBookings.id, id));
+  }
+  async getStrBookingsForProperty(propertyId) {
+    return db.select().from(bookings).where(
+      and(
+        eq(bookings.propertyId, propertyId),
+        eq(bookings.model, "STR"),
+        ne(bookings.status, "CANCELLED")
+      )
+    ).orderBy(asc(bookings.checkIn));
+  }
+  async getRoomBlockingLeasesForRoom(roomId) {
+    const links = await db.select({ leaseId: leaseRooms.leaseId }).from(leaseRooms).where(eq(leaseRooms.roomId, roomId));
+    const leaseIds = links.map((l) => l.leaseId);
+    if (leaseIds.length === 0) return [];
+    return db.select().from(leases).where(
       and(
         inArray(leases.id, leaseIds),
         inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES])
       )
-    );
-    return !blocking.some(
-      (l) => args.startDate <= l.endDate && l.startDate <= args.endDate
     );
   }
   // --- Aggregates ---
@@ -1752,17 +1894,19 @@ var BookingError = class extends Error {
   }
 };
 async function strHasConflict(propertyId, checkIn, checkOut) {
-  const existing = await storage.getBookings();
   const inMs = parseISO2(checkIn).getTime();
   const outMs = parseISO2(checkOut).getTime();
-  return existing.some((b) => {
+  const overlaps = (bIn, bOut) => inMs < parseISO2(bOut).getTime() && parseISO2(bIn).getTime() < outMs;
+  const existing = await storage.getBookings();
+  const directHit = existing.some((b) => {
     if (b.propertyId !== propertyId || b.model !== "STR") return false;
     if (b.status === "CANCELLED") return false;
     if (!b.checkOut) return false;
-    const bIn = parseISO2(b.checkIn).getTime();
-    const bOut = parseISO2(b.checkOut).getTime();
-    return inMs < bOut && bIn < outMs;
+    return overlaps(b.checkIn, b.checkOut);
   });
+  if (directHit) return true;
+  const blocks = await storage.getExternalBlocksForProperty(propertyId);
+  return blocks.some((b) => overlaps(b.startDate, b.endDate));
 }
 async function resolveBooking(input) {
   const property = await storage.getProperty(input.propertyId);
@@ -1973,11 +2117,39 @@ async function buildLeaseQuote(input) {
   };
 }
 
+// server/lib/availability.ts
+import { addDays as addDays3, format, parseISO as parseISO3 } from "date-fns";
+function todayIso() {
+  return format(/* @__PURE__ */ new Date(), "yyyy-MM-dd");
+}
+function exclusiveEnd(inclusiveEnd) {
+  return format(addDays3(parseISO3(inclusiveEnd), 1), "yyyy-MM-dd");
+}
+function sortByStart(ranges) {
+  return [...ranges].sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
+}
+async function buildStrAvailability(propertyId) {
+  const today = todayIso();
+  const bookings2 = await storage.getStrBookingsForProperty(propertyId);
+  const directRanges = bookings2.filter((b) => b.checkOut && b.checkOut >= today).map((b) => ({ start: b.checkIn, end: b.checkOut, source: "direct" }));
+  const blocks = await storage.getExternalBlocksForProperty(propertyId);
+  const externalRanges = blocks.filter((b) => b.endDate >= today).map((b) => ({ start: b.startDate, end: b.endDate, source: "external" }));
+  return { busy: sortByStart([...directRanges, ...externalRanges]), minDate: today };
+}
+async function buildRoomAvailability(roomId) {
+  const today = todayIso();
+  const leases2 = await storage.getRoomBlockingLeasesForRoom(roomId);
+  const leaseRanges = leases2.filter((l) => l.endDate >= today).map((l) => ({ start: l.startDate, end: exclusiveEnd(l.endDate), source: "direct" }));
+  const blocks = await storage.getExternalBlocksForRoom(roomId);
+  const externalRanges = blocks.filter((b) => b.endDate >= today).map((b) => ({ start: b.startDate, end: b.endDate, source: "external" }));
+  return { busy: sortByStart([...leaseRanges, ...externalRanges]), minDate: today };
+}
+
 // server/lib/nextOpening.ts
-import { addDays as addDays3, parseISO as parseISO3 } from "date-fns";
+import { addDays as addDays4, parseISO as parseISO4 } from "date-fns";
 var ymd = (d) => d.toISOString().slice(0, 10);
 function dayAfter(isoDate) {
-  return ymd(addDays3(parseISO3(isoDate), 1));
+  return ymd(addDays4(parseISO4(isoDate), 1));
 }
 function strNextOpening(stays, today) {
   const spans = stays.filter((s) => s.checkOut != null).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
@@ -4030,6 +4202,29 @@ async function registerRoutes(app) {
       if (!room) return res.status(404).json({ message: "Room not found" });
       const property = await storage.getProperty(room.propertyId);
       res.json({ room, property });
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/api/properties/:id/availability", async (req, res, next) => {
+    try {
+      const property = await storage.getProperty(req.params.id);
+      if (!property || !property.active) {
+        return res.status(404).json({ message: "Property not found" });
+      }
+      if (property.type !== "STR") {
+        return res.json({ busy: [], minDate: (/* @__PURE__ */ new Date()).toISOString().slice(0, 10) });
+      }
+      res.json(await buildStrAvailability(property.id));
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/api/rooms/:id/availability", async (req, res, next) => {
+    try {
+      const room = await storage.getRoom(req.params.id);
+      if (!room) return res.status(404).json({ message: "Room not found" });
+      res.json(await buildRoomAvailability(room.id));
     } catch (err) {
       next(err);
     }

@@ -185,6 +185,22 @@ export const OVERDUE_MESSAGE_DAYS = 3;
 // properties — whole-property (STR) and co-living parent properties
 // =============================================================================
 
+// Structured, presentation-ready content for a listing's detail page. Optional
+// and additive — when present the detail page renders an editorial layout (hook
+// line, essentials chips, a "getting around" strip, "who it's for"); when absent
+// it falls back to the plain `description` prose. Authored in Unified-Ops and
+// stored as one JSONB column so adding richer presentation needs no migration.
+export interface ListingContent {
+  /** One intriguing line, set large. The "thesis" of the listing. */
+  hook?: string;
+  /** Scannable feature facts, e.g. "Private bathroom", "Fast Wi-Fi". */
+  essentials?: { icon?: string; label: string }[];
+  /** Proximity facts as label/value pairs, e.g. { place: "ATL airport", time: "12 min" }. */
+  gettingAround?: { place: string; time: string }[];
+  /** One line naming who the space suits, e.g. "Interns, airport crews, and traveling pros." */
+  whoFor?: string;
+}
+
 export const properties = pgTable("properties", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
@@ -197,6 +213,9 @@ export const properties = pgTable("properties", {
   // Defaults to BNP; TRAD properties set it explicitly. Additive column.
   entity: text("entity").notNull().default("BNP"),
   description: text("description"),
+  // Structured presentation content for the detail page (hook, essentials,
+  // getting-around, who-for). Additive, nullable; falls back to `description`.
+  listingContent: jsonb("listing_content").$type<ListingContent>(),
   // string[] of photo URLs.
   photos: jsonb("photos").$type<string[]>().default(sql`'[]'::jsonb`),
   // string[] of amenity labels.
@@ -235,9 +254,21 @@ export const properties = pgTable("properties", {
   // The Airbnb listing_room_id this STR property maps to (entire-home listing).
   // Links live inventory to the airbnb_reservations staging data. Additive.
   airbnbListingRoomId: text("airbnb_listing_room_id"),
+  // The Airbnb hosting-calendar iCal (.ics) export URL for this listing — the
+  // single source of truth for its inbound calendar sync (server/lib/icalSync.ts
+  // fetches it into external_bookings). Managed from Unified-Ops. Tokenized;
+  // treat as secret-ish (DB only, never logged/committed). Nullable. Additive.
+  airbnbIcalUrl: text("airbnb_ical_url"),
   active: boolean("active").notNull().default(true),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const listingContentSchema = z.object({
+  hook: z.string().optional(),
+  essentials: z.array(z.object({ icon: z.string().optional(), label: z.string() })).optional(),
+  gettingAround: z.array(z.object({ place: z.string(), time: z.string() })).optional(),
+  whoFor: z.string().optional(),
 });
 
 export const insertPropertySchema = createInsertSchema(properties, {
@@ -245,6 +276,7 @@ export const insertPropertySchema = createInsertSchema(properties, {
   entity: z.enum(PROPERTY_ENTITIES).optional(),
   photos: z.array(z.string()).optional(),
   amenities: z.array(z.string()).optional(),
+  listingContent: listingContentSchema.nullish(),
 }).omit({ id: true, createdAt: true, updatedAt: true });
 
 export type Property = typeof properties.$inferSelect;
@@ -278,6 +310,9 @@ export const rooms = pgTable(
     // e.g. "2". Optional so STR conversions and legacy rows don't break. Additive.
     roomNumber: text("room_number"),
     description: text("description"),
+    // Structured presentation content for the detail page (hook, essentials,
+    // getting-around, who-for). Additive, nullable; falls back to `description`.
+    listingContent: jsonb("listing_content").$type<ListingContent>(),
     photos: jsonb("photos").$type<string[]>().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
     depositAmount: decimal("deposit_amount", { precision: 10, scale: 2 }).notNull(),
@@ -297,6 +332,11 @@ export const rooms = pgTable(
     // The Airbnb listing_room_id this room maps to (private-room listing). Links
     // live inventory to airbnb_reservations staging data. Additive.
     airbnbListingRoomId: text("airbnb_listing_room_id"),
+    // The Airbnb hosting-calendar iCal (.ics) export URL for this room listing —
+    // single source of truth for its inbound calendar sync. Managed from
+    // Unified-Ops. Tokenized; secret-ish. Nullable. Additive. See
+    // properties.airbnbIcalUrl.
+    airbnbIcalUrl: text("airbnb_ical_url"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -310,6 +350,7 @@ export const rooms = pgTable(
 export const insertRoomSchema = createInsertSchema(rooms, {
   status: z.enum(ROOM_STATUSES),
   photos: z.array(z.string()).optional(),
+  listingContent: listingContentSchema.nullish(),
 }).omit({ id: true, createdAt: true, updatedAt: true });
 
 export type Room = typeof rooms.$inferSelect;
@@ -1029,3 +1070,67 @@ export const insertHeroImageSchema = createInsertSchema(heroImages).omit({
 
 export type HeroImage = typeof heroImages.$inferSelect;
 export type InsertHeroImage = z.infer<typeof insertHeroImageSchema>;
+
+// =============================================================================
+// external_bookings — DATE BLOCKS ingested from each listing's Airbnb iCal feed.
+// A row is a blocked range, NOT a real booking: it carries NO guest PII and is
+// NEVER counted as revenue (mirrors UO/TRAD's two-record-type discipline). The
+// feed URL is the per-listing `airbnb_ical_url` column on properties/rooms (the
+// single source of truth, also managed from Unified-Ops) — there is no separate
+// feeds table. property_id/room_id identify the listing (STR: property set,
+// room null; co-living: room set) so the availability reads are single-index
+// lookups. Idempotency/safe-delete key on (property_id|room_id, external_id).
+//
+// SECURITY: the feed URL is admin-supplied and fetched server-side, so the sync
+// applies SSRF protections (HTTPS-only, blocked private-IP ranges, DNS check,
+// manual redirect re-validation) — see server/lib/icalSync.ts.
+// =============================================================================
+export const externalBookings = pgTable(
+  "external_bookings",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    // The listing this block belongs to. STR: property set, room null.
+    // Co-living: room set + property set (property denormalized for query).
+    propertyId: varchar("property_id"),
+    roomId: varchar("room_id"),
+    // iCal UID (or component key fallback) — the idempotency key within a listing.
+    externalId: text("external_id").notNull(),
+    startDate: date("start_date").notNull(),
+    // iCal DTEND is EXCLUSIVE (checkout morning) — stored as-is; STR overlap is
+    // half-open, co-living normalizes to inclusive at read time.
+    endDate: date("end_date").notNull(),
+    summary: text("summary"),
+    lastSynced: timestamp("last_synced"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    // Hot path — STR availability: property + date range.
+    propertyRangeIdx: index("ext_bookings_property_range_idx").on(
+      table.propertyId,
+      table.startDate,
+      table.endDate,
+    ),
+    // Hot path — co-living availability: room + date range.
+    roomRangeIdx: index("ext_bookings_room_range_idx").on(
+      table.roomId,
+      table.startDate,
+      table.endDate,
+    ),
+    // Idempotency / safe-delete keys (upsert on the listing + iCal UID).
+    propertyExternalIdx: index("ext_bookings_property_external_idx").on(
+      table.propertyId,
+      table.externalId,
+    ),
+    roomExternalIdx: index("ext_bookings_room_external_idx").on(table.roomId, table.externalId),
+  }),
+);
+
+export const insertExternalBookingSchema = createInsertSchema(externalBookings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type ExternalBooking = typeof externalBookings.$inferSelect;
+export type InsertExternalBooking = z.infer<typeof insertExternalBookingSchema>;

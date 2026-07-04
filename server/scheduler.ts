@@ -16,6 +16,7 @@ import { buildAndPushSnapshot } from "./integrations/kpiRollup";
 import { runScheduledRentSweep } from "./lib/leasePayments";
 import { runDunningSweep } from "./lib/dunning";
 import { runLeaseEndingNotices } from "./lib/lifecycle";
+import { refreshExternalCalendars } from "./lib/icalSync";
 
 interface SchedulerConfig {
   /** How often to run the recurring sweep. Default: 1h. */
@@ -56,6 +57,7 @@ class BackgroundScheduler {
     if (this.isRunning) return;
     this.isRunning = true;
     try {
+      await this.calendarRefreshRun();
       await this.weeklyRentRun();
       await this.dunningRun();
       await this.lifecycleRun();
@@ -69,6 +71,26 @@ class BackgroundScheduler {
   }
 
   // ---- Recurring jobs ----
+
+  private async calendarRefreshRun(): Promise<void> {
+    // Pull each listing's Airbnb iCal calendar into external_bookings so the
+    // guest calendar + booking/lease guards see up-to-date blocks. Idempotent; a
+    // fetch failure is captured per-listing and never throws out of the sweep.
+    try {
+      const result = await refreshExternalCalendars();
+      if (result.totalListings > 0) {
+        const created = result.listings.reduce((n, l) => n + l.created, 0);
+        const removed = result.listings.reduce((n, l) => n + l.removed, 0);
+        const failed = result.listings.filter((l) => !l.ok).length;
+        log(
+          `calendar refresh: ${result.totalListings} listing(s), ${created} new, ${removed} removed, ${failed} failed`,
+          "scheduler",
+        );
+      }
+    } catch (err) {
+      log(`calendar refresh failed: ${(err as Error).message}`, "scheduler");
+    }
+  }
 
   private async weeklyRentRun(): Promise<void> {
     // Phase 4: OUR OWN scheduler drives recurring rent (not Stripe Subscriptions).

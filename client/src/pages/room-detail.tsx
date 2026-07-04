@@ -7,10 +7,13 @@ import { ArrowLeft } from "lucide-react";
 import type { Property, Room } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingGallery } from "@/components/listing-gallery";
-import { RichText } from "@/components/rich-text";
+import { ListingStory } from "@/components/listing-story";
 import { Button } from "@/components/ui/button";
+import { Calendar } from "@/components/ui/calendar";
 import { Separator } from "@/components/ui/separator";
 import { money } from "@/lib/format";
+import { useRoomAvailability } from "@/hooks/use-availability";
+import { busyToDisabledMatchers } from "@/lib/availability";
 
 interface RoomResponse {
   room: Room;
@@ -21,6 +24,9 @@ export default function RoomDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const { data, isLoading } = useQuery<RoomResponse>({ queryKey: ["/api/rooms", id!] });
+  // Busy ranges (room-blocking leases ∪ Airbnb iCal blocks) so the guest can see
+  // when this room is taken before starting the lease flow. Read-only here.
+  const { data: avail } = useRoomAvailability(id);
 
   if (isLoading || !data?.room) {
     return (
@@ -66,8 +72,14 @@ export default function RoomDetail() {
             <span className={`mt-3 inline-block rounded-full px-3 py-1 text-xs font-bold ${room.status === "AVAILABLE" ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
               {room.status === "AVAILABLE" ? "Available" : room.status === "HOLD" ? "On hold" : "Occupied"}
             </span>
-            {/* BT-21: full long-form description with paragraph breaks preserved. */}
-            <RichText text={room.description} className="mt-6 max-w-2xl" />
+            {/* Editorial listing story (hook, essentials, getting-around, who-for)
+                when structured content exists; falls back to plain prose. */}
+            <ListingStory
+              content={room.listingContent}
+              description={room.description}
+              segment="room"
+              className="mt-6"
+            />
           </div>
 
           <aside>
@@ -90,6 +102,26 @@ export default function RoomDetail() {
               </Button>
               <p className="mt-3 text-center text-xs text-muted-foreground">Weekly billing starts after move-in.</p>
             </div>
+
+            {/* Read-only availability — greys out dates this room is taken
+                (existing leases + this room's Airbnb calendar) so the guest sees
+                openings before starting the lease. Shown only when something is
+                booked; the lease page enforces the dates. */}
+            {(avail?.busy?.length ?? 0) > 0 && (
+              <div className="bnp-card mt-5 p-4" data-testid="room-availability">
+                <h3 className="px-1 font-display text-sm font-semibold">Availability</h3>
+                <p className="px-1 text-xs text-muted-foreground">Greyed dates are already booked.</p>
+                <Calendar
+                  mode="single"
+                  numberOfMonths={1}
+                  disabled={busyToDisabledMatchers(avail!.busy, {
+                    minDate: avail!.minDate,
+                    halfOpen: false, // a lease occupies its end date
+                  })}
+                  className="mt-1"
+                />
+              </div>
+            )}
           </aside>
         </div>
       </main>

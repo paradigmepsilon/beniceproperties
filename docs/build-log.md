@@ -987,3 +987,149 @@ chips in the section head) — restore if Alex wants it; trust-band claims +
 
 **Tracker:** BNP "Full-site redesign — template adoption" → Needs Admin
 Verification.
+
+---
+
+## 2026-07-03 — Feature: block already-booked dates (Airbnb iCal + direct bookings/leases)
+
+**What:** Guests can no longer select dates already booked on Airbnb or by a BNP
+direct booking/lease — across BOTH the whole-property STR flow and the co-living
+room flow. Unavailable dates are disabled in the calendar; the server rejects
+them (409) as a backstop. Each BNP listing subscribes to its own Airbnb-exported
+iCal (.ics); blocked ranges sync into BNP's OWN DB (no cross-DB reads, no UO
+calls) and merge with direct bookings/leases. Mirrors the code pattern of
+Unified-Ops' hardened `src/lib/trad/ical-sync.ts` (SSRF-guarded node-ical port).
+
+**Approach / decisions:** per-listing iCal feed (not TRAD's data); full co-living
+scope (read-only availability calendar on room pages + enforced dates in the
+lease flow); hourly Vercel cron (Pro confirmed) + daily-sweep refresh + admin
+"Sync now". STR overlap stays half-open (checkout day free); co-living stays
+inclusive (lease occupies its end date) — normalized on the wire so one client
+adapter handles both. Airbnb "Not available" host-blocks skipped; only "Reserved"
+guest bookings become blocks. Dedup vs BNP direct bookings/leases prevents a
+round-tripped export from double-blocking or leaving a phantom block.
+
+**Files:**
+- Schema (additive, 2 new tables + types): `shared/schema.ts`
+  (`external_calendar_feeds`, `external_bookings`) — applied to the live Neon DB
+  via an idempotent `CREATE TABLE IF NOT EXISTS` script (the repo's additive
+  migration pattern; drizzle-kit push/generate NOT used — it false-conflicts on
+  the push-managed baseline).
+- Sync service (NEW): `server/lib/icalSync.ts` — SSRF guard (HTTPS-only,
+  blocked-IP ranges, DNS check, manual redirect re-validation, size/timeout
+  limits) copied verbatim; dynamic `import("node-ical")` (server-only, kept out
+  of the client bundle); idempotent upsert keyed on (feed_id, external_id);
+  safe-delete of vanished events; dedup vs direct bookings/leases.
+- Storage: `server/storage.ts` — feed + block CRUD/reads, dedup reads
+  (`getStrBookingsForProperty`, `getRoomBlockingLeasesForRoom`);
+  `isRoomAvailableForRange` now also consults external room blocks.
+- Guards + endpoints: `server/lib/booking.ts` (`strHasConflict` folds in external
+  property blocks); NEW `server/lib/availability.ts` merge helper;
+  `GET /api/properties/:id/availability` + `GET /api/rooms/:id/availability`;
+  `shared/api-types.ts` (`AvailabilityResponse`/`BusyRange`).
+- Client (NEW): `client/src/components/date-range-picker.tsx` (shadcn Calendar
+  range popover, mobile-first), `client/src/hooks/use-availability.ts`,
+  `client/src/lib/availability.ts` (matcher + range-guard helpers). Wired into
+  `property-detail.tsx` (STR), `room-detail.tsx` (read-only availability calendar),
+  `lease-booking.tsx` (multi-room: unions every selected room's busy ranges via
+  `useQueries`). `search-bar.tsx` intentionally left native (property-agnostic).
+- Scheduler + cron: `server/scheduler.ts` + `api-src/cron/sweep.ts` call
+  `refreshExternalCalendars()`; NEW `api-src/cron/calendar.ts` (hourly);
+  `vercel.json` adds the hourly cron entry.
+- Admin: feed CRUD + on-demand sync routes in `server/routes.ts`; a "Calendar
+  feeds" panel in the Inventory manager (`client/src/pages/admin/dashboard.tsx`)
+  per STR property + per co-living room. (Optional env-gated seed skipped — feeds
+  are configured via the admin panel.)
+- API bundle rebuilt (`npm run build:api`): `api/index.js`, `api/cron/sweep.js`,
+  and new `api/cron/calendar.js`.
+
+Branch `feat/calendar-availability-ical`. Dep added: `node-ical@^0.26.1`
+(server-only, dynamic import).
+
+**Tests + results:** `npm run check` (tsc) clean; **228 vitest tests pass** (218
+prior + 12 `icalSync.test.ts` covering SSRF guards, parse skip "Not available"/
+past, idempotent create/update/remove, dedup round-trip, fetch-failure capture +
+3 `server/lib/availability.test.ts` + 7 `client/src/lib/availability.test.ts`
+covering half-open vs inclusive matchers/guards). `vite build` clean; verified
+**node-ical is NOT in the client bundle** (grep of `dist/public/assets`).
+End-to-end proof against the LIVE DB using the real production code paths
+(storage → `buildStrAvailability` → `resolveBooking`): an Airbnb-synced block
+surfaces as busy(source=external), an overlapping STR booking is rejected 409,
+checking in on the block's exclusive end date is allowed (half-open), re-sync is
+idempotent (single row), and deleting the block frees the date. Live HTTPS
+fetch+parse proven against a real public .ics (40KB, 34 VEVENTs) — the one path
+the unit tests stub. Test property + feed cleaned up afterward.
+
+PHASE A: COMPLETE — tests green
+PHASE B: COMPLETE — tests green
+PHASE C: COMPLETE — tests green
+PHASE D: COMPLETE — tests green
+PHASE E: COMPLETE — tests green
+PHASE F: COMPLETE — tests green
+
+**Deferred/flagged:** react-day-picker v8 has no `excludeDisabled`, so a selected
+range can span a disabled day — the client `rangeHitsBusy` guard rejects it
+(disables Continue) and the server re-validates on submit, so it's covered.
+Optional seed (`SEED_AIRBNB_ICS_URL`) not added — the admin panel is the config
+surface. Real per-listing Airbnb .ics URLs still need to be entered in admin
+before any live blocking occurs (no feeds seeded).
+
+**Tracker:** BNP "Block already-booked dates in guest calendar (Airbnb iCal +
+direct bookings/leases)" → Needs Admin Verification.
+
+---
+
+## 2026-07-04 — Rework: Airbnb iCal URL = per-listing column (retire the feed table)
+
+**Why:** the prior entry added an `external_calendar_feeds` table to store Airbnb
+iCal URLs. Unified-Ops already stored one URL per listing in the
+`airbnb_ical_url` column on properties/rooms (same physical DB, added two days
+earlier) and reads it for its live availability view. Two homes for the same
+value. Reconciled onto the **column** as the single source of truth (one URL per
+listing = Airbnb's model), so the URL can be managed from UO (the primary BNP
+admin) with no duplication. Guest-facing behavior (blocked dates, 409 guards)
+is unchanged.
+
+**What changed (BNP):**
+- `shared/schema.ts`: added `airbnbIcalUrl` to the properties + rooms mirror;
+  **deleted** the `external_calendar_feeds` table + types; **rekeyed**
+  `external_bookings` — dropped `feed_id` (FK + indexes), added
+  `(property_id, external_id)` / `(room_id, external_id)` idempotency indexes.
+- `server/lib/icalSync.ts`: `syncFeed`/`syncAllFeeds` → `syncListing`/
+  `syncAllListings`, iterating `storage.getListingsWithIcalUrl()` (active
+  properties + rooms with a non-null URL). Idempotency key → (listing,
+  external_id). SSRF guard, "Not available"/past skip, node-ical dynamic import,
+  and dedup-vs-direct helpers kept verbatim. `refreshExternalCalendars()`
+  unchanged (scheduler/cron entry).
+- `server/storage.ts`: dropped the 8 feed methods; added `getListingsWithIcalUrl`;
+  rekeyed `upsertExternalBooking`. Block-read/guard methods unchanged.
+- `server/routes.ts`: removed `/api/admin/calendars*` (feed CRUD) — the URL is
+  UO-managed now. `client/src/pages/admin/dashboard.tsx`: removed
+  `CalendarFeedsPanel`. `server/scheduler.ts` + `api-src/cron/calendar.ts`:
+  updated to the new `SyncResult` shape (`totalListings`/`listings`).
+- DDL: `scripts/push-ical-column-rework.mjs` (idempotent) — applied to the live
+  Neon DB. Both affected tables were **empty** (verified: 0 rows) so the column
+  drop + table drop lost no data. Post-DDL verified: `external_calendar_feeds`
+  gone, `external_bookings.feed_id` gone, new indexes present, `airbnb_ical_url`
+  still populated (1 property + 6 rooms). API bundle rebuilt.
+
+**Tests + results:** `npm run check` clean; **228 vitest pass** (icalSync tests
+reworked to `syncListing` + updated storage mock; availability/guard tests
+unchanged). `vite build` clean; node-ical still out of the client bundle. API
+bundle rebuilt (`/api/admin/calendars` gone from `api/index.js`; `syncListing`
+present in `api/cron/calendar.js`). **End-to-end vs the LIVE DB with the real
+already-entered URLs:** `refreshExternalCalendars()` synced all 7 listings
+(ok=true each), populated `external_bookings` (2 real Airbnb "Reserved" blocks,
+keyed by property/room, no feed_id); the UO-style status query returns
+`{blocks, lastSynced}` per listing; `buildStrAvailability` shows the block as
+busy(source=external). Idempotent (re-run stable).
+
+PHASE A: COMPLETE — tests green
+PHASE B: COMPLETE — tests green
+
+**Companion:** Unified-Ops adds the URL editor + sync status (Calendar tab in the
+Listings DetailSheet), writing `airbnb_ical_url` directly via `bnpDb`. See the UO
+repo build log.
+
+**Tracker:** BNP "Manage Airbnb iCal from Unified-Ops + reconcile duplicate feed
+store" → Needs Admin Verification.

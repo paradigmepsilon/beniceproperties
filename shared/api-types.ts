@@ -49,6 +49,28 @@ export interface QuoteResponse {
   nights?: number;
 }
 
+// --- Availability (calendar disabled-date source) ------------------------
+
+/**
+ * A busy (unavailable) date range for a listing. `end` is the FIRST FREE day
+ * (half-open) — mirrors iCal DTEND. The client converts each range into disabled
+ * calendar days: STR disables [start, end) (checkout day selectable as a new
+ * check-in); co-living rooms disable [start, end] inclusive (a lease occupies
+ * its end date). `source` is for debugging/telemetry only — the client does not
+ * branch on it.
+ */
+export interface BusyRange {
+  start: string; // YYYY-MM-DD
+  end: string; // YYYY-MM-DD (exclusive — first free day)
+  source: "direct" | "external";
+}
+
+export interface AvailabilityResponse {
+  busy: BusyRange[];
+  /** Server clock's today (YYYY-MM-DD); the calendar's floor. */
+  minDate: string;
+}
+
 // --- Create booking ------------------------------------------------------
 
 export const createBookingSchema = z
