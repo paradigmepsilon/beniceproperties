@@ -17,6 +17,7 @@ import connectPg from "connect-pg-simple";
 import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { storage } from "./storage";
+import { posthog } from "./lib/posthog";
 import type { AdminUser } from "@shared/schema";
 
 const scryptAsync = promisify(scrypt);
@@ -123,6 +124,11 @@ export async function setupAuth(app: Express) {
 
   // --- Auth routes ---
   app.post("/api/admin/login", passport.authenticate("local"), (req, res) => {
+    const admin = req.user as SessionAdmin | undefined;
+    if (admin) {
+      posthog.identify({ distinctId: admin.email, properties: { name: admin.name, role: "admin" } });
+      posthog.capture({ distinctId: admin.email, event: "admin_login", properties: { admin_email: admin.email } });
+    }
     res.json({ user: req.user });
   });
 

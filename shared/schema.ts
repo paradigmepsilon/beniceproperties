@@ -390,6 +390,14 @@ export const insertRoomSchema = createInsertSchema(rooms, {
 export type Room = typeof rooms.$inferSelect;
 export type InsertRoom = z.infer<typeof insertRoomSchema>;
 
+/** A room enriched with per-room date availability, returned by
+ *  GET /api/properties/:id. `availableForDates` is whether THIS room is bookable
+ *  for the request's [checkIn, checkOut) — AVAILABLE status AND free of any
+ *  lease/Airbnb block for the range. With no dates on the request it is always
+ *  true and the UI falls back to `status`. (Distinct from PropertyListItem's
+ *  property-level field of the same name.) */
+export type RoomWithAvailability = Room & { availableForDates: boolean };
+
 // =============================================================================
 // guests — minimal PII. NEVER pushed to Unified Ops.
 // =============================================================================

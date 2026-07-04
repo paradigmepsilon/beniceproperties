@@ -6,7 +6,7 @@ import { useState } from "react";
 import { Link, useParams, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
-import type { Property, Room } from "@shared/schema";
+import type { Property, RoomWithAvailability } from "@shared/schema";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingImage } from "@/components/listing-image";
 import { ListingGallery } from "@/components/listing-gallery";
@@ -19,20 +19,12 @@ import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/avai
 
 interface DetailResponse {
   property: Property;
-  rooms: Room[];
+  rooms: RoomWithAvailability[];
 }
 
 export default function PropertyDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
-  const { data, isLoading } = useQuery<DetailResponse>({ queryKey: ["/api/properties", id!] });
-  // Busy ranges (direct bookings ∪ Airbnb iCal blocks) so booked dates disable in
-  // the calendar. Empty for co-living (endpoint returns no busy set); the picker
-  // only renders for STR anyway. `availLoading` gates the CTA: until the busy set
-  // has actually loaded we must treat every range as not-yet-known and keep
-  // "Continue" disabled, or a booked range would look bookable on first paint
-  // (busy defaults to [] before the query resolves).
-  const { data: avail, isLoading: availLoading } = usePropertyAvailability(id);
   const searchStr = useSearch();
   const today = new Date().toISOString().slice(0, 10);
   // Seed dates from the home hero search (?checkIn=&checkOut=) when they're
@@ -48,10 +40,35 @@ export default function PropertyDetail() {
     return /^\d{4}-\d{2}-\d{2}$/.test(outV) && outV > (inV >= today ? inV : today) ? outV : "";
   });
 
+  // A complete, forward date selection. When set, the detail request asks for
+  // per-room availability for [checkIn, checkOut) so a room booked (Airbnb or
+  // lease) for those dates greys out even though its manual status is AVAILABLE.
+  const datedSearch = !!checkIn && !!checkOut && checkOut > checkIn;
+  const { data, isLoading } = useQuery<DetailResponse>({
+    queryKey: ["/api/properties", id!, { checkIn: datedSearch ? checkIn : "", checkOut: datedSearch ? checkOut : "" }],
+    queryFn: async () => {
+      const qs = datedSearch ? `?checkIn=${checkIn}&checkOut=${checkOut}` : "";
+      const res = await fetch(`/api/properties/${id}${qs}`, { credentials: "include" });
+      if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+      return res.json();
+    },
+  });
+  // Busy ranges (direct bookings ∪ Airbnb iCal blocks) so booked dates disable in
+  // the calendar. Empty for co-living (endpoint returns no busy set); the picker
+  // only renders for STR anyway. `availLoading` gates the CTA: until the busy set
+  // has actually loaded we must treat every range as not-yet-known and keep
+  // "Continue" disabled, or a booked range would look bookable on first paint
+  // (busy defaults to [] before the query resolves).
+  const { data: avail, isLoading: availLoading } = usePropertyAvailability(id);
+
   if (isLoading) return <Shell><p className="text-muted-foreground">Loading…</p></Shell>;
   if (!data) return <Shell><p>Property not found.</p></Shell>;
 
   const { property, rooms } = data;
+  // Carry a picked range into the room/lease flow so the selection persists.
+  const datesQuery = datedSearch
+    ? `?${new URLSearchParams({ checkIn, checkOut }).toString()}`
+    : "";
   const busy = avail?.busy ?? [];
   const disabledDays = busyToDisabledMatchers(busy, {
     minDate: avail?.minDate ?? today,
@@ -145,37 +162,52 @@ export default function PropertyDetail() {
                 <h2 className="font-display text-xl font-semibold">Available rooms</h2>
                 {/* One inline row on desktop (equal-width cards, any room count); stacked on mobile. */}
                 <div className="mt-4 grid gap-5 md:grid-flow-col md:auto-cols-fr">
-                  {rooms.map((room) => (
-                    <div key={room.id} className="bnp-card bnp-card-interactive relative overflow-hidden" data-testid={`card-room-${room.id}`}>
+                  {rooms.map((room) => {
+                    // Blocked for the SELECTED dates (Airbnb/lease) though its
+                    // manual status may be AVAILABLE — only meaningful when a
+                    // range is chosen (server returns availableForDates:true with
+                    // no dates). A card is unavailable if its status isn't
+                    // AVAILABLE OR it's blocked for the picked dates.
+                    const roomBlocked = datedSearch && room.availableForDates === false;
+                    const unavailable = room.status !== "AVAILABLE" || roomBlocked;
+                    return (
+                    <div key={room.id} className={`bnp-card bnp-card-interactive relative overflow-hidden ${roomBlocked ? "is-booked" : ""}`} data-testid={`card-room-${room.id}`}>
                       <span aria-hidden className="absolute inset-y-0 left-0 z-10 w-[5px] bg-segment-room" />
-                      <Link href={`/room/${room.id}`} aria-label={`View ${room.name} details`} className="relative block aspect-[3/2] w-full" data-testid={`link-room-image-${room.id}`}>
+                      <Link href={`/room/${room.id}${datesQuery}`} aria-label={`View ${room.name} details`} className="relative block aspect-[3/2] w-full" data-testid={`link-room-image-${room.id}`}>
                         <ListingImage id={room.id} photos={room.photos} alt={room.name} kind="ROOM" rounded="rounded-none" />
                       </Link>
                       <div className="p-4">
                         <div className="flex items-start justify-between gap-2">
                           <h3 className="min-w-0 font-display font-semibold">{room.name}</h3>
-                          <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-bold ${room.status === "AVAILABLE" ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
-                            {room.status === "AVAILABLE" ? "Available" : room.status === "HOLD" ? "On hold" : "Occupied"}
+                          <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-xs font-bold ${!unavailable ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
+                            {roomBlocked
+                              ? "Unavailable for your dates"
+                              : room.status === "AVAILABLE"
+                                ? "Available"
+                                : room.status === "HOLD"
+                                  ? "On hold"
+                                  : "Occupied"}
                           </span>
                         </div>
                         <p className="mt-2 text-sm">
                           <span className="font-semibold">{money(room.weeklyRent)}</span>
                           <span className="text-muted-foreground"> / week · {money(room.depositAmount)} deposit</span>
                         </p>
-                        {room.status === "AVAILABLE" ? (
-                          <Link href={`/room/${room.id}`}>
+                        {!unavailable ? (
+                          <Link href={`/room/${room.id}${datesQuery}`}>
                             <Button className="mt-3 min-h-11 w-full" data-testid={`button-room-${room.id}`}>
                               Reserve this room
                             </Button>
                           </Link>
                         ) : (
                           <Button className="mt-3 w-full" variant="secondary" disabled>
-                            Not available
+                            {roomBlocked ? "Unavailable for these dates" : "Not available"}
                           </Button>
                         )}
                       </div>
                     </div>
-                  ))}
+                    );
+                  })}
                   {rooms.length === 0 && <p className="text-muted-foreground">No rooms listed yet.</p>}
                 </div>
               </section>

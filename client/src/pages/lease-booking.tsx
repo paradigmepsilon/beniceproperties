@@ -72,8 +72,18 @@ export default function LeaseBooking() {
   const roomIds = useMemo(() => params.getAll("roomId").filter(Boolean), [params]);
 
   const today = new Date().toISOString().slice(0, 10);
-  const [startDate, setStartDate] = useState(today);
-  const [endDate, setEndDate] = useState("");
+  // Seed the term from a range carried in from the property/room page
+  // (?checkIn=&checkOut=) when it's a valid forward, not-past range; otherwise
+  // start at today with an open end, as before.
+  const seededIn = params.get("checkIn") ?? "";
+  const seededOut = params.get("checkOut") ?? "";
+  const seedValid =
+    /^\d{4}-\d{2}-\d{2}$/.test(seededIn) &&
+    /^\d{4}-\d{2}-\d{2}$/.test(seededOut) &&
+    seededIn >= today &&
+    seededOut > seededIn;
+  const [startDate, setStartDate] = useState(seedValid ? seededIn : today);
+  const [endDate, setEndDate] = useState(seedValid ? seededOut : "");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
@@ -237,6 +247,7 @@ export default function LeaseBooking() {
                     setEndDate(checkOut);
                   }}
                   disabled={disabledDays}
+                  minNights={COLIVING_MIN_DAYS}
                   startLabel="Move-in"
                   endLabel="Move-out"
                   data-testid="input-lease-dates"

@@ -12,6 +12,7 @@ import compression from "compression";
 import helmet from "helmet";
 import { registerRoutes } from "./routes";
 import { log } from "./server-log";
+import { posthog } from "./lib/posthog";
 
 const isDev = process.env.NODE_ENV !== "production";
 
@@ -62,8 +63,12 @@ export function applyBaseMiddleware(app: Express): void {
 
 /** Centralized JSON error handler. Mount AFTER all routes. */
 export function applyErrorHandler(app: Express): void {
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((err: any, req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;
+    if (status >= 500) {
+      const user = req.user as { email?: string } | undefined;
+      posthog.captureException(err, user?.email ?? "anonymous");
+    }
     res.status(status).json({ message: err.message || "Internal Server Error" });
     console.error(err);
   });

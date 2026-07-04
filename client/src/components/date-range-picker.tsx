@@ -25,6 +25,14 @@ interface DateRangePickerProps {
   onChange: (next: { checkIn: string; checkOut: string }) => void;
   /** Disabled-day matchers (from busyToDisabledMatchers). */
   disabled?: Matcher[];
+  /**
+   * Minimum number of NIGHTS in the range. When set, a checkout fewer than this
+   * many nights after the check-in won't commit — the too-short pick resets. (We
+   * convert to react-day-picker's selected-day count internally, since its `min`
+   * counts days inclusive of both endpoints = nights + 1.) Used by co-living
+   * (7-night minimum); omit for STR (no minimum).
+   */
+  minNights?: number;
   /** Labels above the two cells. */
   startLabel?: string;
   endLabel?: string;
@@ -37,6 +45,7 @@ export function DateRangePicker({
   checkOut,
   onChange,
   disabled = [],
+  minNights,
   startLabel = "Check-in",
   endLabel = "Check-out",
   className,
@@ -92,6 +101,12 @@ export function DateRangePicker({
           selected={selected}
           onSelect={handleSelect}
           disabled={disabled}
+          // Minimum-nights guard. react-day-picker v8's range `min` counts
+          // SELECTED DAYS (both endpoints inclusive), which is nights + 1 — so a
+          // 7-night floor needs min=8. We convert here so the prop stays in
+          // guest-facing NIGHTS. A checkout closer than this won't commit; the
+          // pick resets. Omitted (undefined) for callers without a minimum (STR).
+          min={minNights ? minNights + 1 : undefined}
           defaultMonth={checkIn ? parseISO(checkIn) : undefined}
           initialFocus
         />

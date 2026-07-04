@@ -16,6 +16,7 @@ import helmet from "helmet";
 import express from "express";
 import multer from "multer";
 import { z as z3 } from "zod";
+import { differenceInCalendarDays as differenceInCalendarDays2, parseISO as parseISO5 } from "date-fns";
 
 // server/auth.ts
 import { randomBytes, scrypt, timingSafeEqual } from "crypto";
@@ -1579,6 +1580,13 @@ var Storage = class {
 };
 var storage = new Storage();
 
+// server/lib/posthog.ts
+import { PostHog } from "posthog-node";
+var posthog = new PostHog(process.env.POSTHOG_API_KEY ?? "", {
+  host: process.env.POSTHOG_HOST ?? "https://us.i.posthog.com",
+  enableExceptionAutocapture: true
+});
+
 // server/auth.ts
 var scryptAsync = promisify(scrypt);
 async function hashPassword(password) {
@@ -1661,6 +1669,11 @@ async function setupAuth(app) {
     (err) => console.warn("[auth] bootstrap admin skipped:", err?.message ?? err)
   );
   app.post("/api/admin/login", passport.authenticate("local"), (req, res) => {
+    const admin = req.user;
+    if (admin) {
+      posthog.identify({ distinctId: admin.email, properties: { name: admin.name, role: "admin" } });
+      posthog.capture({ distinctId: admin.email, event: "admin_login", properties: { admin_email: admin.email } });
+    }
     res.json({ user: req.user });
   });
   app.post("/api/admin/logout", (req, res) => {
@@ -4268,6 +4281,8 @@ async function registerRoutes(app) {
       const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
       const co = typeof req.query.checkOut === "string" ? req.query.checkOut : "";
       const dated = ISO.test(ci) && ISO.test(co) && co > ci && ci >= today ? { checkIn: ci, checkOut: co } : null;
+      const searchNights = dated ? differenceInCalendarDays2(parseISO5(dated.checkOut), parseISO5(dated.checkIn)) : 0;
+      const colivingBelowMin = Boolean(dated) && searchNights < COLIVING_MIN_DAYS;
       const props = await storage.getProperties({ activeOnly: true });
       const withRent = await Promise.all(
         props.map(async (p) => {
@@ -4294,7 +4309,7 @@ async function registerRoutes(app) {
               openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] }))
             );
             fromWeeklyRent = priced.fromWeeklyRent;
-            if (dated) availableForDates = priced.available;
+            if (dated) availableForDates = colivingBelowMin ? false : priced.available;
           } else if (p.type === "STR" && dated) {
             availableForDates = !await strHasConflict(p.id, dated.checkIn, dated.checkOut);
           }
@@ -4330,7 +4345,22 @@ async function registerRoutes(app) {
       if (!property || !property.active) {
         return res.status(404).json({ message: "Property not found" });
       }
-      const rooms2 = property.type === "COLIVING" ? await storage.getRoomsByProperty(property.id) : [];
+      const today = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+      const ISO = /^\d{4}-\d{2}-\d{2}$/;
+      const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
+      const co = typeof req.query.checkOut === "string" ? req.query.checkOut : "";
+      const dated = ISO.test(ci) && ISO.test(co) && co > ci && ci >= today ? { checkIn: ci, checkOut: co } : null;
+      const baseRooms = property.type === "COLIVING" ? await storage.getRoomsByProperty(property.id) : [];
+      const rooms2 = dated ? await Promise.all(
+        baseRooms.map(async (r) => ({
+          ...r,
+          availableForDates: r.status === "AVAILABLE" && await storage.isRoomAvailableForRange({
+            roomId: r.id,
+            startDate: dated.checkIn,
+            endDate: dated.checkOut
+          })
+        }))
+      ) : baseRooms.map((r) => ({ ...r, availableForDates: true }));
       res.json({ property, rooms: rooms2 });
     } catch (err) {
       next(err);
@@ -4415,6 +4445,22 @@ async function registerRoutes(app) {
         return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid lease request" });
       }
       const { lease, documentHtml } = await createDraftLease(parsed.data);
+      posthog.identify({
+        distinctId: parsed.data.guest.email,
+        properties: { name: parsed.data.guest.name, email: parsed.data.guest.email, phone: parsed.data.guest.phone ?? void 0 }
+      });
+      posthog.capture({
+        distinctId: parsed.data.guest.email,
+        event: "lease_created",
+        properties: {
+          lease_id: lease.id,
+          property_id: parsed.data.propertyId,
+          room_ids: parsed.data.roomIds,
+          start_date: parsed.data.startDate,
+          end_date: parsed.data.endDate,
+          cadence: parsed.data.cadence
+        }
+      });
       res.status(201).json({ leaseId: lease.id, status: lease.status, documentHtml });
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -4469,6 +4515,20 @@ async function registerRoutes(app) {
         affirmed: parsed.data.affirmed,
         ip
       });
+      const signedGuest = await storage.getGuest(lease.guestId);
+      if (signedGuest) {
+        posthog.capture({
+          distinctId: signedGuest.email,
+          event: "lease_signed",
+          properties: {
+            lease_id: lease.id,
+            property_id: lease.propertyId,
+            signed_name: parsed.data.signedName,
+            cadence: lease.paymentCadence,
+            total_lease_value: lease.totalLeaseValue
+          }
+        });
+      }
       res.json({ leaseId: lease.id, status: lease.status, documentUrl });
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -4500,7 +4560,20 @@ async function registerRoutes(app) {
     try {
       const seq = parseInt(req.params.seq, 10);
       if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
-      res.json(await payInstallmentNow(req.params.token, seq));
+      const payResult = await payInstallmentNow(req.params.token, seq);
+      const portalData = await getPortalView(req.params.token).catch(() => null);
+      const portalGuestEmail = portalData?.guest?.email;
+      if (portalGuestEmail) {
+        posthog.capture({
+          distinctId: portalGuestEmail,
+          event: "portal_installment_paid",
+          properties: {
+            portal_token: req.params.token,
+            schedule_seq: seq
+          }
+        });
+      }
+      res.json(payResult);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -4516,6 +4589,18 @@ async function registerRoutes(app) {
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       const msg = await submitMessage(req.params.token, parsed.data);
+      const msgPortalData = await getPortalView(req.params.token).catch(() => null);
+      const msgGuestEmail = msgPortalData?.guest?.email;
+      if (msgGuestEmail) {
+        posthog.capture({
+          distinctId: msgGuestEmail,
+          event: "guest_message_submitted",
+          properties: {
+            category: parsed.data.category ?? null,
+            subject: parsed.data.subject ?? null
+          }
+        });
+      }
       res.status(201).json({ threadId: msg.id, status: msg.status });
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -4545,6 +4630,15 @@ async function registerRoutes(app) {
   app.post("/api/portal/:token/license", upload.single("file"), async (req, res, next) => {
     try {
       const result = await uploadLicense(req.params.token, toUploadedFile(req.file));
+      const licPortalData = await getPortalView(req.params.token).catch(() => null);
+      const licGuestEmail = licPortalData?.guest?.email;
+      if (licGuestEmail) {
+        posthog.capture({
+          distinctId: licGuestEmail,
+          event: "license_uploaded",
+          properties: { portal_token: req.params.token }
+        });
+      }
       res.status(201).json(result);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -4603,6 +4697,21 @@ async function registerRoutes(app) {
         return res.status(503).json({ message: "Card payments aren't enabled yet (Stripe test key not set)." });
       }
       const result = await startDepositPayment(req.params.id);
+      const depositLease = await storage.getLease(req.params.id);
+      if (depositLease) {
+        const depositGuest = await storage.getGuest(depositLease.guestId);
+        if (depositGuest) {
+          posthog.capture({
+            distinctId: depositGuest.email,
+            event: "deposit_payment_started",
+            properties: {
+              lease_id: req.params.id,
+              property_id: depositLease.propertyId,
+              amount: result.amount
+            }
+          });
+        }
+      }
       res.json({
         clientSecret: result.clientSecret,
         amount: result.amount,
@@ -4694,7 +4803,23 @@ async function registerRoutes(app) {
   });
   app.post("/api/admin/leases/:id/approve-verification", requireAdmin, async (req, res, next) => {
     try {
-      res.json(await approveVerification(req.params.id, adminActor(req)));
+      const approveResult = await approveVerification(req.params.id, adminActor(req));
+      const verifiedLease = await storage.getLease(req.params.id);
+      if (verifiedLease) {
+        const verifiedGuest = await storage.getGuest(verifiedLease.guestId);
+        if (verifiedGuest) {
+          posthog.capture({
+            distinctId: verifiedGuest.email,
+            event: "verification_approved",
+            properties: {
+              lease_id: req.params.id,
+              property_id: verifiedLease.propertyId,
+              actor: adminActor(req)
+            }
+          });
+        }
+      }
+      res.json(approveResult);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -4813,6 +4938,25 @@ async function registerRoutes(app) {
           memo: reference
         };
       }
+      posthog.identify({
+        distinctId: guest.email,
+        properties: { name: guest.name, email: guest.email, phone: guest.phone ?? void 0 }
+      });
+      posthog.capture({
+        distinctId: guest.email,
+        event: "booking_created",
+        properties: {
+          reference,
+          property_id: resolved.property.id,
+          property_name: resolved.property.name,
+          property_type: resolved.model,
+          room_id: resolved.room?.id ?? null,
+          check_in: resolved.checkIn,
+          check_out: resolved.checkOut,
+          payment_method: paymentMethod,
+          quoted_total: dueNow
+        }
+      });
       res.status(201).json(response);
     } catch (err) {
       if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
@@ -5006,6 +5150,22 @@ async function registerRoutes(app) {
           status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"
         });
         if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
+        const manualGuest = await storage.getGuest(booking.guestId);
+        if (manualGuest) {
+          posthog.capture({
+            distinctId: manualGuest.email,
+            event: "manual_payment_confirmed",
+            properties: {
+              payment_id: payment.id,
+              booking_id: payment.bookingId,
+              booking_reference: booking.reference,
+              payment_method: payment.method,
+              amount: payment.amount,
+              property_id: booking.propertyId,
+              confirmed_by: adminActor(req)
+            }
+          });
+        }
       }
       res.json({ payment: updated });
     } catch (err) {
@@ -5130,6 +5290,22 @@ async function handleStripeEvent(event) {
           });
         }
       }
+      const confirmedGuest = await storage.getGuest(booking.guestId);
+      if (confirmedGuest) {
+        posthog.capture({
+          distinctId: confirmedGuest.email,
+          event: "booking_confirmed",
+          properties: {
+            reference,
+            booking_id: booking.id,
+            property_id: booking.propertyId,
+            property_type: booking.model,
+            room_id: booking.roomId ?? null,
+            check_in: booking.checkIn,
+            check_out: booking.checkOut
+          }
+        });
+      }
       log(`booking ${reference} confirmed via checkout.session.completed`, "stripe");
       break;
     }
@@ -5176,6 +5352,22 @@ async function handleStripeEvent(event) {
       const kind = pi.metadata?.payment_kind;
       if (kind === "BOOKING_DEPOSIT" && pi.metadata?.lease_id) {
         await finalizeDepositPayment(pi.id);
+        const depositedLease = await storage.getLease(pi.metadata.lease_id);
+        if (depositedLease) {
+          const depositedGuest = await storage.getGuest(depositedLease.guestId);
+          if (depositedGuest) {
+            posthog.capture({
+              distinctId: depositedGuest.email,
+              event: "lease_activated",
+              properties: {
+                lease_id: depositedLease.id,
+                property_id: depositedLease.propertyId,
+                payment_intent_id: pi.id,
+                amount: pi.amount / 100
+              }
+            });
+          }
+        }
       } else if (kind === "FIRST_PAYMENT") {
         await finalizeFirstPayment(pi.id);
       } else if (kind === "SCHEDULED_RENT") {
@@ -5200,6 +5392,21 @@ async function handleStripeEvent(event) {
                 log(`webhook late-fee billing failed ${leaseId} seq ${seq}: ${feeErr.message}`, "stripe");
               }
             }
+            if (lease) {
+              const rentGuest = await storage.getGuest(lease.guestId);
+              if (rentGuest) {
+                posthog.capture({
+                  distinctId: rentGuest.email,
+                  event: "scheduled_rent_paid",
+                  properties: {
+                    lease_id: leaseId,
+                    schedule_seq: seq,
+                    amount: pi.amount / 100,
+                    payment_intent_id: pi.id
+                  }
+                });
+              }
+            }
           }
         }
       }
@@ -5220,6 +5427,17 @@ async function handleStripeEvent(event) {
             const lease = await storage.getLease(leaseId);
             const guest = lease ? await storage.getGuest(lease.guestId) : null;
             if (lease && guest) {
+              posthog.capture({
+                distinctId: guest.email,
+                event: "payment_failed",
+                properties: {
+                  lease_id: leaseId,
+                  schedule_seq: seq,
+                  amount: pi.amount / 100,
+                  failure_reason: pi.last_payment_error?.message ?? null,
+                  payment_intent_id: pi.id
+                }
+              });
               try {
                 await handleChargeFailure({ lease, guest, scheduleRow: failed, reason: pi.last_payment_error?.message });
               } catch (dErr) {
@@ -5275,8 +5493,12 @@ function applyBaseMiddleware(app) {
   });
 }
 function applyErrorHandler(app) {
-  app.use((err, _req, res, _next) => {
+  app.use((err, req, res, _next) => {
     const status = err.status || err.statusCode || 500;
+    if (status >= 500) {
+      const user = req.user;
+      posthog.captureException(err, user?.email ?? "anonymous");
+    }
     res.status(status).json({ message: err.message || "Internal Server Error" });
     console.error(err);
   });

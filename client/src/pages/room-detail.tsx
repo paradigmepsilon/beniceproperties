@@ -1,7 +1,7 @@
 // client/src/pages/room-detail.tsx
 // Co-living room: hero image + sticky reserve card (deposit now, weekly after).
 
-import { useParams, useLocation, Link } from "wouter";
+import { useParams, useLocation, useSearch, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import type { Property, Room } from "@shared/schema";
@@ -23,6 +23,7 @@ interface RoomResponse {
 export default function RoomDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
+  const searchStr = useSearch();
   const { data, isLoading } = useQuery<RoomResponse>({ queryKey: ["/api/rooms", id!] });
   // Busy ranges (room-blocking leases ∪ Airbnb iCal blocks) so the guest can see
   // when this room is taken before starting the lease flow. Read-only here.
@@ -43,8 +44,17 @@ export default function RoomDetail() {
   const { room, property } = data;
   function reserve() {
     // Co-living rooms go through the lease flow (term + cadence + full payment
-    // schedule preview), not the one-time STR checkout.
+    // schedule preview), not the one-time STR checkout. Carry a pre-picked range
+    // (from the property page / hero search) so the lease term seeds from it.
     const params = new URLSearchParams({ propertyId: room.propertyId, roomId: room.id });
+    const sp = new URLSearchParams(searchStr);
+    const ci = sp.get("checkIn") ?? "";
+    const co = sp.get("checkOut") ?? "";
+    const iso = /^\d{4}-\d{2}-\d{2}$/;
+    if (iso.test(ci) && iso.test(co) && co > ci) {
+      params.set("checkIn", ci);
+      params.set("checkOut", co);
+    }
     navigate(`/lease?${params.toString()}`);
   }
 

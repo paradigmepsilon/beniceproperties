@@ -1206,3 +1206,94 @@ production data mutated (a planned block-injection test was aborted because ever
 room carries an Airbnb feed URL the hourly cron could race).
 
 DATE-AVAILABILITY: COMPLETE — tests green
+
+---
+
+## 2026-07-04 — Co-living term gate: lease vs. direct booking (BT ticket)
+
+**What was built:** Term length (not product type) now decides whether a co-living
+stay needs a lease. Owner rule: **< 7 nights = not offered**, **7–28 nights =
+direct-booking reservation** (paid in full upfront, no lease/signature/schedule),
+**> 28 nights = lease** (existing flow, unchanged). STR untouched. No schema
+migration — `bookings` already carries `roomId`/`model`/`checkIn`/`checkOut`/
+`quotedTotal`, and `rooms.dailyRate` already exists.
+
+**Short-stay pricing (decided with owner):** whole weeks × `weeklyRent` +
+remainder days × daily rate, where daily = `room.dailyRate` if set, else
+`weeklyRent ÷ 7`. E.g. 10 nights = 1 × weekly + 3 × daily.
+
+**Files touched:**
+- `shared/schema.ts` — `COLIVING_MIN_DAYS=7`, `LEASE_REQUIRED_ABOVE_DAYS=28`,
+  `requiresLease()`, `isDirectCoLivingStay()` (one source of truth, client+server).
+- `shared/rateSelection.ts` — pure `shortStayPrice()` (weeks + daily remainder).
+- `server/lib/booking.ts` — `resolveBooking` co-living branch now requires dates,
+  gates 7–28 (rejects <7 and >28), room-overlap-guards, prices via `shortStayPrice`;
+  `buildQuote` co-living branch returns a one-time stay total (itemized week/day
+  lines), no recurring block.
+- `server/lib/paymentMetadata.ts` — new `buildRoomBookingChargeMetadata()`
+  (`product_type=COLIVING_ROOM`, room fields populated, `lease_id`/`schedule_seq`
+  null) — neither existing builder fit a lease-less co-living charge.
+- `server/storage.ts` — `getColivingBookingsForRoom()` + folded co-living bookings
+  into `isRoomAvailableForRange()` so a short booking blocks the room (and a lease).
+- `server/routes.ts` — `POST /api/bookings` no longer hard-rejects co-living; the
+  gate lives in `resolveBooking`. Stripe metadata branches STR vs co-living builder.
+- `client/src/pages/lease-booking.tsx` — computes term nights, branches: <7 inline
+  error, 7–28 short-stay price summary → CTA to `/checkout`, >28 lease UI (unchanged).
+- `client/src/pages/checkout.tsx` — co-living total label fixed ("Total due now").
+- Tests: `shared/leaseGate.test.ts` (new), `shared/rateSelection.test.ts`,
+  `server/lib/booking.test.ts`, `server/lib/paymentMetadata.test.ts`.
+
+**Tests + results:** `npm run check` clean; **`vitest run` — 269 pass / 23 files**
+(new: shortStayPrice math incl. weekly÷7 fallback, threshold-helper boundaries,
+resolveBooking 7/28/29-night gates, lease-less co-living metadata guard).
+**Live vs real Neon DB** (dev server, Stripe TEST key `sk_test_`):
+`POST /api/quote` OBC room (weekly 325, daily 47) — 10 nights → **466** (325 + 3×47,
+COLIVING, no recurring); 28 nights → **1300** (4 weeks); 5 nights → **400 7-night
+minimum**; 29 & 35 nights → **409 routed to lease**; STRIPE 10-night → **482.31**
+(3.5% surcharge). `POST /api/lease-quote` 35 nights still builds a schedule.
+`POST /api/bookings` STRIPE 10-night → **201** with a real `cs_test_` Checkout URL
+(the COLIVING_ROOM metadata passed `assertCompleteMetadata` at runtime, else the
+call throws). Double-book guard: overlapping the PENDING booking → **409**;
+non-overlapping → OK. STR nightly unchanged. Test booking cleaned up (booking +
+payment deleted); room dates confirmed free again. No production data left mutated.
+
+COLIVING-TERM-GATE: COMPLETE — tests green
+
+---
+
+## Per-room date-availability on the co-living property page (2026-07-04)
+
+**Gap:** The prior date-driven work made the home grid + lease-quote guard
+date-aware, but the room-selection step in between was missed. On `/property/:id`
+the room cards showed each room's raw `room.status` badge + an enabled "Reserve"
+button — a room Airbnb/lease-blocked for the *selected* dates still read
+"Available" (the property card correctly showed the property available because
+≥1 *other* room was free). Live-confirmed: `GET /api/properties/:id` returned all
+rooms `status=AVAILABLE` and ignored `?checkIn=&checkOut=`.
+
+**Fix — server returns per-room availability; client greys the blocked cards:**
+- `server/routes.ts` `GET /api/properties/:id`: now accepts optional
+  `?checkIn=&checkOut=` (same ISO/forward/not-past validation as the grid). For
+  a COLIVING property each room is mapped to `{ ...room, availableForDates }`
+  where dated → `status === "AVAILABLE" && storage.isRoomAvailableForRange(...)`
+  (batched), no-dates → `true`. Reuses the existing `isRoomAvailableForRange`
+  (leases ∪ Airbnb blocks) — no new overlap math. STR path unchanged (`rooms:[]`).
+- `shared/schema.ts`: added `RoomWithAvailability = Room & { availableForDates: boolean }`.
+- `client/src/pages/property-detail.tsx`: the detail query now carries the
+  selected range (refetches on date change); room cards compute
+  `roomBlocked = datedSearch && room.availableForDates === false` and, when
+  blocked, **grey the card (`.is-booked`), badge "Unavailable for your dates",
+  and disable Reserve** (decision: grey+disable). Free rooms unchanged. Dates
+  now flow into the `/room/:id` links.
+- `client/src/pages/room-detail.tsx` + `lease-booking.tsx`: carry a picked range
+  through to `/lease` and seed the lease term from it (was defaulting to today).
+
+**Tests + results:** `npm run check` clean; **269 vitest pass** (no per-room unit
+test added — the mapping is a single boolean AND over the already-tested
+`isRoomAvailableForRange`; verified live instead). API bundle rebuilt. **Live vs
+Neon (dev server):** `GET /api/properties/<Hutchens>?checkIn=2026-07-05&checkOut=2026-07-08`
+→ room 2 ($325, Airbnb Jul 2–9) `availableForDates:false`, rooms 1 ($300) & 3
+($350) `true`; no-dates request → all `true` (back-compat); same-day turnover
+(stay starting on the block's exclusive DTEND) → free; STR detail → `rooms:[]`.
+
+COLIVING-ROOM-CARDS: COMPLETE — tests green

@@ -12,6 +12,7 @@
 import express, { type Express } from "express";
 import multer from "multer";
 import { z } from "zod";
+import { differenceInCalendarDays, parseISO } from "date-fns";
 import { setupAuth, requireAdmin } from "./auth";
 import { storage } from "./storage";
 import {
@@ -24,7 +25,9 @@ import {
   insertPropertySchema,
   insertRoomSchema,
   US_STATE_CODES,
+  COLIVING_MIN_DAYS,
   type PropertyListItem,
+  type RoomWithAvailability,
 } from "@shared/schema";
 import {
   resolveBooking,
@@ -82,6 +85,7 @@ import {
 } from "./lib/stripe";
 import { buildAndPushSnapshot } from "./integrations/kpiRollup";
 import { log } from "./server-log";
+import { posthog } from "./lib/posthog";
 
 function appUrl(req: express.Request, path: string): string {
   const proto = req.protocol;
@@ -205,6 +209,13 @@ export async function registerRoutes(app: Express): Promise<void> {
         ISO.test(ci) && ISO.test(co) && co > ci && ci >= today
           ? { checkIn: ci, checkOut: co }
           : null;
+      // Searched stay length in NIGHTS (same basis as the booking flow). A
+      // co-living stay under the 7-night minimum can't be booked, so co-living is
+      // disqualified for such a search regardless of room date-availability.
+      const searchNights = dated
+        ? differenceInCalendarDays(parseISO(dated.checkOut), parseISO(dated.checkIn))
+        : 0;
+      const colivingBelowMin = Boolean(dated) && searchNights < COLIVING_MIN_DAYS;
 
       const props = await storage.getProperties({ activeOnly: true });
       const withRent = await Promise.all(
@@ -241,7 +252,9 @@ export async function registerRoutes(app: Express): Promise<void> {
             fromWeeklyRent = priced.fromWeeklyRent;
             // Only assert unavailability for a dated search; with no dates the card
             // falls back to status/nextOpening (availableForDates stays true).
-            if (dated) availableForDates = priced.available;
+            // A sub-minimum range disqualifies co-living outright (can't book <7
+            // nights) even if a room is otherwise free for those dates.
+            if (dated) availableForDates = colivingBelowMin ? false : priced.available;
           } else if (p.type === "STR" && dated) {
             // Whole-property STR: available iff no direct/Airbnb conflict for the
             // searched range — same overlap rule the checkout flow enforces.
@@ -289,8 +302,38 @@ export async function registerRoutes(app: Express): Promise<void> {
       if (!property || !property.active) {
         return res.status(404).json({ message: "Property not found" });
       }
-      const rooms =
+      // Optional date-aware search (same validation as the grid handler). When a
+      // valid forward, not-past range is supplied, each room reports whether it's
+      // actually bookable for THOSE dates so the room cards can grey out an
+      // Airbnb/lease-blocked room even though its manual status is AVAILABLE.
+      const today = new Date().toISOString().slice(0, 10);
+      const ISO = /^\d{4}-\d{2}-\d{2}$/;
+      const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
+      const co = typeof req.query.checkOut === "string" ? req.query.checkOut : "";
+      const dated =
+        ISO.test(ci) && ISO.test(co) && co > ci && ci >= today
+          ? { checkIn: ci, checkOut: co }
+          : null;
+
+      const baseRooms =
         property.type === "COLIVING" ? await storage.getRoomsByProperty(property.id) : [];
+      // Per-room availability for the searched range. No dates → every room is
+      // availableForDates:true (back-compat; the card falls back to room.status).
+      // Dated → AVAILABLE status AND free for [checkIn, checkOut) (leases ∪ Airbnb).
+      const rooms: RoomWithAvailability[] = dated
+        ? await Promise.all(
+            baseRooms.map(async (r) => ({
+              ...r,
+              availableForDates:
+                r.status === "AVAILABLE" &&
+                (await storage.isRoomAvailableForRange({
+                  roomId: r.id,
+                  startDate: dated.checkIn,
+                  endDate: dated.checkOut,
+                })),
+            })),
+          )
+        : baseRooms.map((r) => ({ ...r, availableForDates: true }));
       res.json({ property, rooms });
     } catch (err) {
       next(err);
@@ -405,6 +448,22 @@ export async function registerRoutes(app: Express): Promise<void> {
         return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid lease request" });
       }
       const { lease, documentHtml } = await createDraftLease(parsed.data);
+      posthog.identify({
+        distinctId: parsed.data.guest.email,
+        properties: { name: parsed.data.guest.name, email: parsed.data.guest.email, phone: parsed.data.guest.phone ?? undefined },
+      });
+      posthog.capture({
+        distinctId: parsed.data.guest.email,
+        event: "lease_created",
+        properties: {
+          lease_id: lease.id,
+          property_id: parsed.data.propertyId,
+          room_ids: parsed.data.roomIds,
+          start_date: parsed.data.startDate,
+          end_date: parsed.data.endDate,
+          cadence: parsed.data.cadence,
+        },
+      });
       res.status(201).json({ leaseId: lease.id, status: lease.status, documentHtml });
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -466,6 +525,20 @@ export async function registerRoutes(app: Express): Promise<void> {
         affirmed: parsed.data.affirmed,
         ip,
       });
+      const signedGuest = await storage.getGuest(lease.guestId);
+      if (signedGuest) {
+        posthog.capture({
+          distinctId: signedGuest.email,
+          event: "lease_signed",
+          properties: {
+            lease_id: lease.id,
+            property_id: lease.propertyId,
+            signed_name: parsed.data.signedName,
+            cadence: lease.paymentCadence,
+            total_lease_value: lease.totalLeaseValue,
+          },
+        });
+      }
       res.json({ leaseId: lease.id, status: lease.status, documentUrl });
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -508,7 +581,20 @@ export async function registerRoutes(app: Express): Promise<void> {
     try {
       const seq = parseInt(req.params.seq, 10);
       if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
-      res.json(await payInstallmentNow(req.params.token, seq));
+      const payResult = await payInstallmentNow(req.params.token, seq);
+      const portalData = await getPortalView(req.params.token).catch(() => null);
+      const portalGuestEmail = portalData?.guest?.email;
+      if (portalGuestEmail) {
+        posthog.capture({
+          distinctId: portalGuestEmail,
+          event: "portal_installment_paid",
+          properties: {
+            portal_token: req.params.token,
+            schedule_seq: seq,
+          },
+        });
+      }
+      res.json(payResult);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -526,6 +612,18 @@ export async function registerRoutes(app: Express): Promise<void> {
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       const msg = await submitMessage(req.params.token, parsed.data);
+      const msgPortalData = await getPortalView(req.params.token).catch(() => null);
+      const msgGuestEmail = msgPortalData?.guest?.email;
+      if (msgGuestEmail) {
+        posthog.capture({
+          distinctId: msgGuestEmail,
+          event: "guest_message_submitted",
+          properties: {
+            category: parsed.data.category ?? null,
+            subject: parsed.data.subject ?? null,
+          },
+        });
+      }
       res.status(201).json({ threadId: msg.id, status: msg.status });
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -566,6 +664,15 @@ export async function registerRoutes(app: Express): Promise<void> {
   app.post("/api/portal/:token/license", upload.single("file"), async (req, res, next) => {
     try {
       const result = await uploadLicense(req.params.token, toUploadedFile(req.file));
+      const licPortalData = await getPortalView(req.params.token).catch(() => null);
+      const licGuestEmail = licPortalData?.guest?.email;
+      if (licGuestEmail) {
+        posthog.capture({
+          distinctId: licGuestEmail,
+          event: "license_uploaded",
+          properties: { portal_token: req.params.token },
+        });
+      }
       res.status(201).json(result);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
@@ -635,6 +742,21 @@ export async function registerRoutes(app: Express): Promise<void> {
         return res.status(503).json({ message: "Card payments aren't enabled yet (Stripe test key not set)." });
       }
       const result = await startDepositPayment(req.params.id);
+      const depositLease = await storage.getLease(req.params.id);
+      if (depositLease) {
+        const depositGuest = await storage.getGuest(depositLease.guestId);
+        if (depositGuest) {
+          posthog.capture({
+            distinctId: depositGuest.email,
+            event: "deposit_payment_started",
+            properties: {
+              lease_id: req.params.id,
+              property_id: depositLease.propertyId,
+              amount: result.amount,
+            },
+          });
+        }
+      }
       res.json({
         clientSecret: result.clientSecret,
         amount: result.amount,
@@ -745,7 +867,23 @@ export async function registerRoutes(app: Express): Promise<void> {
   // Approve verification → verifies name + activates the lease.
   app.post("/api/admin/leases/:id/approve-verification", requireAdmin, async (req, res, next) => {
     try {
-      res.json(await approveVerification(req.params.id, adminActor(req)));
+      const approveResult = await approveVerification(req.params.id, adminActor(req));
+      const verifiedLease = await storage.getLease(req.params.id);
+      if (verifiedLease) {
+        const verifiedGuest = await storage.getGuest(verifiedLease.guestId);
+        if (verifiedGuest) {
+          posthog.capture({
+            distinctId: verifiedGuest.email,
+            event: "verification_approved",
+            properties: {
+              lease_id: req.params.id,
+              property_id: verifiedLease.propertyId,
+              actor: adminActor(req),
+            },
+          });
+        }
+      }
+      res.json(approveResult);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -907,6 +1045,25 @@ export async function registerRoutes(app: Express): Promise<void> {
         };
       }
 
+      posthog.identify({
+        distinctId: guest.email,
+        properties: { name: guest.name, email: guest.email, phone: guest.phone ?? undefined },
+      });
+      posthog.capture({
+        distinctId: guest.email,
+        event: "booking_created",
+        properties: {
+          reference,
+          property_id: resolved.property.id,
+          property_name: resolved.property.name,
+          property_type: resolved.model,
+          room_id: resolved.room?.id ?? null,
+          check_in: resolved.checkIn,
+          check_out: resolved.checkOut,
+          payment_method: paymentMethod,
+          quoted_total: dueNow,
+        },
+      });
       res.status(201).json(response);
     } catch (err) {
       if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
@@ -1106,6 +1263,22 @@ export async function registerRoutes(app: Express): Promise<void> {
           status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
         });
         if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
+        const manualGuest = await storage.getGuest(booking.guestId);
+        if (manualGuest) {
+          posthog.capture({
+            distinctId: manualGuest.email,
+            event: "manual_payment_confirmed",
+            properties: {
+              payment_id: payment.id,
+              booking_id: payment.bookingId,
+              booking_reference: booking.reference,
+              payment_method: payment.method,
+              amount: payment.amount,
+              property_id: booking.propertyId,
+              confirmed_by: adminActor(req),
+            },
+          });
+        }
       }
       res.json({ payment: updated });
     } catch (err) {
@@ -1266,6 +1439,22 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
           });
         }
       }
+      const confirmedGuest = await storage.getGuest(booking.guestId);
+      if (confirmedGuest) {
+        posthog.capture({
+          distinctId: confirmedGuest.email,
+          event: "booking_confirmed",
+          properties: {
+            reference,
+            booking_id: booking.id,
+            property_id: booking.propertyId,
+            property_type: booking.model,
+            room_id: booking.roomId ?? null,
+            check_in: booking.checkIn,
+            check_out: booking.checkOut,
+          },
+        });
+      }
       log(`booking ${reference} confirmed via checkout.session.completed`, "stripe");
       break;
     }
@@ -1320,6 +1509,22 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
         // (STR bookings also use BOOKING_DEPOSIT but carry no lease_id; those are
         // settled by checkout.session.completed, not here.)
         await finalizeDepositPayment(pi.id);
+        const depositedLease = await storage.getLease(pi.metadata.lease_id);
+        if (depositedLease) {
+          const depositedGuest = await storage.getGuest(depositedLease.guestId);
+          if (depositedGuest) {
+            posthog.capture({
+              distinctId: depositedGuest.email,
+              event: "lease_activated",
+              properties: {
+                lease_id: depositedLease.id,
+                property_id: depositedLease.propertyId,
+                payment_intent_id: pi.id,
+                amount: pi.amount / 100,
+              },
+            });
+          }
+        }
       } else if (kind === "FIRST_PAYMENT") {
         // Source of truth for lease activation.
         await finalizeFirstPayment(pi.id);
@@ -1349,6 +1554,21 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
                 log(`webhook late-fee billing failed ${leaseId} seq ${seq}: ${(feeErr as Error).message}`, "stripe");
               }
             }
+            if (lease) {
+              const rentGuest = await storage.getGuest(lease.guestId);
+              if (rentGuest) {
+                posthog.capture({
+                  distinctId: rentGuest.email,
+                  event: "scheduled_rent_paid",
+                  properties: {
+                    lease_id: leaseId,
+                    schedule_seq: seq,
+                    amount: pi.amount / 100,
+                    payment_intent_id: pi.id,
+                  },
+                });
+              }
+            }
           }
         }
       }
@@ -1371,6 +1591,17 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
             const lease = await storage.getLease(leaseId);
             const guest = lease ? await storage.getGuest(lease.guestId) : null;
             if (lease && guest) {
+              posthog.capture({
+                distinctId: guest.email,
+                event: "payment_failed",
+                properties: {
+                  lease_id: leaseId,
+                  schedule_seq: seq,
+                  amount: pi.amount / 100,
+                  failure_reason: pi.last_payment_error?.message ?? null,
+                  payment_intent_id: pi.id,
+                },
+              });
               try {
                 await handleChargeFailure({ lease, guest, scheduleRow: failed, reason: pi.last_payment_error?.message });
               } catch (dErr) {

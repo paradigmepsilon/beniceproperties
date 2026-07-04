@@ -5,8 +5,9 @@
 // and show "Next opening · <date>" when the server knows one.
 
 import { Link } from "wouter";
+import { differenceInCalendarDays, parseISO } from "date-fns";
 import { MapPin, Star } from "lucide-react";
-import type { PropertyListItem } from "@shared/schema";
+import { COLIVING_MIN_DAYS, type PropertyListItem } from "@shared/schema";
 import { ListingImage } from "@/components/listing-image";
 import { cityOf, fromNightly, money, shortDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -50,6 +51,13 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
   // the searched dates (drives the "Unavailable for your dates" badge/copy).
   const booked = cardUnavailable(p, checkIn, checkOut);
   const dateBlocked = dated && !p.availableForDates;
+  // A co-living card blocked specifically because the searched range is under the
+  // 7-night minimum (not a date conflict). Drives a reason-specific message so the
+  // guest knows to extend their stay, not that the room is taken.
+  const belowColivingMin =
+    isRoom &&
+    dated &&
+    differenceInCalendarDays(parseISO(checkOut!), parseISO(checkIn!)) < COLIVING_MIN_DAYS;
   const nightly = p.type === "STR" ? fromNightly(p) : null;
 
   const datesQuery = dated
@@ -100,7 +108,13 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
               booked ? "bg-secondary text-muted-foreground" : "bg-good-bg text-good",
             )}
           >
-            {dateBlocked ? "Unavailable for your dates" : booked ? "Fully booked" : "Available"}
+            {belowColivingMin
+              ? "7-night minimum"
+              : dateBlocked
+                ? "Unavailable for your dates"
+                : booked
+                  ? "Fully booked"
+                  : "Available"}
           </span>
         </div>
 
@@ -116,7 +130,13 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
           )}
           <div className="mt-auto flex items-center justify-between pt-3">
             <p className="text-sm">
-              {dateBlocked ? (
+              {belowColivingMin ? (
+                // Blocked because the searched stay is under the co-living minimum
+                // — tell the guest the rule, not that the room is taken.
+                <span className="font-medium text-muted-foreground">
+                  Co-living properties have a 7-day minimum stay requirement
+                </span>
+              ) : dateBlocked ? (
                 // Specifically blocked for the searched range — say so instead of
                 // a price. (The card is greyed via .is-booked; keep it visible.)
                 <span className="font-medium text-muted-foreground">Not available for these dates</span>
