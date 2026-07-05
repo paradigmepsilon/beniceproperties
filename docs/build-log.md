@@ -1626,3 +1626,45 @@ needs a real signed lease + TEST card and is Alex's manual verification gate per
 seeded co-living rooms — a data gap, not a code gap.
 
 PAYMENTS-TRAD-PARITY: COMPLETE — tests green
+
+
+---
+
+## CHECKOUT-AUTOREVEAL — auto-show Stripe payment, split name, single Pay Now
+
+Branch `feat/payments-trad-parity-manual-lease-rent` (continues the payments work).
+
+**Why.** The short-stay checkout took three steps: fill details → click "Pay with card" (which
+created the booking + PaymentIntent) → only then did the Stripe Payment Element appear, inside the
+right-hand price-summary card. Alex wanted the card fields to surface as soon as the guest has
+entered enough to pay, positioned under the guest details, with one Pay Now button.
+
+**What / files.** Client-only — `client/src/pages/checkout.tsx`.
+- Split the single "Full name" field into **First name + Last name** (both required); joined into
+  the existing `guest.name` at submit, so no server/schema change.
+- Added a helper line under a new "Payment" card: "Enter your first name, last name, and email to
+  see your payment options." (`data-testid="text-payment-hint"`).
+- **Auto-create** the booking + PaymentIntent via a `useEffect` the instant first name + last name
+  + valid email are present and the quote is ready — no "Pay with card" button. Guarded by a
+  `useRef` flag so `POST /api/bookings` fires exactly once per page load (verified: one 201, no
+  repeats on re-render). On error the guard resets so the guest can retry.
+- Moved the embedded `<Elements>`/`<PaymentElement>` block **under the guest details** (left
+  column); the right column is now price-summary-only. Identity fields lock once the PaymentIntent
+  exists so the charged guest stays consistent.
+- Single **Pay Now** button inside `PayForm`, disabled until the Payment Element reports
+  `complete` (tracked via `onChange`).
+
+**Tests / verification.** `tsc` clean; `npm run build` clean; vitest 285 passed (no page unit
+tests — flow verified in-browser). Playwright against the running :3002 dev server (feature branch),
+STR property `88423aa4`, 2026-09-01→09-04: on load all four fields active, helper text shown, no
+Stripe element, no pay button; after First=Test / Last=Guest / valid email, the Payment Element
+auto-mounted under the details (Card + wallets/BNPL tabs), identity fields locked, Pay Now present
+and **disabled** (card not yet complete), price summary on the right ($279 + $100 cleaning + $13.27
+card = $392.27), 0 console errors, exactly one `POST /api/bookings` → 201. Did NOT submit a card
+(live Stripe keys) — stopped at element-rendered + Pay-Now-gated state per repo money-path governance.
+
+**Deferred.** Auto-creating on valid email means a guest who enters details then leaves creates one
+stale PENDING_PAYMENT booking + PaymentIntent (same pattern as the lease deposit flow). A cleanup
+job for stale PENDING_PAYMENT bookings is out of scope here — flagged for later.
+
+CHECKOUT-AUTOREVEAL: COMPLETE — tests green

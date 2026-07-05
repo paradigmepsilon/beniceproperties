@@ -10,8 +10,14 @@
 // just confirms the PaymentIntent and then sends the guest to the confirmation
 // page. Manual payment (CashApp/Zelle) is NOT offered for short stays — it is a
 // per-payment option on co-living LEASE rent only (see the guest portal).
+//
+// UX: the guest enters first name, last name, and email; the moment those are
+// valid the booking + PaymentIntent are created automatically and the Stripe
+// Payment Element appears directly under the details (no intermediate button).
+// A single "Pay Now" button beneath the card runs the charge, enabled once the
+// card details are complete.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { loadStripe, type Stripe } from "@stripe/stripe-js";
@@ -51,12 +57,19 @@ export default function Checkout() {
   const checkIn = params.get("checkIn") ?? undefined;
   const checkOut = params.get("checkOut") ?? undefined;
 
-  const [name, setName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   // Once set, the guest pays the card on-page via the embedded Payment Element.
   const [stripeStep, setStripeStep] = useState<StripeStep | null>(null);
   const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null);
+  // Guards the auto-create effect so the booking is created exactly once.
+  const startedRef = useRef(false);
+
+  const guestName = `${firstName.trim()} ${lastName.trim()}`.trim();
+  const detailsValid =
+    Boolean(firstName.trim()) && Boolean(lastName.trim()) && /\S+@\S+\.\S+/.test(email);
 
   // Live quote — short stays are always paid by card (Stripe).
   const quoteBody = { propertyId, roomId, checkIn, checkOut, paymentMethod: PAYMENT_METHOD };
@@ -77,7 +90,7 @@ export default function Checkout() {
         checkIn,
         checkOut,
         paymentMethod: PAYMENT_METHOD,
-        guest: { name, email, phone: phone || undefined },
+        guest: { name: guestName, email, phone: phone || undefined },
       });
       return (await res.json()) as CreateBookingResponse;
     },
@@ -96,9 +109,23 @@ export default function Checkout() {
       }
     },
     onError: (err: Error) => {
+      // Allow another attempt if the guest fixes their details.
+      startedRef.current = false;
       toast({ title: "Could not complete booking", description: err.message, variant: "destructive" });
     },
   });
+
+  // Auto-create the booking + PaymentIntent the moment the required details are
+  // valid and the quote is ready — so the card fields appear without an extra
+  // click. Runs exactly once (startedRef); the identity fields lock afterward so
+  // the created PaymentIntent's guest stays consistent with what's charged.
+  useEffect(() => {
+    if (startedRef.current) return;
+    if (!detailsValid || !quote || stripeStep) return;
+    startedRef.current = true;
+    createBooking.mutate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detailsValid, quote, stripeStep]);
 
   if (!propertyId) {
     return (
@@ -112,13 +139,13 @@ export default function Checkout() {
     );
   }
 
-  const canSubmit = name.trim() && /\S+@\S+\.\S+/.test(email) && quote && !createBooking.isPending;
+  const identityLocked = Boolean(stripeStep) || createBooking.isPending;
 
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
       <main className="mx-auto grid w-full max-w-4xl flex-1 gap-8 px-6 py-12 md:grid-cols-2">
-        {/* Left: guest details */}
+        {/* Left: guest details → payment */}
         <div className="space-y-6">
           <div>
             <h1 className="font-display text-2xl font-semibold tracking-tight">Checkout</h1>
@@ -130,15 +157,27 @@ export default function Checkout() {
               <CardTitle className="text-base">Your details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <div>
-                <Label htmlFor="name">Full name</Label>
-                <Input
-                  id="name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  disabled={Boolean(stripeStep)}
-                  data-testid="input-name"
-                />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label htmlFor="firstName">First name</Label>
+                  <Input
+                    id="firstName"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    disabled={identityLocked}
+                    data-testid="input-first-name"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="lastName">Last name</Label>
+                  <Input
+                    id="lastName"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    disabled={identityLocked}
+                    data-testid="input-last-name"
+                  />
+                </div>
               </div>
               <div>
                 <Label htmlFor="email">Email</Label>
@@ -147,7 +186,7 @@ export default function Checkout() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  disabled={Boolean(stripeStep)}
+                  disabled={identityLocked}
                   data-testid="input-email"
                 />
               </div>
@@ -157,16 +196,37 @@ export default function Checkout() {
                   id="phone"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  disabled={Boolean(stripeStep)}
+                  disabled={identityLocked}
                   data-testid="input-phone"
                 />
               </div>
             </CardContent>
           </Card>
 
+          {/* Payment — appears automatically once the details above are complete. */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Payment</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              {!stripeStep && (
+                <p className="text-muted-foreground" data-testid="text-payment-hint">
+                  Enter your first name, last name, and email to see your payment options.
+                </p>
+              )}
+              {!stripeStep && createBooking.isPending && (
+                <p className="text-muted-foreground">Loading secure payment…</p>
+              )}
+              {stripeStep && stripePromise && (
+                <Elements stripe={stripePromise} options={{ clientSecret: stripeStep.clientSecret }}>
+                  <PayForm reference={stripeStep.reference} />
+                </Elements>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
-        {/* Right: live quote → (Stripe) embedded payment */}
+        {/* Right: live price summary (sticky). */}
         <div>
           <Card className="sticky top-6">
             <CardHeader>
@@ -207,29 +267,6 @@ export default function Checkout() {
                       </div>
                     </div>
                   )}
-
-                  {/* Embedded Stripe payment (on-page, no redirect). Shown once the
-                      PaymentIntent exists; otherwise the pay/reserve button. */}
-                  {stripeStep && stripePromise ? (
-                    <div className="mt-4">
-                      <Separator className="mb-4" />
-                      <Elements
-                        stripe={stripePromise}
-                        options={{ clientSecret: stripeStep.clientSecret }}
-                      >
-                        <PayForm reference={stripeStep.reference} />
-                      </Elements>
-                    </div>
-                  ) : (
-                    <Button
-                      className="mt-4 w-full"
-                      disabled={!canSubmit}
-                      onClick={() => createBooking.mutate()}
-                      data-testid="button-place-booking"
-                    >
-                      {createBooking.isPending ? "Processing…" : "Pay with card"}
-                    </Button>
-                  )}
                 </>
               )}
             </CardContent>
@@ -243,12 +280,14 @@ export default function Checkout() {
 
 // The embedded card form. Card data goes straight into Stripe's iframe and never
 // touches our code. On success we send the guest to the confirmation page; the
-// booking itself is confirmed server-side by the webhook.
+// booking itself is confirmed server-side by the webhook. Pay Now is disabled
+// until the Payment Element reports the card details are complete.
 function PayForm({ reference }: { reference: string }) {
   const stripe = useStripe();
   const elements = useElements();
   const [, navigate] = useLocation();
   const [submitting, setSubmitting] = useState(false);
+  const [complete, setComplete] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
@@ -278,10 +317,10 @@ function PayForm({ reference }: { reference: string }) {
 
   return (
     <form onSubmit={submit} className="space-y-4">
-      <PaymentElement />
+      <PaymentElement onChange={(e) => setComplete(e.complete)} />
       {err && <p className="text-sm text-destructive" data-testid="text-pay-error">{err}</p>}
-      <Button type="submit" disabled={!stripe || submitting} className="w-full" data-testid="button-pay">
-        {submitting ? "Processing…" : "Pay now"}
+      <Button type="submit" disabled={!stripe || submitting || !complete} className="w-full" data-testid="button-pay">
+        {submitting ? "Processing…" : "Pay Now"}
       </Button>
       <p className="text-center text-xs text-muted-foreground">
         Your card is securely processed by Stripe — we never see your card number.
