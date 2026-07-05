@@ -1565,3 +1565,64 @@ deposit line + incidentals note appear (lease); 35-night lease → deposit $200 
 total intact. STR path untouched (co-living-only file).
 
 DEPOSIT-LINE-CONDITIONAL: COMPLETE — tests green
+
+
+---
+
+## PAYMENTS-TRAD-PARITY — Stripe-only checkout, manual pay for lease rent, cleaning fee at move-in
+
+Branch `feat/payments-trad-parity-manual-lease-rent` off `578bd65`.
+
+**Why.** Align BNP payment options with the TRAD reference site and Alex's model: short-stay
+checkout is Stripe-only (TRAD has no manual path, no explicit method list); manual payment
+(CashApp/Zelle) is a per-payment choice on co-living LEASE payments only; a card is ALWAYS on file
+(deposit is always card); the cleaning fee is a MOVE-IN charge folded into the first payment (long
+co-living) or into the single payment (short stays); guests see full payment expectations before
+signing. Decisions confirmed with Alex via clarifying questions (card-always-on-file; manual on
+lease first payment + recurring rent; keep 3.5% surcharge on card; cleaning fee into first payment
+gated on ID verification; hold room as pending until UO confirms manual).
+
+**What / files.**
+- Part 1 — `client/src/pages/checkout.tsx`: reduced to Stripe-only (`PAYMENT_METHOD = "STRIPE"`),
+  removed the CashApp/Zelle method picker, manual-instructions screen, and manual button branches.
+  Server `POST /api/bookings` CASHAPP/ZELLE branch left intact (harmless dead path; refactored to
+  the shared `buildManualInstructions`). Kept the 3.5% surcharge line; wallets/BNPL stay
+  dashboard-driven via `automatic_payment_methods`.
+- Part 2 — `server/lib/leasePayments.ts`: moved the one-time cleaning-fee charge OUT of
+  `finalizeDepositPayment` (deposit is now the only charge that secures the room) and INTO
+  `activateVerifiedLease` (move-in, after ID approval), as its own `CLEANING_FEE` PaymentIntent
+  alongside first-week rent. A MANUAL first payment (seq 1) skips ALL card charges at activation.
+- Part 3 — new `server/lib/manualPayment.ts` (`manualHandle` / `buildManualInstructions`, single
+  source for the CashApp/Zelle handle). New `electManualInstallment(token, seq, method)` in
+  `server/lib/portal.ts` flips a next-due CARD_ON_FILE row to MANUAL, folds the unpaid cleaning fee
+  into the seq-1 amount, returns pay-to instructions (base amount, no surcharge). New endpoint
+  `POST /api/portal/:token/pay/:seq/manual` (`server/routes.ts`, not Stripe-gated). Portal UI
+  (`client/src/pages/portal.tsx`): "Pay by CashApp/Zelle" button + instructions panel with a
+  CashApp/Zelle toggle. `server/lib/uoApi.ts` `markPaid` extended: settling MANUAL seq 1 on an
+  approved+PENDING_VERIFICATION lease calls `activateVerifiedLease` to release check-in.
+- Part 4 — `client/src/pages/lease-booking.tsx`: pre-signing preview now shows the cleaning-fee
+  line + a combined "Total due at move-in" and notes the card/manual choice. `server/lib/
+  leaseDocument.ts`: sections 3 (first payment includes cleaning fee) and 7 (payment
+  authorization) reworded to reflect card-or-manual per installment.
+
+**No DB migration** — `payment_schedule.paymentMethod ∈ {CARD_ON_FILE, MANUAL}` and the
+cleaning-fee fields already existed; every downstream consumer (reconciliation split, rent-sweep
+skip, portal `(manual)` rendering, UO markPaid) already handled MANUAL.
+
+**Tests / verification.** `tsc` clean; `npm run build` clean (client + server bundle). Vitest 285
+passed (was 276) — 9 new tests: cleaning fee NOT charged at deposit, cleaning fee charged at
+activation (own `lease-cleaning-<id>` PI), MANUAL first payment charges nothing, `electManualInstallment`
+(flip to MANUAL/no money/base amount, folds cleaning fee into seq 1, idempotent + rejects paid),
+markPaid seq-1 activation (fires on approved lease, not on seq>1, not before approval). End-to-end
+against a fresh dev server on :3006 (branch code): new manual endpoint wired (404 on short/unknown
+token, 400 on bad method — no money moved); STR STRIPE quote shows base + cleaning fee + 3.5% card
+processing in one payment; lease-quote exposes cleaningFeeTotal/depositTotal/dueToday/schedule for
+the pre-signing preview.
+
+**Deferred / Alex's gate.** Full move-in charge with a Stripe TEST card (verifying the `CLEANING_FEE`
+PI fires at activation not deposit, and the manual first-payment → UO Mark Paid → check-in release)
+needs a real signed lease + TEST card and is Alex's manual verification gate per repo governance
+(money-moving Phase 4/5 paths). Inventory pricing (weekly rate / cleaning fee) is still unset on the
+seeded co-living rooms — a data gap, not a code gap.
+
+PAYMENTS-TRAD-PARITY: COMPLETE — tests green

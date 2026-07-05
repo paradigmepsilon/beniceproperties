@@ -23,6 +23,7 @@ import { buildLeaseChargeMetadata } from "./paymentMetadata";
 import { billAccruedLateFees } from "./dunning";
 import { calculateBreakdown } from "@shared/pricing";
 import { LeaseError } from "./lease";
+import { buildManualInstructions, type ManualMethod, type ManualInstructions } from "./manualPayment";
 import type { Lease } from "@shared/schema";
 
 const OPEN_FOR_PAY = new Set(["SCHEDULED", "DUE", "LATE", "FAILED"]);
@@ -172,6 +173,50 @@ export async function payInstallmentNow(
     /* late-fee billing failure is non-fatal to the rent payment */
   }
   return { paid: true, amount, paymentIntentId: pi.id };
+}
+
+/**
+ * Elect to pay an installment MANUALLY (CashApp / Zelle) instead of by card.
+ * Flips the row's payment_method to MANUAL and returns the pay-to instructions.
+ * NO money moves and NO surcharge applies — the guest sends the money off-band
+ * and an admin settles it via UO "Mark Paid" (which marks the row PAID and, for
+ * the first payment, releases check-in).
+ *
+ * Idempotent: a row already MANUAL just re-returns its instructions. Guards that
+ * the row is open (not already PAID/WAIVED) so a paid installment can't be
+ * "unpaid" into a manual state.
+ */
+export async function electManualInstallment(
+  token: string,
+  scheduleSeq: number,
+  method: ManualMethod,
+): Promise<ManualInstructions> {
+  const lease = await resolvePortalLease(token);
+  const schedule = await storage.getScheduleByLease(lease.id);
+  const row = schedule.find((s) => s.scheduleSeq === scheduleSeq);
+  if (!row) throw new LeaseError("Installment not found", 404);
+  if (row.status === "PAID") throw new LeaseError("That installment is already paid", 409);
+  if (row.status === "WAIVED") throw new LeaseError("That installment was waived", 409);
+  if (!OPEN_FOR_PAY.has(row.status)) throw new LeaseError("That installment can't be paid now", 409);
+
+  // Manual pays the base amount only — no card surcharge.
+  let amount = parseFloat(row.amount);
+
+  // The first payment (seq 1) is a move-in charge that also carries the one-time
+  // cleaning fee. Fold the unpaid cleaning fee into the manual amount so the
+  // guest sends the full "due to check in" sum in one payment.
+  if (row.scheduleSeq === 1 && lease.cleaningFeeStatus !== "PAID") {
+    amount += parseFloat(lease.cleaningFeeSnapshot ?? "0");
+  }
+  amount = Math.round(amount * 100) / 100;
+
+  if (row.paymentMethod !== "MANUAL") {
+    await storage.updateScheduleRow(row.id, { paymentMethod: "MANUAL" });
+  }
+
+  // Memo is what UO reconciles against: a stable per-installment reference.
+  const memo = `LEASE-${lease.id.slice(0, 8).toUpperCase()}-P${row.scheduleSeq}`;
+  return buildManualInstructions({ method, amount, memo });
 }
 
 // ---------------------------------------------------------------------------

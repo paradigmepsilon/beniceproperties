@@ -56,10 +56,12 @@ import { billAccruedLateFees, handleChargeFailure } from "./lib/dunning";
 import {
   getPortalView,
   payInstallmentNow,
+  electManualInstallment,
   submitMessage,
   replyToThread,
   getThread,
 } from "./lib/portal";
+import { buildManualInstructions } from "./lib/manualPayment";
 import {
   uploadLicense,
   saveVehicle,
@@ -602,6 +604,41 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Elect to pay an open installment MANUALLY (CashApp / Zelle) instead of by
+  // card. Flips the row to MANUAL and returns pay-to instructions; the payment is
+  // held pending until an admin settles it via UO "Mark Paid". Not Stripe-gated —
+  // this is the no-card path.
+  app.post("/api/portal/:token/pay/:seq/manual", async (req, res, next) => {
+    try {
+      const seq = parseInt(req.params.seq, 10);
+      if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
+      const schema = z.object({ method: z.enum(["CASHAPP", "ZELLE"]) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "method must be CASHAPP or ZELLE" });
+
+      const instructions = await electManualInstallment(req.params.token, seq, parsed.data.method);
+
+      const portalData = await getPortalView(req.params.token).catch(() => null);
+      const portalGuestEmail = portalData?.guest?.email;
+      if (portalGuestEmail) {
+        posthog.capture({
+          distinctId: portalGuestEmail,
+          event: "portal_installment_manual_elected",
+          properties: {
+            portal_token: req.params.token,
+            schedule_seq: seq,
+            method: parsed.data.method,
+            amount: instructions.amount,
+          },
+        });
+      }
+      res.json(instructions);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
   // Submit a question / maintenance request (creates a thread root).
   app.post("/api/portal/:token/messages", async (req, res, next) => {
     try {
@@ -1035,16 +1072,11 @@ export async function registerRoutes(app: Express): Promise<void> {
           confirmedBy: null,
           paidAt: null,
         });
-        const handle =
-          paymentMethod === "CASHAPP"
-            ? process.env.CASHAPP_TAG ?? "$BeNiceProperties"
-            : process.env.ZELLE_HANDLE ?? "pay@beniceproperties.com";
-        response.manualInstructions = {
+        response.manualInstructions = buildManualInstructions({
           method: paymentMethod,
-          handle,
           amount: dueNow,
           memo: reference,
-        };
+        });
       }
 
       posthog.identify({

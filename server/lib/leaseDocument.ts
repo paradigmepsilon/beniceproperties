@@ -99,8 +99,9 @@ export const DEFAULT_LEASE_TEMPLATE = {
       body:
         "Rent is billed on a {{cadenceLabel}} basis at a combined rate of " +
         "{{weeklyRateLabel}} per week across all rented room(s). The first payment is due on " +
-        "the start date. The complete schedule of payments and amounts appears below; the " +
-        "total value of this lease is {{totalLeaseValue}}. {{prorationNote}}",
+        "the start date (move-in) and includes the one-time cleaning fee described below. The " +
+        "complete schedule of payments and amounts appears below; the total value of this lease " +
+        "is {{totalLeaseValue}}. {{prorationNote}}",
     },
     {
       heading: "4. Move-in Charges (Deposit & Cleaning Fee)",
@@ -129,8 +130,12 @@ export const DEFAULT_LEASE_TEMPLATE = {
     {
       heading: "7. Payment Authorization",
       body:
-        "The Resident authorizes Be Nice Properties to charge the saved payment method on file " +
-        "for each scheduled payment and for any accrued late fees, on or after each due date.",
+        "A payment method is kept on file for the term of this lease. The Resident may pay each " +
+        "scheduled payment either by that card (subject to a 3.5% processing fee) or manually by " +
+        "CashApp/Zelle (no processing fee); a manual payment is held pending until confirmed. The " +
+        "Resident authorizes Be Nice Properties to charge the saved payment method on file for any " +
+        "scheduled payment not elected as manual, and for any accrued late fees, on or after each " +
+        "due date.",
     },
   ],
   signatureStatement:

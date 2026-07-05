@@ -15,6 +15,8 @@
 
 import { storage } from "../storage";
 import { buildLeaseChargeMetadata, buildStrChargeMetadata } from "./paymentMetadata";
+import { activateVerifiedLease } from "./leasePayments";
+import { log } from "../server-log";
 import { LeaseError } from "./lease";
 import type { Lease, Property, LeaseRoom } from "@shared/schema";
 
@@ -241,6 +243,21 @@ export async function markPaid(args: {
   for (const e of escalations) {
     if ((e.scheduleSeq ?? null) === row.scheduleSeq) {
       await storage.updateEscalation(e.id, { status: "RESOLVED", resolvedAt: new Date(), resolvedBy: args.actor });
+    }
+  }
+
+  // Settling the MANUAL first payment (seq 1) is what releases check-in for a
+  // manual-pay lease: the deposit already secured the room, ID verification is
+  // approved, and now the move-in payment (first installment + cleaning fee) is
+  // confirmed — so activate the lease and occupy the room(s). activateVerifiedLease
+  // is idempotent and, seeing seq 1 is MANUAL, skips all card charges. If the lease
+  // isn't yet approved/awaiting-move-in, this is a no-op and the normal approve
+  // flow activates it later (by which point seq 1 is already MANUAL+PAID).
+  if (row.scheduleSeq === 1 && lease.status === "PENDING_VERIFICATION" && lease.verificationStatus === "APPROVED") {
+    try {
+      await activateVerifiedLease(lease.id);
+    } catch (err) {
+      log(`manual seq-1 settle: activation deferred for lease ${lease.id}: ${(err as Error).message}`, "uo");
     }
   }
   return { alreadyPaid: false, scheduleSeq: row.scheduleSeq };

@@ -351,20 +351,11 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
     log(`deposit lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
 
-  // One-time cleaning fee: charge it off-session on the just-saved card, as its own
-  // CLEANING_FEE PaymentIntent (never folded into the refundable deposit). The fee
-  // is a move-in charge, not rent, so it is collected here alongside the deposit —
-  // NOT gated on identity verification. Non-fatal: a decline must not block room
-  // securing; the webhook marks it PAID, and it stays PENDING for the portal to
-  // settle if it fails. No-ops when there is no fee or it is already paid.
-  if (savedPaymentMethodId) {
-    await chargeCleaningFeeOffSession(lease.id, savedPaymentMethodId).catch((err) => {
-      log(`cleaning-fee charge failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
-    });
-  }
-
-  // NOTE: first week's rent is NOT charged here — activateVerifiedLease() owns it,
-  // so an unverified tenant is never charged rent.
+  // NOTE: the deposit is the ONLY charge due here. The one-time cleaning fee AND
+  // the first week's rent are both move-in charges collected together at
+  // activateVerifiedLease() (after ID approval) — so an unverified tenant is
+  // never charged rent or the cleaning fee, and the guest sees a single "due to
+  // check in" moment.
 }
 
 /**
@@ -376,9 +367,18 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
  * Idempotent: a no-op if the lease is already ACTIVE. Guards that the deposit is
  * paid and verification is APPROVED so it can't activate an unverified lease.
  *
- * First week's rent (schedule_seq 1) is due on the MOVE-IN date (start_date): we
- * charge it now only if move-in is today or past; for a future move-in seq 1 stays
- * SCHEDULED and the rent sweep charges it on start_date like any other installment.
+ * Move-in charges (due to check in) are the one-time cleaning fee AND the first
+ * week's rent (schedule_seq 1) — both collected here, after approval, never at
+ * deposit time. The cleaning fee (its own CLEANING_FEE PaymentIntent) is charged
+ * as soon as the lease activates. First week's rent is due on the MOVE-IN date
+ * (start_date): we charge it now only if move-in is today or past; for a future
+ * move-in seq 1 stays SCHEDULED and the rent sweep charges it on start_date like
+ * any other installment.
+ *
+ * If the guest elected to pay the first payment MANUALLY (seq 1 flipped to
+ * MANUAL via the portal), neither the cleaning fee nor seq 1 is card-charged
+ * here — the guest settles the combined move-in amount off-band and UO marks it
+ * paid (which releases check-in). See electManualInstallment / uoApi.markPaid.
  */
 export async function activateVerifiedLease(leaseId: string): Promise<void> {
   const lease = await storage.getLease(leaseId);
@@ -412,10 +412,32 @@ export async function activateVerifiedLease(leaseId: string): Promise<void> {
     log(`activation lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
 
-  // First week's rent — charge now only if move-in is today/past; else defer.
+  // Move-in charges: cleaning fee + first week's rent. Skip all card charges when
+  // the guest elected to pay the first payment MANUALLY (seq 1 is MANUAL) — they
+  // settle the combined move-in amount off-band and UO marks it paid.
   const savedPaymentMethodId = lease.stripePaymentMethodId ?? null;
   const schedule = await storage.getScheduleByLease(lease.id);
   const first = schedule.find((s) => s.scheduleSeq === 1);
+  const firstIsManual = first?.paymentMethod === "MANUAL";
+
+  if (firstIsManual) {
+    log(
+      `lease ${lease.id} first payment is MANUAL — cleaning fee + first week held for manual settlement (UO Mark Paid)`,
+      "stripe",
+    );
+    return;
+  }
+
+  // One-time cleaning fee is a move-in charge, collected here (not at deposit).
+  // Its own CLEANING_FEE PaymentIntent; non-fatal, idempotent, no-ops when there
+  // is no fee or it is already paid.
+  if (savedPaymentMethodId) {
+    await chargeCleaningFeeOffSession(lease.id, savedPaymentMethodId).catch((err) => {
+      log(`cleaning-fee charge on activation failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
+    });
+  }
+
+  // First week's rent — charge now only if move-in is today/past; else defer.
   const dueNow = first && first.status !== "PAID" && first.dueDate <= todayYmd();
   if (dueNow && savedPaymentMethodId) {
     await chargeFirstWeekOffSession(lease.id, savedPaymentMethodId).catch((err) => {
@@ -504,13 +526,14 @@ async function chargeFirstWeekOffSession(leaseId: string, paymentMethodId: strin
 
 /**
  * Charge the one-time, non-refundable cleaning fee off-session on the saved card.
- * Called from finalizeDepositPayment (the card is saved by the deposit). Separate
- * PaymentIntent with payment_kind = CLEANING_FEE so it is never folded into the
- * refundable deposit or into rent. Surcharged like rent (a real cost we pay Stripe
- * on). Idempotent per lease: a lease already carrying a paid cleaning fee no-ops,
- * and the Stripe idempotency key prevents a double charge on re-runs. Never throws
- * to the caller — a decline here must not block room securing (deposit already
- * paid); it is logged and left PENDING for the guest/portal to settle.
+ * Called from activateVerifiedLease as part of the MOVE-IN charge (the card is
+ * saved by the deposit; the cleaning fee is due at move-in, not at deposit time).
+ * Separate PaymentIntent with payment_kind = CLEANING_FEE so it is never folded
+ * into the refundable deposit or into rent. Surcharged like rent (a real cost we
+ * pay Stripe on). Idempotent per lease: a lease already carrying a paid cleaning
+ * fee no-ops, and the Stripe idempotency key prevents a double charge on re-runs.
+ * Never throws to the caller — a decline here must not block activation; it is
+ * logged and left PENDING for the guest/portal to settle.
  */
 async function chargeCleaningFeeOffSession(leaseId: string, paymentMethodId: string): Promise<void> {
   const { lease, property, rooms } = await loadLeaseContext(leaseId);
