@@ -1770,3 +1770,60 @@ run `node scripts/clean-stale-coliving-bookings.mjs` (dry run) to review, then
 the calendar fix means such rows also become visible on the calendar rather than silent.
 
 FIX-AVAILABILITY-DIVERGENCE: COMPLETE — tests green
+
+## 2026-07-05 — Feature: content & community layer
+
+Branch `feat/content-community-layer`. Ticket: BNP Feature (Build Tracker) —
+"Content & community layer". Design spec:
+`docs/superpowers/specs/2026-07-05-content-community-layer-design.md`.
+
+**Why.** BNP's site converts well but does nothing to make a visitor *want* to
+stay before booking — no story, community, neighborhood, or social proof.
+Modeled on livingQ.city's content/trust layer, grafted onto BNP's existing
+booking engine without changing the design language or the path to book. Serves
+platform-independence (owned email capture), marketing (content surface + SEO
+URLs), and conversion (inclusions transparency + social proof).
+
+**What / files.** Constants-driven (DB/admin editing is a deliberate later phase).
+- `client/src/content/{inclusions,testimonials,hosts,neighborhoods,journal,company}.ts`
+  — editable typed placeholder content (mirrors the home.tsx TRUST_ITEMS pattern).
+- `client/src/lib/content.ts` + `content.test.ts` — pure selectors
+  (`selectTestimonials`, `neighborhoodFor`, `postBySlug`), 13 unit tests.
+- `client/src/components/{inclusions-grid,testimonials,host-card,hosts-section,`
+  `neighborhood-block,journal-card,newsletter-signup,follow-strip}.tsx` — token-styled,
+  each self-guards on empty content; reuse ListingImage fallback + RichText.
+- `client/src/pages/{community,journal,journal-article,about}.tsx` — new routes;
+  registered in `App.tsx` with `/journal/:slug` before `/journal` (wouter first-match).
+- `client/src/components/site-header.tsx` — header gains Community + Journal;
+  footer gains About/Community/Journal links and mounts NewsletterSignup.
+- `client/src/pages/{home,property-detail,room-detail}.tsx` — inclusions +
+  testimonials on home; compact inclusions (co-living only) + neighborhood block on
+  the detail pages. Booking flow untouched.
+- Newsletter backend (the only DB touch): `shared/schema.ts` adds the additive
+  `newsletter_subscribers` table (+ `shared/newsletter.test.ts`, 5 tests);
+  `server/storage.ts` `upsertNewsletterSubscriber` (idempotent read-then-insert);
+  `server/routes.ts` `POST /api/newsletter`; `scripts/push-newsletter-subscribers.mjs`
+  creates the table idempotently.
+
+**Migration.** Additive only — one brand-new empty table via `CREATE TABLE IF NOT
+EXISTS` (no existing table altered, re-run is a no-op). Per the CLAUDE.md floor a
+backup is required only before a *destructive* migration, so none was needed. The
+push script ran against the BNP Neon DB (owner-confirmed) and its pre/post
+`information_schema` check reported the table present.
+
+**Tests / verification.** `tsc` clean; `npm run build` clean; vitest **308 passed**
+(was 290: +13 content selectors, +5 newsletter schema). E2E on the **prod** server
+(`npm run start`, :3003 — the serveStatic/Vercel path, since Vite dev middleware
+swallows the POST): `POST /api/newsletter` → 200 on valid + duplicate (idempotent),
+400 on invalid/missing email; rows persisted and deduped correctly in the DB;
+GUI-driven form submission (Playwright) showed the inline success and wrote the row.
+Browser-verified home + `/community` + `/journal` + `/journal/:slug` (+ unknown slug
+→ 404) + `/about` + both detail-page enrichments (STR correctly hides compact
+inclusions, shows neighborhood). Test rows cleaned up (table back to empty).
+
+**Deferred — content + DB migration.** All new content is editable placeholder copy
+for the owner to swap with real testimonials, host bios/photos, neighborhood
+write-ups, and journal posts. Migrating the content constants to DB tables + an
+admin editing UI is the explicit next phase (out of scope here).
+
+CONTENT-COMMUNITY-LAYER: COMPLETE — tests green
