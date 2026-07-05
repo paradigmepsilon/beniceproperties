@@ -7,6 +7,8 @@ import { Link, useParams, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
 import type { Property, RoomWithAvailability } from "@shared/schema";
+import type { QuoteResponse } from "@shared/api-types";
+import { apiRequest } from "@/lib/queryClient";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingImage } from "@/components/listing-image";
 import { ListingGallery } from "@/components/listing-gallery";
@@ -52,6 +54,12 @@ export default function PropertyDetail() {
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json();
     },
+    // Keep the previously-loaded property mounted while a date-driven refetch
+    // runs. Without this, changing dates changes the queryKey → isLoading flips
+    // true → the full-page loading Shell below unmounts the tree → the browser
+    // resets scroll to the top. Retaining prior data means isLoading is only
+    // true on the very first visit (correct — that load should be at the top).
+    placeholderData: (prev) => prev,
   });
   // Busy ranges (direct bookings ∪ Airbnb iCal blocks) so booked dates disable in
   // the calendar. Empty for co-living (endpoint returns no busy set); the picker
@@ -60,6 +68,21 @@ export default function PropertyDetail() {
   // "Continue" disabled, or a booked range would look bookable on first paint
   // (busy defaults to [] before the query resolves).
   const { data: avail, isLoading: availLoading } = usePropertyAvailability(id);
+
+  // Live stay total for the selected range, from the SAME /api/quote the
+  // checkout page uses — so the number shown here is exactly the checkout
+  // subtotal. We display dueNow.subtotal (base + cleaning − discount), which
+  // excludes tax & the card surcharge; those are surfaced at checkout. STR is a
+  // whole-property quote, so no roomId (matches how checkout quotes STR).
+  const quoteBody = { propertyId: id, checkIn, checkOut, paymentMethod: "STRIPE" as const };
+  const { data: quote, isLoading: quoteLoading } = useQuery<QuoteResponse>({
+    queryKey: ["/api/quote", JSON.stringify(quoteBody)],
+    queryFn: async () => {
+      const res = await apiRequest("POST", "/api/quote", quoteBody);
+      return res.json();
+    },
+    enabled: datedSearch,
+  });
 
   if (isLoading) return <Shell><p className="text-muted-foreground">Loading…</p></Shell>;
   if (!data) return <Shell><p>Property not found.</p></Shell>;
@@ -251,6 +274,28 @@ export default function PropertyDetail() {
                     data-testid="input-date-range"
                   />
                 </div>
+                {/* Stay total for the selected range — the checkout subtotal
+                    (before tax & card fees, which are shown at checkout). Only
+                    shown once a real, bookable range is picked. */}
+                {datesValid && (
+                  <div className="mt-4 border-t border-border pt-4">
+                    {quoteLoading || !quote ? (
+                      <p className="text-sm text-muted-foreground">Calculating your total…</p>
+                    ) : (
+                      <>
+                        <div className="flex items-baseline justify-between">
+                          <span className="text-sm font-medium">Stay total</span>
+                          <span className="font-display text-2xl font-semibold" data-testid="text-stay-total">
+                            {money(String(quote.dueNow.subtotal))}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Taxes &amp; card fees shown at checkout.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
                 <Button className="mt-4 w-full" size="lg" disabled={!datesValid} onClick={continueToCheckout} data-testid="button-continue-checkout">
                   Continue to checkout
                 </Button>
