@@ -217,6 +217,17 @@ describe("resolveBooking — co-living term gate (7–28 = booking, else rejecte
   it("requires move-in and move-out dates", async () => {
     await expect(resolveBooking({ propertyId: "p2", roomId: "r1" })).rejects.toThrow(/dates/i);
   });
+
+  it("reads the per-room cleaning fee onto the resolved short stay", async () => {
+    mockStorage.getRoom.mockResolvedValue({ ...ROOM, cleaningFee: "75" } as never);
+    const r = await resolveBooking({
+      propertyId: "p2",
+      roomId: "r1",
+      checkIn: "2026-07-01",
+      checkOut: "2026-07-11",
+    });
+    expect(r.cleaningFee).toBe(75);
+  });
 });
 
 describe("buildQuote — co-living short stay (weeks + daily remainder, no recurring)", () => {
@@ -242,6 +253,21 @@ describe("buildQuote — co-living short stay (weeks + daily remainder, no recur
     expect(q.dueNow.lines.some((l) => /1 week/.test(l.label))).toBe(true);
     expect(q.dueNow.lines.some((l) => /3 days/.test(l.label))).toBe(true);
     expect(q.dueNow.total).toBe(1000); // no surcharge for ZELLE
+  });
+
+  it("adds a cleaning-fee line and folds it into the total (like STR)", () => {
+    const q = buildQuote(coResolved({ cleaningFee: 75 }), "ZELLE");
+    const fee = q.dueNow.lines.find((l) => l.label === "Cleaning fee");
+    expect(fee?.amount).toBe(75);
+    // subtotal = base 1000 + cleaning 75; no surcharge for ZELLE.
+    expect(q.dueNow.subtotal).toBe(1075);
+    expect(q.dueNow.total).toBe(1075);
+  });
+
+  it("omits the cleaning-fee line when the fee is zero", () => {
+    const q = buildQuote(coResolved({ cleaningFee: 0 }), "ZELLE");
+    expect(q.dueNow.lines.some((l) => l.label === "Cleaning fee")).toBe(false);
+    expect(q.dueNow.total).toBe(1000);
   });
 
   it("omits the day line when the stay is whole weeks", () => {

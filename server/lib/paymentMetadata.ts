@@ -14,7 +14,7 @@
 //   room_name     string | "null"
 //   room_number   string | "null"
 //   lease_id      uuid | "null"        (null for STR nightly)
-//   payment_kind  BOOKING_DEPOSIT | FIRST_PAYMENT | SCHEDULED_RENT | LATE_FEE | MANUAL_RECONCILE
+//   payment_kind  BOOKING_DEPOSIT | FIRST_PAYMENT | SCHEDULED_RENT | LATE_FEE | CLEANING_FEE | MANUAL_RECONCILE
 //   schedule_seq  int | "null"
 //
 // Stripe metadata values must be strings. We serialise null as the string
@@ -30,6 +30,9 @@ export type PaymentKind =
   | "FIRST_PAYMENT"
   | "SCHEDULED_RENT"
   | "LATE_FEE"
+  // One-time, non-refundable co-living cleaning fee charged at move-in as its own
+  // PaymentIntent (never folded into the refundable deposit or into rent).
+  | "CLEANING_FEE"
   | "MANUAL_RECONCILE";
 
 export type ProductType = "STR_WHOLE" | "COLIVING_ROOM";

@@ -1567,6 +1567,21 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
       } else if (kind === "FIRST_PAYMENT") {
         // Source of truth for lease activation.
         await finalizeFirstPayment(pi.id);
+      } else if (kind === "CLEANING_FEE") {
+        // One-time non-refundable cleaning fee (charged off-session at move-in).
+        // Mark it PAID on the lease. Idempotent by (lease_id, matching PI). The
+        // charge was fired from finalizeDepositPayment; this is the confirm.
+        const leaseId = pi.metadata?.lease_id;
+        if (leaseId && leaseId !== "null") {
+          const feeLease = await storage.getLease(leaseId);
+          if (feeLease && feeLease.cleaningFeeStatus !== "PAID") {
+            await storage.updateLease(leaseId, {
+              cleaningFeeStatus: "PAID",
+              cleaningFeePaidAt: new Date(),
+              cleaningFeeStripePaymentIntentId: pi.id,
+            });
+          }
+        }
       } else if (kind === "SCHEDULED_RENT") {
         // Settle the installment by (lease_id, schedule_seq) from metadata. The
         // sweep usually already marked it PAID; this is the authoritative confirm

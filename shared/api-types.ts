@@ -159,6 +159,11 @@ export interface LeaseQuoteResponse {
   weeklyRateTotal: number;
   /** Refundable security deposit that secures the room (sum across rooms). */
   depositTotal: number;
+  /**
+   * One-time cleaning fee (sum across rooms), due at move-in. Non-refundable and
+   * charged as its own PaymentIntent — NOT part of the recurring schedule below.
+   */
+  cleaningFeeTotal: number;
   termDays: number;
   schedule: LeaseScheduleLine[];
   totalLeaseValue: number;

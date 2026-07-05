@@ -599,6 +599,7 @@ function RoomEditor({ room, propertyId }: { room: Room; propertyId: string }) {
   const [roomNumber, setRoomNumber] = useState(room.roomNumber ?? "");
   const [weeklyRent, setWeeklyRent] = useState(numOrBlank(room.weeklyRent));
   const [depositAmount, setDepositAmount] = useState(numOrBlank(room.depositAmount));
+  const [cleaningFee, setCleaningFee] = useState(numOrBlank(room.cleaningFee));
   const [dailyRate, setDailyRate] = useState(numOrBlank(room.dailyRate));
   const [monthlyRate, setMonthlyRate] = useState(numOrBlank(room.monthlyRate));
   const [status, setStatus] = useState(room.status);
@@ -610,6 +611,7 @@ function RoomEditor({ room, propertyId }: { room: Room; propertyId: string }) {
         roomNumber: roomNumber.trim() || null,
         weeklyRent: rate(weeklyRent) ?? "0",
         depositAmount: rate(depositAmount) ?? "0",
+        cleaningFee: rate(cleaningFee) ?? "0",
         dailyRate: rate(dailyRate) ?? null,
         monthlyRate: rate(monthlyRate) ?? null,
         status,
@@ -644,6 +646,7 @@ function RoomEditor({ room, propertyId }: { room: Room; propertyId: string }) {
         </div>
         <RateField label="Weekly rent" value={weeklyRent} onChange={setWeeklyRent} placeholder="275.00" testId={`input-room-weekly-${room.id}`} />
         <RateField label="Deposit" value={depositAmount} onChange={setDepositAmount} placeholder="275.00" testId={`input-room-deposit-${room.id}`} />
+        <RateField label="Cleaning fee" value={cleaningFee} onChange={setCleaningFee} placeholder="0.00" testId={`input-room-cleaning-${room.id}`} />
         <RateField label="Daily (optional)" value={dailyRate} onChange={setDailyRate} placeholder="—" testId={`input-room-daily-${room.id}`} />
         <RateField label="Monthly (optional)" value={monthlyRate} onChange={setMonthlyRate} placeholder="—" testId={`input-room-monthly-${room.id}`} />
       </div>
@@ -660,6 +663,7 @@ function AddRoomForm({ propertyId }: { propertyId: string }) {
   const [roomNumber, setRoomNumber] = useState("");
   const [weeklyRent, setWeeklyRent] = useState("");
   const [depositAmount, setDepositAmount] = useState("");
+  const [cleaningFee, setCleaningFee] = useState("");
 
   const create = useMutation({
     mutationFn: async () => {
@@ -669,6 +673,7 @@ function AddRoomForm({ propertyId }: { propertyId: string }) {
         roomNumber: roomNumber.trim() || null,
         weeklyRent: rate(weeklyRent) ?? "0",
         depositAmount: rate(depositAmount) ?? "0",
+        cleaningFee: rate(cleaningFee) ?? "0",
         status: "AVAILABLE",
       });
     },
@@ -678,6 +683,7 @@ function AddRoomForm({ propertyId }: { propertyId: string }) {
       setRoomNumber("");
       setWeeklyRent("");
       setDepositAmount("");
+      setCleaningFee("");
       invalidateRooms(propertyId);
     },
     onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
@@ -697,6 +703,7 @@ function AddRoomForm({ propertyId }: { propertyId: string }) {
         </div>
         <RateField label="Weekly rent" value={weeklyRent} onChange={setWeeklyRent} placeholder="275.00" testId={`input-newroom-weekly-${propertyId}`} />
         <RateField label="Deposit" value={depositAmount} onChange={setDepositAmount} placeholder="275.00" testId={`input-newroom-deposit-${propertyId}`} />
+        <RateField label="Cleaning fee" value={cleaningFee} onChange={setCleaningFee} placeholder="0.00" testId={`input-newroom-cleaning-${propertyId}`} />
       </div>
       <Button className="mt-3" size="sm" variant="outline" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()} data-testid={`button-add-room-${propertyId}`}>
         Add room

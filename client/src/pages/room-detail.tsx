@@ -286,7 +286,11 @@ export default function RoomDetail() {
                         </span>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
-                        Due now: {money(String(leaseQuote.depositTotal))} deposit. Full payment schedule on the next step.
+                        Due now: {money(String(leaseQuote.depositTotal))} deposit
+                        {leaseQuote.cleaningFeeTotal > 0
+                          ? ` + ${money(String(leaseQuote.cleaningFeeTotal))} cleaning fee`
+                          : ""}
+                        . Full payment schedule on the next step.
                       </p>
                     </>
                   )}

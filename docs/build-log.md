@@ -1488,3 +1488,55 @@ instead). Confirm the Element renders and pays on the live TEST deployment befor
 keys. Per repo governance, moving to live Stripe keys is a manual human step.
 
 CHECKOUT-EMBEDDED-STRIPE: COMPLETE — tests green
+
+---
+
+## Co-living per-room cleaning fee (2026-07-04)
+
+**What was built.** Per-room cleaning fee for co-living rooms, mirroring the existing per-property
+STR cleaning fee (`properties.cleaningFee`). Selectable per room in the admin dashboard. Applies to
+both co-living booking paths; multi-room leases sum the per-room fees. Locked decisions: both paths;
+sum across rooms; on a **lease** the fee is a distinct non-refundable `CLEANING_FEE` PaymentIntent
+at move-in (never folded into the refundable deposit); on a **short stay** it folds into the single
+upfront charge via `calculateBreakdown` like STR.
+
+**Files touched.**
+- `shared/schema.ts` — `rooms.cleaningFee` (`decimal`, default "0"); `leases.cleaningFeeSnapshot` +
+  `cleaningFeeStatus` + `cleaningFeeStripePaymentIntentId` + `cleaningFeePaidAt` (deposit-style
+  tracking columns).
+- `scripts/push-room-cleaning-fee.mjs` (new) — idempotent `ADD COLUMN IF NOT EXISTS` ×5. Applied to
+  live Neon; re-run confirmed a clean no-op.
+- `server/lib/booking.ts` — COLIVING `resolveBooking` reads `room.cleaningFee`; short-stay
+  `buildQuote` folds it into `calculateBreakdown` and adds a "Cleaning fee" line when > 0.
+- `server/lib/lease.ts` — `buildLeaseQuote` sums the fee via the existing `sumRate` helper →
+  `cleaningFeeTotal` (move-in charge, NOT in the recurring schedule).
+- `shared/api-types.ts` — `LeaseQuoteResponse.cleaningFeeTotal`.
+- `server/lib/leaseFlow.ts` — snapshot `cleaningFeeSnapshot`/`cleaningFeeStatus` on draft lease;
+  thread deposit + cleaning totals into the lease document (both quote-build and sign-time rebuild).
+- `server/lib/leaseDocument.ts` — new "Move-in Charges (Deposit & Cleaning Fee)" section; deposit
+  always stated (was previously absent from the agreement), cleaning-fee sentence conditional on > 0.
+- `server/lib/paymentMetadata.ts` — `CLEANING_FEE` added to the `PaymentKind` union + contract note.
+- `server/lib/leasePayments.ts` — `chargeCleaningFeeOffSession()` (own PI, surcharged like rent,
+  idempotency key `lease-cleaning-<id>`), fired from `finalizeDepositPayment` on the saved card;
+  non-fatal so a decline never blocks room securing. `refundDeposit` untouched (fee is non-refundable).
+- `server/routes.ts` — webhook `payment_intent.succeeded` routes `CLEANING_FEE` PIs → mark lease
+  cleaning fee PAID (idempotent).
+- `client/src/pages/room-detail.tsx` — lease due-now note shows "+ <fee> cleaning fee" when > 0.
+  (Short-stay + checkout render the new quote line automatically via the generic `lines.map`.)
+- `client/src/pages/admin/dashboard.tsx` — cleaning-fee `RateField` in `RoomEditor` + `AddRoomForm`.
+- Tests: `booking.test.ts` (+3), `lease.test.ts` (+2), `leaseDocument.test.ts` (+2 net).
+
+**Tests / verification.** `tsc` clean. `vitest` 276/276 pass. Migration applied to live Neon and
+re-run idempotently; columns confirmed present. **End-to-end against real Neon** (dev server on
+:3005): short-stay `/api/quote` with fee=0 → no line, subtotal $466; set fee=75 → "Cleaning fee"
+$75 line, subtotal $466→$541, STRIPE surcharge recomputed to $18.94, total $559.94. Lease
+`/api/lease-quote` (40-night) → `cleaningFeeTotal:75` returned separately; `totalLeaseValue`/`dueToday`
+remain rent-only (fee not in the schedule). Test room fee reset to 0 afterward.
+
+**Not done here (admin gate).** The lease **charge** path (`chargeCleaningFeeOffSession` + the
+webhook `CLEANING_FEE` confirm) is Phase-4 money-path code — built and typechecked but NOT fired.
+It needs a real signed lease + Stripe TEST card at move-in to confirm a separate `CLEANING_FEE`
+PaymentIntent with complete metadata, the deposit refund untouched, and no live key. Per repo
+governance this manual TEST-key run is Alex's gate before Verified/Done.
+
+CLEANING-FEE-COLIVING: COMPLETE — tests green

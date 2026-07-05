@@ -66,6 +66,41 @@ describe("buildLeaseQuote — happy path", () => {
     expect(q.rooms.map((r) => r.name)).toEqual(["Room 1", "Room 2"]);
   });
 
+  it("sums the per-room cleaning fee across rooms (0 when unset)", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom
+      .mockResolvedValueOnce({ ...room("r1", "Room 1", "250.00"), cleaningFee: "75.00" })
+      .mockResolvedValueOnce({ ...room("r2", "Room 2", "200.00"), cleaningFee: "50.00" });
+
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1",
+      roomIds: ["r1", "r2"],
+      startDate: "2026-07-01",
+      endDate: "2026-07-28",
+      cadence: "WEEKLY",
+    });
+
+    expect(q.cleaningFeeTotal).toBe(125); // 75 + 50
+    // The fee is a move-in charge, NOT part of the recurring rent schedule.
+    expect(q.schedule.every((r) => r.amount === 450)).toBe(true);
+    expect(q.totalLeaseValue).toBe(1800);
+  });
+
+  it("returns cleaningFeeTotal 0 when no room carries a fee", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1",
+      roomIds: ["r1"],
+      startDate: "2026-07-01",
+      endDate: "2026-07-14",
+      cadence: "WEEKLY",
+    });
+
+    expect(q.cleaningFeeTotal).toBe(0);
+  });
+
   it("marks only the first installment as dueOnBooking", async () => {
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
     mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));

@@ -136,6 +136,9 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
   const monthlyTotal = sumRate(rooms, (r) => r.monthlyRate);
   // Refundable security deposit that secures the room(s). Sum across rooms.
   const depositTotal = sumRate(rooms, (r) => r.depositAmount) ?? 0;
+  // One-time cleaning fee (non-refundable). Sum across rooms. Charged at move-in
+  // as its own PaymentIntent — NOT part of the recurring installment schedule.
+  const cleaningFeeTotal = sumRate(rooms, (r) => r.cleaningFee) ?? 0;
 
   // The rate TIER sets the price per night (>=28 monthly, >=7 weekly, else daily),
   // falling back to a shorter tier if the chosen one isn't priced. Independent of
@@ -203,6 +206,7 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     allowedCadences: allowed,
     weeklyRateTotal,
     depositTotal,
+    cleaningFeeTotal,
     termDays: generated.totalDays,
     schedule,
     totalLeaseValue: generated.totalLeaseValue,

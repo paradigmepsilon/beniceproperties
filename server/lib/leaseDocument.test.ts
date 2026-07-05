@@ -23,6 +23,8 @@ const DATA: LeaseDocData = {
   cadence: "WEEKLY",
   weeklyRateTotal: 260,
   totalLeaseValue: 1040,
+  depositTotal: 260,
+  cleaningFeeTotal: 75,
   prorationNote: "4 weekly installment(s) of $260.00, no proration. First payment due on the move-in date.",
   schedule: [
     { seq: 1, dueDate: "2026-07-01", amount: 260, prorated: false },
@@ -42,6 +44,20 @@ describe("renderLeaseHtml (review)", () => {
     expect(html).toContain("2026-07-01");
     expect(html).toContain("2026-07-28");
     expect(html).not.toContain("{{"); // no unreplaced tokens
+  });
+
+  it("states the move-in deposit and non-refundable cleaning fee", () => {
+    const html = renderLeaseHtml(DATA);
+    expect(html).toMatch(/security deposit of \$260\.00/);
+    expect(html).toMatch(/non-refundable cleaning fee of \$75\.00/i);
+  });
+
+  it("omits the cleaning-fee clause when the fee is zero", () => {
+    const html = renderLeaseHtml({ ...DATA, cleaningFeeTotal: 0 });
+    // The section heading is structural (always present); only the fee sentence
+    // is conditional. A $0 fee must not state a cleaning-fee amount.
+    expect(html).not.toMatch(/non-refundable cleaning fee of \$/i);
+    expect(html).toMatch(/security deposit of \$260\.00/); // deposit still shown
   });
 
   it("states the $25/day late-fee policy", () => {

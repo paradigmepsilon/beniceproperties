@@ -350,6 +350,11 @@ export const rooms = pgTable(
     photos: jsonb("photos").$type<string[]>().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
     depositAmount: decimal("deposit_amount", { precision: 10, scale: 2 }).notNull(),
+    // Per-room cleaning fee (added 2026-07-04). Mirrors properties.cleaningFee for
+    // STR: a one-time fee collected at booking. On a short stay it folds into the
+    // upfront charge via calculateBreakdown; on a lease it is charged as its own
+    // CLEANING_FEE PaymentIntent at move-in (non-refundable). Nullable, "0" default.
+    cleaningFee: decimal("cleaning_fee", { precision: 10, scale: 2 }).default("0"),
     // Day/month rates (added 2026-06-27). weekly_rent is the weekly value used by
     // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
     // next shorter tier. See shared/rateSelection.ts.
@@ -670,6 +675,16 @@ export const leases = pgTable(
     depositStatus: text("deposit_status").notNull().default("PENDING"),
     depositStripePaymentIntentId: text("deposit_stripe_payment_intent_id"),
     depositPaidAt: timestamp("deposit_paid_at"),
+    // --- One-time cleaning fee (added 2026-07-04). Snapshotted at lease creation
+    // from the included room(s) (sum of rooms.cleaningFee) so a later re-price never
+    // changes a signed lease. Unlike the deposit it is NOT refundable — it is a real
+    // cost, charged as its own CLEANING_FEE PaymentIntent at move-in alongside the
+    // deposit, and never counted as rent. "0" default; charge skipped when 0. ---
+    cleaningFeeSnapshot: decimal("cleaning_fee_snapshot", { precision: 10, scale: 2 }).default("0"),
+    // "PENDING" | "PAID" | "WAIVED" (no REFUNDED — the fee is non-refundable).
+    cleaningFeeStatus: text("cleaning_fee_status").notNull().default("PENDING"),
+    cleaningFeeStripePaymentIntentId: text("cleaning_fee_stripe_payment_intent_id"),
+    cleaningFeePaidAt: timestamp("cleaning_fee_paid_at"),
     // --- Tenant identity verification (driver's license review). The tenant
     // uploads a license from the portal; an admin reviews it against signedName
     // and APPROVES to activate the lease. The license image lives in R2 (private);

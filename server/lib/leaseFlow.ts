@@ -74,6 +74,8 @@ function docDataFrom(
     cadence: quote.cadence,
     weeklyRateTotal: quote.weeklyRateTotal,
     totalLeaseValue: quote.totalLeaseValue,
+    depositTotal: quote.depositTotal,
+    cleaningFeeTotal: quote.cleaningFeeTotal,
     prorationNote: quote.prorationNote,
     schedule: quote.schedule.map((s) => ({
       seq: s.seq,
@@ -141,6 +143,10 @@ export async function createDraftLease(input: CreateDraftLeaseInput): Promise<Cr
       // changes a signed lease. This is the amount that secures the room.
       depositAmountSnapshot: String(quote.depositTotal),
       depositStatus: "PENDING",
+      // Freeze the one-time cleaning fee at booking too (non-refundable; charged as
+      // its own PaymentIntent at move-in). "0" when no room carries a fee.
+      cleaningFeeSnapshot: String(quote.cleaningFeeTotal),
+      cleaningFeeStatus: "PENDING",
       status: "PENDING_SIGNATURE",
       portalToken: portalTokenGen(),
     },
@@ -226,6 +232,8 @@ export async function signLease(input: SignLeaseInput): Promise<SignLeaseResult>
     cadence: lease.paymentCadence as LeaseDocData["cadence"],
     weeklyRateTotal: parseFloat(lease.weeklyRateSnapshot),
     totalLeaseValue: parseFloat(lease.totalLeaseValue),
+    depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
+    cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
     prorationNote: lease.prorationNote ?? "",
     schedule: schedule.map((s) => ({
       seq: s.scheduleSeq,

@@ -49,6 +49,10 @@ export interface LeaseDocData {
   cadence: "WEEKLY" | "BIWEEKLY" | "MONTHLY";
   weeklyRateTotal: number;
   totalLeaseValue: number;
+  /** Refundable security deposit due at move-in (sum across rooms). */
+  depositTotal: number;
+  /** One-time non-refundable cleaning fee due at move-in (sum across rooms). */
+  cleaningFeeTotal: number;
   prorationNote: string;
   schedule: LeaseDocScheduleLine[];
 }
@@ -99,7 +103,15 @@ export const DEFAULT_LEASE_TEMPLATE = {
         "total value of this lease is {{totalLeaseValue}}. {{prorationNote}}",
     },
     {
-      heading: "4. Late Fees",
+      heading: "4. Move-in Charges (Deposit & Cleaning Fee)",
+      body:
+        "At move-in the Resident pays a refundable security deposit of {{depositTotal}}, which " +
+        "secures the room(s) and is returned at the end of the term less any deductions permitted " +
+        "by law.{{cleaningFeeClause}} These move-in charges are separate from rent and from the " +
+        "payment schedule below.",
+    },
+    {
+      heading: "5. Late Fees",
       body:
         "If a scheduled payment is not received by its due date, a late fee of " +
         "{{lateFeePerDay}} per day accrues beginning the day after the due date and continues " +
@@ -107,7 +119,7 @@ export const DEFAULT_LEASE_TEMPLATE = {
         "charge from rent.",
     },
     {
-      heading: "5. House Rules",
+      heading: "6. House Rules",
       body:
         "The Resident agrees to: keep shared spaces clean; respect quiet hours and other " +
         "residents; not sublet or assign the room; not engage in illegal activity on the " +
@@ -115,7 +127,7 @@ export const DEFAULT_LEASE_TEMPLATE = {
         "violations may result in termination of this Agreement.",
     },
     {
-      heading: "6. Payment Authorization",
+      heading: "7. Payment Authorization",
       body:
         "The Resident authorizes Be Nice Properties to charge the saved payment method on file " +
         "for each scheduled payment and for any accrued late fees, on or after each due date.",
@@ -163,6 +175,12 @@ function tokenMap(data: LeaseDocData): Record<string, string> {
     cadenceLabel: CADENCE_LABEL[data.cadence],
     weeklyRateLabel: fmtMoney(data.weeklyRateTotal),
     totalLeaseValue: fmtMoney(data.totalLeaseValue),
+    depositTotal: fmtMoney(data.depositTotal),
+    // Only state a cleaning fee when one applies; it is non-refundable.
+    cleaningFeeClause:
+      data.cleaningFeeTotal > 0
+        ? ` A one-time, non-refundable cleaning fee of ${fmtMoney(data.cleaningFeeTotal)} is also due at move-in.`
+        : "",
     prorationNote: data.prorationNote,
     lateFeePerDay: fmtMoney(LATE_FEE_PER_DAY),
   };

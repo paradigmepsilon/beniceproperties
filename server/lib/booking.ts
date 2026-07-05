@@ -237,7 +237,8 @@ export async function resolveBooking(input: {
       checkIn: input.checkIn,
       checkOut: input.checkOut,
       baseAmount: priced.baseAmount,
-      cleaningFee: 0,
+      // Per-room cleaning fee, folded into the upfront charge like STR. 0 if unset.
+      cleaningFee: room.cleaningFee ? parseFloat(room.cleaningFee) : 0,
       nights: n,
       shortStay: {
         weeks: priced.weeks,
@@ -303,7 +304,11 @@ export function buildQuote(
   // Co-living SHORT STAY (7–28 nights): a lease-less reservation paid in full
   // upfront — whole weeks at the weekly rent + a daily remainder. No deposit and
   // no recurring rent (that's the lease path, for stays over a month).
-  const b = calculateBreakdown({ baseAmount: resolved.baseAmount, paymentMethod });
+  const b = calculateBreakdown({
+    baseAmount: resolved.baseAmount,
+    cleaningFee: resolved.cleaningFee,
+    paymentMethod,
+  });
   const ss = resolved.shortStay;
   const lines: QuoteResponse["dueNow"]["lines"] = [];
   if (ss) {
@@ -323,6 +328,7 @@ export function buildQuote(
     // Defensive fallback (should not happen for a resolved short stay).
     lines.push({ label: `Stay (${resolved.nights} nights)`, amount: resolved.baseAmount });
   }
+  if (resolved.cleaningFee > 0) lines.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
   if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
   return {
     model: "COLIVING",

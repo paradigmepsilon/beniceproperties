@@ -350,6 +350,19 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
   } catch (err) {
     log(`deposit lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
+
+  // One-time cleaning fee: charge it off-session on the just-saved card, as its own
+  // CLEANING_FEE PaymentIntent (never folded into the refundable deposit). The fee
+  // is a move-in charge, not rent, so it is collected here alongside the deposit —
+  // NOT gated on identity verification. Non-fatal: a decline must not block room
+  // securing; the webhook marks it PAID, and it stays PENDING for the portal to
+  // settle if it fails. No-ops when there is no fee or it is already paid.
+  if (savedPaymentMethodId) {
+    await chargeCleaningFeeOffSession(lease.id, savedPaymentMethodId).catch((err) => {
+      log(`cleaning-fee charge failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
+    });
+  }
+
   // NOTE: first week's rent is NOT charged here — activateVerifiedLease() owns it,
   // so an unverified tenant is never charged rent.
 }
@@ -487,6 +500,47 @@ async function chargeFirstWeekOffSession(leaseId: string, paymentMethodId: strin
   } catch (err) {
     log(`first-week receipt error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
+}
+
+/**
+ * Charge the one-time, non-refundable cleaning fee off-session on the saved card.
+ * Called from finalizeDepositPayment (the card is saved by the deposit). Separate
+ * PaymentIntent with payment_kind = CLEANING_FEE so it is never folded into the
+ * refundable deposit or into rent. Surcharged like rent (a real cost we pay Stripe
+ * on). Idempotent per lease: a lease already carrying a paid cleaning fee no-ops,
+ * and the Stripe idempotency key prevents a double charge on re-runs. Never throws
+ * to the caller — a decline here must not block room securing (deposit already
+ * paid); it is logged and left PENDING for the guest/portal to settle.
+ */
+async function chargeCleaningFeeOffSession(leaseId: string, paymentMethodId: string): Promise<void> {
+  const { lease, property, rooms } = await loadLeaseContext(leaseId);
+  if (!lease.stripeCustomerId) throw new LeaseError("Lease has no Stripe customer", 500);
+
+  const fee = parseFloat(lease.cleaningFeeSnapshot ?? "0");
+  if (!(fee > 0)) return; // no cleaning fee on this lease
+  if (lease.cleaningFeeStatus === "PAID") return; // already charged
+
+  const amount = chargeTotalFor(fee);
+  const metadata = buildLeaseChargeMetadata({
+    entity: property.entity,
+    property,
+    lease,
+    rooms,
+    paymentKind: "CLEANING_FEE",
+    scheduleSeq: null,
+  });
+
+  const pi = await chargeSavedCard({
+    amount,
+    customerId: lease.stripeCustomerId,
+    paymentMethodId,
+    metadata,
+    idempotencyKey: `lease-cleaning-${lease.id}`,
+  });
+
+  // Record the PI id now so the webhook can match it; the webhook marks PAID.
+  await storage.updateLease(lease.id, { cleaningFeeStripePaymentIntentId: pi.id });
+  log(`lease ${lease.id} cleaning fee charged off-session ${pi.id}`, "stripe");
 }
 
 // ---------------------------------------------------------------------------
