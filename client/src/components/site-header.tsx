@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "wouter";
+import { NewsletterSignup } from "@/components/newsletter-signup";
 
 export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
@@ -32,6 +33,15 @@ export function SiteHeader() {
           <a href="/#stays" className="inline-flex min-h-11 items-center transition-colors hover:text-foreground">
             Browse stays
           </a>
+          {/* Community: primary content nav, visible on all sizes. */}
+          <Link href="/community" className="inline-flex min-h-11 items-center transition-colors hover:text-foreground">
+            Community
+          </Link>
+          {/* Secondary items hidden on the smallest screens (same pattern as
+              "How it works") to keep the mobile header uncrowded. */}
+          <Link href="/journal" className="hidden min-h-11 items-center transition-colors hover:text-foreground sm:inline-flex">
+            Journal
+          </Link>
           {/* Plain anchor: wouter Link doesn't scroll to hashes; a real
               navigation to /#how lands and scrolls natively. */}
           <a href="/#how" className="hidden min-h-11 items-center transition-colors hover:text-foreground sm:inline-flex">
@@ -75,12 +85,21 @@ export function SiteFooter() {
               <a href={`/?city=${encodeURIComponent("St. John's")}#stays`}>St. John&rsquo;s</a>
             </FooterCol>
             <FooterCol title="Company">
+              <a href="/about">About us</a>
+              <a href="/community">Community</a>
+              <a href="/journal">Journal</a>
               <a href="/#how">How it works</a>
             </FooterCol>
             <FooterCol title="Support">
               <a href="/lookup">My booking</a>
             </FooterCol>
           </div>
+        </div>
+
+        {/* Owned email capture — reduces platform dependency by building a direct
+            audience. Sits above the legal row, below the nav columns. */}
+        <div className="mt-12 border-t border-white/15 pt-10">
+          <NewsletterSignup />
         </div>
         <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t border-white/15 pt-6 text-xs text-white/50">
           <span>© {new Date().getFullYear()} Be Nice Properties.</span>

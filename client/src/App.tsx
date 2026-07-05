@@ -17,6 +17,10 @@ import LeasePay from "@/pages/lease-pay";
 import Portal from "@/pages/portal";
 import Confirmation from "@/pages/confirmation";
 import BookingLookup from "@/pages/booking-lookup";
+import Community from "@/pages/community";
+import Journal from "@/pages/journal";
+import JournalArticle from "@/pages/journal-article";
+import About from "@/pages/about";
 import AdminLogin from "@/pages/admin/login";
 import AdminDashboard from "@/pages/admin/dashboard";
 import NotFound from "@/pages/not-found";
@@ -34,6 +38,12 @@ function Router() {
       <Route path="/portal/:token" component={Portal} />
       <Route path="/confirmation/:reference" component={Confirmation} />
       <Route path="/lookup" component={BookingLookup} />
+      <Route path="/community" component={Community} />
+      {/* Specific slug route BEFORE the index so wouter's first-match Switch
+          doesn't let "/journal" swallow "/journal/:slug". */}
+      <Route path="/journal/:slug" component={JournalArticle} />
+      <Route path="/journal" component={Journal} />
+      <Route path="/about" component={About} />
       <Route path="/admin/login" component={AdminLogin} />
       <Route path="/admin" component={AdminDashboard} />
       <Route component={NotFound} />
