@@ -8,6 +8,7 @@ import {
   buildLeaseChargeMetadata,
   buildStrChargeMetadata,
   buildRoomBookingChargeMetadata,
+  buildShortStayIntentMetadata,
   assertCompleteMetadata,
   productTypeFor,
   REQUIRED_METADATA_KEYS,
@@ -142,6 +143,79 @@ describe("buildRoomBookingChargeMetadata — short co-living stay (no lease)", (
     });
     expect(meta.room_number).toBe("null");
     expect(() => assertCompleteMetadata(meta)).not.toThrow();
+  });
+});
+
+describe("buildShortStayIntentMetadata — payment-first booking rebuild", () => {
+  const REBUILD_KEYS = [
+    "model", "check_in", "check_out", "reference",
+    "quoted_total", "amount", "surcharge",
+    "guest_name", "guest_email", "guest_phone",
+  ] as const;
+
+  it("STR: passes the contract guard AND carries every rebuild key", () => {
+    const meta = buildShortStayIntentMetadata({
+      entity: "BNP",
+      property: STR_PROP,
+      room: null,
+      model: "STR",
+      checkIn: "2026-09-01",
+      checkOut: "2026-09-04",
+      reference: "BNP-ABC123",
+      quotedTotal: 392.27,
+      amount: 379,
+      surcharge: 13.27,
+      rateCadence: "DAILY",
+      guest: { name: "Test Guest", email: "t@example.com", phone: "555" },
+    });
+    expect(() => assertCompleteMetadata(meta)).not.toThrow();
+    for (const k of REBUILD_KEYS) expect(meta[k]).toBeDefined();
+    expect(meta).toMatchObject({
+      product_type: "STR_WHOLE",
+      model: "STR",
+      reference: "BNP-ABC123",
+      quoted_total: "392.27",
+      amount: "379",
+      surcharge: "13.27",
+      guest_name: "Test Guest",
+      guest_email: "t@example.com",
+    });
+  });
+
+  it("short co-living: populates room fields + rebuild keys", () => {
+    const meta = buildShortStayIntentMetadata({
+      entity: "BNP",
+      property: PROP,
+      room: { id: "r1", name: "Room 2", roomNumber: "2" },
+      model: "COLIVING",
+      checkIn: "2026-09-01",
+      checkOut: "2026-09-14",
+      reference: "BNP-XYZ",
+      quotedTotal: 500,
+      amount: 483,
+      surcharge: 17,
+      guest: { name: "A B", email: "a@b.com" },
+    });
+    expect(() => assertCompleteMetadata(meta)).not.toThrow();
+    expect(meta).toMatchObject({ product_type: "COLIVING_ROOM", room_id: "r1", model: "COLIVING" });
+  });
+
+  it("blank guest at create time serializes to 'null' and still passes the contract guard", () => {
+    const meta = buildShortStayIntentMetadata({
+      entity: "BNP",
+      property: STR_PROP,
+      model: "STR",
+      checkIn: "2026-09-01",
+      checkOut: "2026-09-04",
+      reference: "BNP-NOCONTACT",
+      quotedTotal: 100,
+      amount: 100,
+      surcharge: 0,
+    });
+    // Contract keys are complete even before contact is attached.
+    expect(() => assertCompleteMetadata(meta)).not.toThrow();
+    expect(meta.guest_name).toBe("null");
+    expect(meta.guest_email).toBe("null");
   });
 });
 

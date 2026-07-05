@@ -1668,3 +1668,56 @@ stale PENDING_PAYMENT booking + PaymentIntent (same pattern as the lease deposit
 job for stale PENDING_PAYMENT bookings is out of scope here — flagged for later.
 
 CHECKOUT-AUTOREVEAL: COMPLETE — tests green
+
+
+---
+
+## CHECKOUT-PAYMENT-FIRST — align short-stay Stripe checkout to TRAD (no pre-payment hold)
+
+Branch `feat/payments-trad-parity-manual-lease-rent`.
+
+**Why.** BNP's short-stay checkout wrote a PENDING_PAYMENT booking row BEFORE payment, and because
+availability counts any non-CANCELLED booking, a guest who merely entered a valid email held the
+dates indefinitely with no cleanup. TRAD avoids this: it creates only a PaymentIntent up front (all
+booking+guest details in metadata) and materializes the booking only after payment succeeds. This
+change adopts TRAD's payment-first model for BNP's STRIPE short-stay path, materializing in BNP's
+existing webhook (more reliable than TRAD's client-driven complete-booking — survives tab close,
+Stripe retries). Decisions confirmed with Alex: Element visible on load; availability race →
+auto-refund the loser + alert; confirmation page stays static.
+
+**What / files.**
+- `server/lib/paymentMetadata.ts` — new `buildShortStayIntentMetadata`: composes the reconciliation
+  contract + the booking-rebuild keys (model, check_in, check_out, reference, quoted_total, amount,
+  surcharge, guest_name/email/phone) so the webhook can rebuild the booking from PI metadata alone.
+- `server/lib/stripe.ts` — new `updatePaymentIntentContact` (attach guest at pay time). Fixed
+  `createOneTimePaymentIntent` to OMIT `receipt_email` when blank (Stripe rejects an empty string —
+  the intent is now created before contact). Reuses `refundPaymentIntent` for the race guard.
+- `server/routes.ts` — new `POST /api/booking-intent` (create intent, NO booking row) +
+  `POST /api/booking-intent/:id/contact` (attach + validate contact). `POST /api/bookings` split:
+  STRIPE now 400s (payment-first via booking-intent); CASHAPP/ZELLE still create a PENDING_PAYMENT
+  booking for UO settlement. Webhook `payment_intent.succeeded` short-stay branch rewritten into
+  `materializeShortStayBooking`: idempotent (getBookingByReference), guest-completeness guard,
+  availability re-check → auto-refund + `booking_double_book_refunded` on race, else upsert guest +
+  create CONFIRMED/ACTIVE booking + OCCUPIED room + PAID payment, all from metadata.
+- `shared/api-types.ts` — `bookingIntentSchema` (guest optional) + `BookingIntentResponse`.
+- `client/src/pages/checkout.tsx` — creates the intent on mount (no contact), mounts the Payment
+  Element immediately (visible on load), contact fields unlocked alongside; Pay Now attaches contact
+  then confirms; gated on contact-valid AND card-complete. Removed the debounced auto-create /
+  pending-row approach.
+
+**Tests / verification.** `tsc` clean; `npm run build` clean; vitest 288 passed (3 new: STR +
+short-COLIVING + blank-guest metadata rebuild). E2E on the restarted :3002 dev server (Playwright +
+curl): `/api/bookings` STRIPE → 400; `/api/booking-intent` (no guest) → 200 with clientSecret and
+NO booking row; `/api/booking-intent/:id/contact` → 400 bad email / 200 valid. In-browser: Payment
+Element (Card + wallets/BNPL) **visible on load before contact**; exactly one `POST /api/booking-
+intent` and ZERO `POST /api/bookings` on mount (no date hold); contact fields unlocked; Pay Now
+dual-gated (contact-valid AND card-complete). Did NOT submit a card (live keys) — stopped at the
+Pay-Now-gated state per repo money-path governance. **Alex's manual test-card gate:** a full test
+charge to confirm the webhook materializes the booking (CONFIRMED + OCCUPIED + PAID) from metadata,
+and the race auto-refund path.
+
+**Deferred.** The old pre-payment-hold behavior is fully removed, so the stale-PENDING_PAYMENT
+cleanup previously flagged is now moot for the Stripe path (manual bookings still create pending rows
+by design). Manual CASHAPP/ZELLE path unchanged.
+
+CHECKOUT-PAYMENT-FIRST: COMPLETE — tests green

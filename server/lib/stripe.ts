@@ -205,13 +205,40 @@ export async function createOneTimePaymentIntent(opts: {
     {
       amount: toCents(opts.amount),
       currency: "usd",
-      receipt_email: opts.guestEmail,
+      // Only set receipt_email when we actually have one — in the payment-first
+      // flow the intent is created before contact, and Stripe rejects an empty
+      // string. It's set later via updatePaymentIntentContact.
+      ...(opts.guestEmail ? { receipt_email: opts.guestEmail } : {}),
       automatic_payment_methods: { enabled: true },
       // Carry the booking reference alongside the contract for webhook correlation.
       metadata: { ...opts.metadata, reference: opts.reference },
     },
     { idempotencyKey: opts.idempotencyKey },
   );
+}
+
+/**
+ * Attach final guest contact to a short-stay booking INTENT before the guest
+ * confirms payment (payment-first model). Merges guest_name/guest_email/
+ * guest_phone into the existing PI metadata and sets receipt_email, without
+ * disturbing the reconciliation contract or rebuild keys already present. The
+ * webhook reads these back to materialize the booking. Returns the updated PI.
+ */
+export async function updatePaymentIntentContact(opts: {
+  paymentIntentId: string;
+  name: string;
+  email: string;
+  phone?: string | null;
+}): Promise<Stripe.PaymentIntent> {
+  const s = requireStripe();
+  return s.paymentIntents.update(opts.paymentIntentId, {
+    receipt_email: opts.email,
+    metadata: {
+      guest_name: opts.name,
+      guest_email: opts.email,
+      guest_phone: opts.phone && opts.phone !== "" ? opts.phone : "null",
+    },
+  });
 }
 
 /**

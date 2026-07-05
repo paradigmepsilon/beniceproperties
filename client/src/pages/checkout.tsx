@@ -1,29 +1,28 @@
 // client/src/pages/checkout.tsx
 // The short-stay booking flow (STR whole-property + short co-living 7–28 nights).
 // Reads propertyId/roomId/checkIn/checkOut from the query string, fetches a LIVE
-// quote from the server, collects guest info, and creates the booking.
+// quote, and pays on-page — PAYMENT-FIRST (mirroring the TRAD reference site):
 //
-// Short stays are Stripe-only (mirroring the TRAD reference site): the card is
-// paid ON-PAGE with an embedded Payment Element (no redirect off the site),
-// mirroring the co-living deposit flow in lease-pay.tsx. The booking is only
-// confirmed server-side by the webhook (payment_intent.succeeded); the client
-// just confirms the PaymentIntent and then sends the guest to the confirmation
-// page. Manual payment (CashApp/Zelle) is NOT offered for short stays — it is a
+//   • On load, once the quote is ready, we create a Stripe PaymentIntent via
+//     POST /api/booking-intent — NO booking row is written. The embedded Payment
+//     Element mounts immediately, before any contact is entered.
+//   • The guest fills first/last/email/phone alongside the Element.
+//   • On "Pay Now" we first attach the contact to the intent
+//     (POST /api/booking-intent/:id/contact), then confirm the payment on-page.
+//   • The booking is MATERIALIZED server-side by the webhook
+//     (payment_intent.succeeded) from the PI metadata — never by the client.
+//
+// Because nothing is written until payment succeeds, an abandoned checkout leaves
+// zero DB footprint and blocks no dates. Manual payment (CashApp/Zelle) is a
 // per-payment option on co-living LEASE rent only (see the guest portal).
-//
-// UX: the guest enters first name, last name, and email; the moment those are
-// valid the booking + PaymentIntent are created automatically and the Stripe
-// Payment Element appears directly under the details (no intermediate button).
-// A single "Pay Now" button beneath the card runs the charge, enabled once the
-// card details are complete.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useSearch } from "wouter";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { loadStripe, type Stripe } from "@stripe/stripe-js";
 import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
 import { apiRequest } from "@/lib/queryClient";
-import type { QuoteResponse, CreateBookingResponse } from "@shared/api-types";
+import type { QuoteResponse, BookingIntentResponse } from "@shared/api-types";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -37,12 +36,11 @@ import { money } from "@/lib/format";
 // still shows as a line item in the quote below.
 const PAYMENT_METHOD = "STRIPE" as const;
 
-// The Stripe payment step we swap into once a PaymentIntent exists.
-interface StripeStep {
+interface IntentState {
   clientSecret: string;
   publishableKey: string;
+  paymentIntentId: string;
   reference: string;
-  amount: number;
 }
 
 export default function Checkout() {
@@ -61,15 +59,17 @@ export default function Checkout() {
   const [lastName, setLastName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
-  // Once set, the guest pays the card on-page via the embedded Payment Element.
-  const [stripeStep, setStripeStep] = useState<StripeStep | null>(null);
+
+  // The payment intent (created on mount) + the loaded Stripe instance.
+  const [intent, setIntent] = useState<IntentState | null>(null);
   const [stripePromise, setStripePromise] = useState<Promise<Stripe | null> | null>(null);
-  // Guards the auto-create effect so the booking is created exactly once.
+  const [intentError, setIntentError] = useState<string | null>(null);
+  // Guards the create-intent effect so it fires exactly once.
   const startedRef = useRef(false);
 
   const guestName = `${firstName.trim()} ${lastName.trim()}`.trim();
-  const detailsValid =
-    Boolean(firstName.trim()) && Boolean(lastName.trim()) && /\S+@\S+\.\S+/.test(email);
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
+  const detailsValid = Boolean(firstName.trim()) && Boolean(lastName.trim()) && emailValid;
 
   // Live quote — short stays are always paid by card (Stripe).
   const quoteBody = { propertyId, roomId, checkIn, checkOut, paymentMethod: PAYMENT_METHOD };
@@ -82,50 +82,40 @@ export default function Checkout() {
     enabled: Boolean(propertyId),
   });
 
-  const createBooking = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/bookings", {
-        propertyId,
-        roomId,
-        checkIn,
-        checkOut,
-        paymentMethod: PAYMENT_METHOD,
-        guest: { name: guestName, email, phone: phone || undefined },
-      });
-      return (await res.json()) as CreateBookingResponse;
-    },
-    onSuccess: (data) => {
-      if (data.clientSecret && data.publishableKey) {
-        // Stripe: mount the embedded Payment Element on-page (no redirect).
-        setStripePromise(loadStripe(data.publishableKey));
-        setStripeStep({
-          clientSecret: data.clientSecret,
-          publishableKey: data.publishableKey,
-          reference: data.reference,
-          amount: data.quote.dueNow.total,
-        });
-      } else {
-        navigate(`/confirmation/${data.reference}`);
-      }
-    },
-    onError: (err: Error) => {
-      // Allow another attempt if the guest fixes their details.
-      startedRef.current = false;
-      toast({ title: "Could not complete booking", description: err.message, variant: "destructive" });
-    },
-  });
-
-  // Auto-create the booking + PaymentIntent the moment the required details are
-  // valid and the quote is ready — so the card fields appear without an extra
-  // click. Runs exactly once (startedRef); the identity fields lock afterward so
-  // the created PaymentIntent's guest stays consistent with what's charged.
+  // Create the PaymentIntent as soon as the quote is ready — BEFORE any contact —
+  // so the Payment Element can mount on load (payment-first). No booking row is
+  // written; the intent carries everything the webhook needs. Fires once.
   useEffect(() => {
     if (startedRef.current) return;
-    if (!detailsValid || !quote || stripeStep) return;
+    if (!quote || !propertyId) return;
     startedRef.current = true;
-    createBooking.mutate();
+    (async () => {
+      try {
+        const res = await apiRequest("POST", "/api/booking-intent", {
+          propertyId,
+          roomId,
+          checkIn,
+          checkOut,
+        });
+        const data = (await res.json()) as BookingIntentResponse;
+        if (!data.clientSecret || !data.publishableKey) {
+          throw new Error("Payment could not be initialized.");
+        }
+        setStripePromise(loadStripe(data.publishableKey));
+        setIntent({
+          clientSecret: data.clientSecret,
+          publishableKey: data.publishableKey,
+          paymentIntentId: data.paymentIntentId,
+          reference: data.reference,
+        });
+      } catch (err) {
+        startedRef.current = false; // allow a retry on the next render
+        setIntentError((err as Error).message);
+        toast({ title: "Could not start checkout", description: (err as Error).message, variant: "destructive" });
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [detailsValid, quote, stripeStep]);
+  }, [quote, propertyId]);
 
   if (!propertyId) {
     return (
@@ -138,8 +128,6 @@ export default function Checkout() {
       </div>
     );
   }
-
-  const identityLocked = Boolean(stripeStep) || createBooking.isPending;
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -164,7 +152,6 @@ export default function Checkout() {
                     id="firstName"
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
-                    disabled={identityLocked}
                     data-testid="input-first-name"
                   />
                 </div>
@@ -174,7 +161,6 @@ export default function Checkout() {
                     id="lastName"
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
-                    disabled={identityLocked}
                     data-testid="input-last-name"
                   />
                 </div>
@@ -186,7 +172,6 @@ export default function Checkout() {
                   type="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  disabled={identityLocked}
                   data-testid="input-email"
                 />
               </div>
@@ -196,30 +181,32 @@ export default function Checkout() {
                   id="phone"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  disabled={identityLocked}
                   data-testid="input-phone"
                 />
               </div>
             </CardContent>
           </Card>
 
-          {/* Payment — appears automatically once the details above are complete. */}
+          {/* Payment — the card element is visible from the start (payment-first). */}
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Payment</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3 text-sm">
-              {!stripeStep && (
-                <p className="text-muted-foreground" data-testid="text-payment-hint">
-                  Enter your first name, last name, and email to see your payment options.
-                </p>
-              )}
-              {!stripeStep && createBooking.isPending && (
+              {intentError && <p className="text-destructive" data-testid="text-intent-error">{intentError}</p>}
+              {!intent && !intentError && (
                 <p className="text-muted-foreground">Loading secure payment…</p>
               )}
-              {stripeStep && stripePromise && (
-                <Elements stripe={stripePromise} options={{ clientSecret: stripeStep.clientSecret }}>
-                  <PayForm reference={stripeStep.reference} />
+              {intent && stripePromise && (
+                <Elements stripe={stripePromise} options={{ clientSecret: intent.clientSecret }}>
+                  <PayForm
+                    paymentIntentId={intent.paymentIntentId}
+                    reference={intent.reference}
+                    detailsValid={Boolean(detailsValid)}
+                    guestName={guestName}
+                    email={email.trim()}
+                    phone={phone.trim()}
+                  />
                 </Elements>
               )}
             </CardContent>
@@ -279,10 +266,26 @@ export default function Checkout() {
 }
 
 // The embedded card form. Card data goes straight into Stripe's iframe and never
-// touches our code. On success we send the guest to the confirmation page; the
-// booking itself is confirmed server-side by the webhook. Pay Now is disabled
-// until the Payment Element reports the card details are complete.
-function PayForm({ reference }: { reference: string }) {
+// touches our code. On "Pay Now" we first attach the guest's contact to the
+// PaymentIntent (so the webhook can materialize the booking), then confirm the
+// payment. The booking is created server-side by the webhook; the client only
+// navigates to the confirmation page. Pay Now is disabled until the guest details
+// are valid AND the Stripe card details are complete.
+function PayForm({
+  paymentIntentId,
+  reference,
+  detailsValid,
+  guestName,
+  email,
+  phone,
+}: {
+  paymentIntentId: string;
+  reference: string;
+  detailsValid: boolean;
+  guestName: string;
+  email: string;
+  phone: string;
+}) {
   const stripe = useStripe();
   const elements = useElements();
   const [, navigate] = useLocation();
@@ -292,9 +295,22 @@ function PayForm({ reference }: { reference: string }) {
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
-    if (!stripe || !elements) return;
+    if (!stripe || !elements || !detailsValid) return;
     setSubmitting(true);
     setErr(null);
+
+    try {
+      // Attach final contact to the intent so the webhook can rebuild the booking.
+      await apiRequest("POST", `/api/booking-intent/${paymentIntentId}/contact`, {
+        name: guestName,
+        email,
+        phone: phone || undefined,
+      });
+    } catch (contactErr) {
+      setErr((contactErr as Error).message || "Could not save your details.");
+      setSubmitting(false);
+      return;
+    }
 
     const { error, paymentIntent } = await stripe.confirmPayment({
       elements,
@@ -307,7 +323,7 @@ function PayForm({ reference }: { reference: string }) {
       return;
     }
     if (paymentIntent && paymentIntent.status === "succeeded") {
-      // Booking is confirmed server-side by the webhook; head to confirmation.
+      // Booking is materialized server-side by the webhook; head to confirmation.
       navigate(`/confirmation/${reference}`);
       return;
     }
@@ -315,11 +331,18 @@ function PayForm({ reference }: { reference: string }) {
     setSubmitting(false);
   }
 
+  const disabled = !stripe || submitting || !complete || !detailsValid;
+
   return (
     <form onSubmit={submit} className="space-y-4">
       <PaymentElement onChange={(e) => setComplete(e.complete)} />
+      {!detailsValid && (
+        <p className="text-xs text-muted-foreground" data-testid="text-payment-hint">
+          Enter your first name, last name, and email above to complete your payment.
+        </p>
+      )}
       {err && <p className="text-sm text-destructive" data-testid="text-pay-error">{err}</p>}
-      <Button type="submit" disabled={!stripe || submitting || !complete} className="w-full" data-testid="button-pay">
+      <Button type="submit" disabled={disabled} className="w-full" data-testid="button-pay">
         {submitting ? "Processing…" : "Pay Now"}
       </Button>
       <p className="text-center text-xs text-muted-foreground">
