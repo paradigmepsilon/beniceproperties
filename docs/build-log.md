@@ -1540,3 +1540,28 @@ PaymentIntent with complete metadata, the deposit refund untouched, and no live 
 governance this manual TEST-key run is Alex's gate before Verified/Done.
 
 CLEANING-FEE-COLIVING: COMPLETE — tests green
+
+---
+
+## DEPOSIT-LINE-CONDITIONAL — move-in deposit shown only for lease-length co-living stays
+
+**What.** On the co-living room detail page (`/room/:id`) "Reserve this room" card, the
+"Move-in deposit (now)" line was previously an always-on price anchor — shown even before dates
+were picked and for short stays (7–28 nights), who don't actually pay a deposit. Gated it so the
+deposit line renders only when the selected term is a lease (> 28 nights = "a month or more", via
+the existing `isLeaseTerm`/`requiresLease()` gate). Weekly rent stays as the persistent anchor.
+Added a muted note under the deposit: "Refundable deposit held for incidentals, returned to you
+upon checkout."
+
+**Files.** `client/src/pages/room-detail.tsx` only — the deposit/weekly-rent block (~L240–262).
+No new state, constant, schema, or pricing change; reuses `isLeaseTerm` (line 89). Month boundary
+is 28 days per the codebase's consistent convention (`LEASE_REQUIRED_ABOVE_DAYS`), confirmed with
+Alex (no 30-day concept exists).
+
+**Tests / verification.** `tsc` clean. End-to-end in-browser against the dev server (:3005) on a
+real AVAILABLE Hutchens room (deposit $200, wk $300): no dates → deposit hidden, weekly rent shown;
+10-night short stay → deposit hidden; 28 nights → deposit hidden (still short-stay); 29 nights →
+deposit line + incidentals note appear (lease); 35-night lease → deposit $200 + note shown, lease
+total intact. STR path untouched (co-living-only file).
+
+DEPOSIT-LINE-CONDITIONAL: COMPLETE — tests green

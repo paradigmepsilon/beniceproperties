@@ -237,18 +237,27 @@ export default function RoomDetail() {
                 ) : null}
               </div>
 
-              {/* Empty-state anchor — the deposit + weekly rate are always shown,
-                  so the guest has a price reference before picking dates. */}
+              {/* Weekly rate is the persistent price anchor. The move-in deposit
+                  applies only to lease-length stays (> 28 nights / a month or more) —
+                  short-stay guests don't pay one — so its line is shown only once the
+                  picked term qualifies as a lease. */}
               <div className="mt-4 space-y-3 text-sm">
                 <div className="flex items-baseline justify-between">
-                  <span className="text-muted-foreground">Move-in deposit (now)</span>
-                  <span className="font-medium">{money(room.depositAmount)}</span>
-                </div>
-                <Separator />
-                <div className="flex items-baseline justify-between">
-                  <span className="text-muted-foreground">Weekly rent (after move-in)</span>
+                  <span className="text-muted-foreground">Weekly rent</span>
                   <span className="font-medium">{money(room.weeklyRent)} / wk</span>
                 </div>
+                {isLeaseTerm && (
+                  <>
+                    <Separator />
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-muted-foreground">Move-in deposit (now)</span>
+                      <span className="font-medium">{money(room.depositAmount)}</span>
+                    </div>
+                    <p className="text-xs text-muted-foreground" data-testid="text-deposit-note">
+                      Refundable deposit held for incidentals, returned to you upon checkout.
+                    </p>
+                  </>
+                )}
               </div>
 
               {/* Stay total once a real, bookable range is picked. Short stays show
