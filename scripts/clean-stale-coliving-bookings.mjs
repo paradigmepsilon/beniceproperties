@@ -18,7 +18,7 @@
 // =============================================================================
 
 import { config } from "dotenv";
-config();
+config({ quiet: true });
 import { neon } from "@neondatabase/serverless";
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -33,6 +33,15 @@ const roomArg = args.includes("--room") ? args[args.indexOf("--room") + 1] : nul
 const cancelArg = args.includes("--cancel") ? args[args.indexOf("--cancel") + 1] : null;
 
 const today = new Date().toISOString().slice(0, 10);
+
+// The Neon driver returns `date` columns as JS Date objects; normalize to a plain
+// YYYY-MM-DD string for both display and comparison (so the `today` string compare
+// and the printout are correct).
+function ymd(v) {
+  if (v == null) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+}
 
 async function main() {
   if (cancelArg) {
@@ -59,7 +68,7 @@ async function main() {
         console.log(`  freed room ${b.room_id} (OCCUPIED → AVAILABLE)`);
       }
     }
-    console.log(`Cancelled booking ${b.reference} (${b.check_in}→${b.check_out}).`);
+    console.log(`Cancelled booking ${b.reference} (${ymd(b.check_in)}→${ymd(b.check_out)}).`);
     process.exit(0);
   }
 
@@ -85,10 +94,13 @@ async function main() {
 
   console.log(`Non-cancelled CO-LIVING bookings (today=${today}):\n`);
   for (const b of rows) {
-    const active = b.check_out && b.check_out >= today ? "" : "  [past — no longer blocks]";
+    const checkIn = ymd(b.check_in);
+    const checkOut = ymd(b.check_out);
+    // A booking blocks dates while its checkOut is today or later (half-open).
+    const active = checkOut && checkOut >= today ? "" : "  [past — no longer blocks]";
     console.log(
-      `  ${(b.room_name ?? "?").slice(0, 40).padEnd(40)}  ${b.check_in}→${b.check_out}  ` +
-        `${b.status.padEnd(15)} ${b.payment_method?.padEnd(7) ?? ""} ref=${b.reference}${active}`,
+      `  ${(b.room_name ?? "?").slice(0, 40).padEnd(40)}  ${checkIn}→${checkOut}  ` +
+        `${b.status.padEnd(15)} ${(b.payment_method ?? "").padEnd(7)} ref=${b.reference}${active}`,
     );
   }
   console.log(`\n${rows.length} booking(s). To cancel one: --cancel <reference>`);
