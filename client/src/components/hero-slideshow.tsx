@@ -60,7 +60,10 @@ export function HeroSlideshow() {
           src={img.url}
           alt=""
           loading={i === 0 ? "eager" : "lazy"}
-          fetchPriority={i === 0 ? "high" : "low"}
+          // React 18.3 passes `fetchPriority` through unlowercased and warns; the
+          // DOM attribute is lowercase `fetchpriority`. Spread it as a raw attr to
+          // emit the correct attribute without the dev-only warning or a TS error.
+          {...{ fetchpriority: i === 0 ? "high" : "low" }}
           className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-1000 ease-in-out ${
             i === index ? "opacity-100" : "opacity-0"
           }`}

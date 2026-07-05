@@ -14,6 +14,9 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: "autoUpdate",
+      // Do not run the service worker in dev — it precaches the app shell and
+      // serves it in front of Vite, forcing hard refreshes to see changes.
+      devOptions: { enabled: false },
       includeAssets: ["bnp-mark-round.png", "bnp-mark.png", "bnp-logo.png"],
       manifest: {
         name: "Be Nice Properties",
