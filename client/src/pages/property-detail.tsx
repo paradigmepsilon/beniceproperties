@@ -75,7 +75,7 @@ export default function PropertyDetail() {
   // excludes tax & the card surcharge; those are surfaced at checkout. STR is a
   // whole-property quote, so no roomId (matches how checkout quotes STR).
   const quoteBody = { propertyId: id, checkIn, checkOut, paymentMethod: "STRIPE" as const };
-  const { data: quote, isLoading: quoteLoading } = useQuery<QuoteResponse>({
+  const { data: quote, isLoading: quoteLoading, error: quoteError } = useQuery<QuoteResponse>({
     queryKey: ["/api/quote", JSON.stringify(quoteBody)],
     queryFn: async () => {
       const res = await apiRequest("POST", "/api/quote", quoteBody);
@@ -279,7 +279,11 @@ export default function PropertyDetail() {
                     shown once a real, bookable range is picked. */}
                 {datesValid && (
                   <div className="mt-4 border-t border-border pt-4">
-                    {quoteLoading || !quote ? (
+                    {quoteError ? (
+                      <p className="text-sm text-destructive" data-testid="text-quote-error">
+                        {quoteErrorMessage(quoteError)}
+                      </p>
+                    ) : quoteLoading || !quote ? (
                       <p className="text-sm text-muted-foreground">Calculating your total…</p>
                     ) : (
                       <>
@@ -321,6 +325,21 @@ export default function PropertyDetail() {
       <SiteFooter />
     </div>
   );
+}
+
+// apiRequest throws `${status}: ${body}` on a non-2xx; surface the server's
+// `message` (e.g. "Those dates are not available") instead of an endless spinner.
+function quoteErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const m = /^\d+:\s*(\{.*\})$/.exec(raw);
+  if (m) {
+    try {
+      return JSON.parse(m[1]).message ?? "Those dates aren't available. Try another range.";
+    } catch {
+      /* fall through */
+    }
+  }
+  return "Those dates aren't available. Try another range.";
 }
 
 function Shell({ children }: { children: React.ReactNode }) {

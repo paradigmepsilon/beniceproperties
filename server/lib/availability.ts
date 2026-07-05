@@ -52,8 +52,13 @@ export async function buildStrAvailability(propertyId: string): Promise<Availabi
 
 /**
  * Co-living room availability: room-blocking leases (inclusive end → normalized
- * to exclusive) ∪ external iCal blocks for the room. Only ranges ending today or
- * later.
+ * to exclusive) ∪ non-cancelled direct co-living bookings (half-open) ∪ external
+ * iCal blocks for the room. Only ranges ending today or later.
+ *
+ * The three sources here MUST mirror storage.isRoomAvailableForRange (leases +
+ * co-living direct bookings + external blocks): if the calendar omits a source
+ * the quote path checks, a guest can pick a day the calendar shows free and then
+ * get a 409 at quote time. The direct-booking source below closes that gap.
  */
 export async function buildRoomAvailability(roomId: string): Promise<AvailabilityResponse> {
   const today = todayIso();
@@ -63,10 +68,18 @@ export async function buildRoomAvailability(roomId: string): Promise<Availabilit
     .filter((l) => l.endDate >= today)
     .map((l) => ({ start: l.startDate, end: exclusiveEnd(l.endDate), source: "direct" as const }));
 
+  // Direct co-living bookings (short 7–28-night reservations). checkOut is already
+  // half-open (first free day), like STR bookings. Non-cancelled only (matches
+  // getColivingBookingsForRoom + isRoomAvailableForRange). Open-ended dropped.
+  const bookings = await storage.getColivingBookingsForRoom(roomId);
+  const bookingRanges: BusyRange[] = bookings
+    .filter((b) => b.checkOut && b.checkOut >= today)
+    .map((b) => ({ start: b.checkIn, end: b.checkOut as string, source: "direct" as const }));
+
   const blocks = await storage.getExternalBlocksForRoom(roomId);
   const externalRanges: BusyRange[] = blocks
     .filter((b) => b.endDate >= today)
     .map((b) => ({ start: b.startDate, end: b.endDate, source: "external" as const }));
 
-  return { busy: sortByStart([...leaseRanges, ...externalRanges]), minDate: today };
+  return { busy: sortByStart([...leaseRanges, ...bookingRanges, ...externalRanges]), minDate: today };
 }

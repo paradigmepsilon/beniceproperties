@@ -1721,3 +1721,52 @@ cleanup previously flagged is now moot for the Stripe path (manual bookings stil
 by design). Manual CASHAPP/ZELLE path unchanged.
 
 CHECKOUT-PAYMENT-FIRST: COMPLETE — tests green
+
+
+---
+
+## FIX-AVAILABILITY-DIVERGENCE — calendar vs quote disagreement + silent quote errors
+
+Branch `feat/payments-trad-parity-manual-lease-rent`.
+
+**Why (root cause, proven).** Certain co-living rooms hung forever on "Calculating your total…"
+after dates were picked. Two server paths computed availability from DIFFERENT sources:
+`buildRoomAvailability` (the calendar, `server/lib/availability.ts`) used only room-blocking leases
++ external iCal blocks, while `isRoomAvailableForRange` (the quote path, `server/storage.ts:929-964`)
+ALSO checks non-cancelled direct co-living bookings (`getColivingBookingsForRoom`). So a room with a
+direct booking showed FREE on the calendar but 409'd at quote time. The client (`room-detail.tsx`,
+`property-detail.tsx`) had NO error branch on the quote query — it only left the loading state when
+`data` was truthy — so a 409 hung the spinner permanently and swallowed the message. Confirmed via
+live-API probing: room "Prof" reported `busy:[]` yet a quote 409'd; sweeping the quote endpoint
+mapped the hidden direct-booking windows. The blocking rows were near-term direct bookings
+(including PENDING_PAYMENT rows left by earlier checkout testing).
+
+**What / files.**
+- `server/lib/availability.ts` — `buildRoomAvailability` now folds a THIRD source, non-cancelled
+  direct co-living bookings (`getColivingBookingsForRoom`, half-open checkOut, future-only), into
+  `busy`, mirroring `isRoomAvailableForRange`. Calendar and quote can no longer disagree.
+- `client/src/pages/room-detail.tsx` + `property-detail.tsx` — added an error branch to the quote
+  queries (expose `error`, render the server message via a `quoteErrorMessage` helper) so a failed
+  quote shows "Those dates are not available for this room" instead of an endless spinner. (This
+  file also carries a small pre-existing UX tweak from an earlier session: the co-living move-in
+  date now seeds empty instead of defaulting to today.)
+- `server/routes.ts` — new `POST /api/admin/bookings/:id/cancel` (requireAdmin): sets status →
+  CANCELLED (both availability paths exclude it), frees an OCCUPIED co-living room, idempotent. The
+  reusable way to release a stale/abandoned booking (none existed before).
+- `scripts/clean-stale-coliving-bookings.mjs` — dry-run-by-default script to list non-cancelled
+  co-living bookings and cancel a specific one (`--cancel <ref>`); nothing is deleted.
+
+**Tests / verification.** `tsc` clean; `npm run build` clean; vitest 290 passed (2 new: calendar
+includes direct co-living bookings; drops open-ended/past). E2E on :3002: created a manual co-living
+booking → calendar now shows the block (previously omitted) AND quote 409s for it (they agree);
+room page shows "Those dates include nights this room is already booked. Pick an open range." instead
+of hanging; admin cancel endpoint released the booking (calendar block gone, quote → 200, room →
+AVAILABLE).
+
+**Deferred — prod cleanup (task b, needs Alex).** The stale blocking rows live in the prod DB.
+Reading/cancelling them is a production-DB action the sandbox gates; NOT done here. To clear them:
+run `node scripts/clean-stale-coliving-bookings.mjs` (dry run) to review, then
+`--cancel <reference>` per stale row; OR use the new admin cancel endpoint. Once this branch deploys,
+the calendar fix means such rows also become visible on the calendar rather than silent.
+
+FIX-AVAILABILITY-DIVERGENCE: COMPLETE — tests green

@@ -28,6 +28,22 @@ interface RoomResponse {
   property: Property | undefined;
 }
 
+// apiRequest throws `${status}: ${body}` on a non-2xx; the body is usually JSON
+// with a `message`. Pull that human message out so a failed quote shows why (e.g.
+// "Those dates are not available for this room") instead of hanging on a spinner.
+function quoteErrorMessage(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err);
+  const m = /^\d+:\s*(\{.*\})$/.exec(raw);
+  if (m) {
+    try {
+      return JSON.parse(m[1]).message ?? "Those dates aren't available. Try another range.";
+    } catch {
+      /* fall through */
+    }
+  }
+  return "Those dates aren't available. Try another range.";
+}
+
 export default function RoomDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
@@ -49,7 +65,7 @@ export default function RoomDetail() {
 
   // Seed the term from a range carried in from the property page / hero search
   // (?checkIn=&checkOut=) when it's a valid forward, not-past range; otherwise
-  // start at today with an open end.
+  // leave both dates unset so the guest picks any available future range.
   const sp = new URLSearchParams(searchStr);
   const seededIn = sp.get("checkIn") ?? "";
   const seededOut = sp.get("checkOut") ?? "";
@@ -58,7 +74,7 @@ export default function RoomDetail() {
     /^\d{4}-\d{2}-\d{2}$/.test(seededOut) &&
     seededIn >= today &&
     seededOut > seededIn;
-  const [startDate, setStartDate] = useState(seedValid ? seededIn : today);
+  const [startDate, setStartDate] = useState(seedValid ? seededIn : "");
   const [endDate, setEndDate] = useState(seedValid ? seededOut : "");
 
   // Co-living disables the lease's end date too (a lease occupies it), so every
@@ -94,7 +110,7 @@ export default function RoomDetail() {
   // so the previewed total lease value matches what's persisted + charged. Only
   // totalLeaseValue + depositTotal are read here; the full schedule lives on /lease.
   const leaseBody = { propertyId: room?.propertyId ?? "", roomIds: room ? [room.id] : [], startDate, endDate };
-  const { data: leaseQuote, isLoading: leaseLoading } = useQuery<LeaseQuoteResponse>({
+  const { data: leaseQuote, isLoading: leaseLoading, error: leaseError } = useQuery<LeaseQuoteResponse>({
     queryKey: ["/api/lease-quote", JSON.stringify(leaseBody)],
     queryFn: async () => {
       const res = await apiRequest("POST", "/api/lease-quote", leaseBody);
@@ -112,7 +128,7 @@ export default function RoomDetail() {
     checkOut: endDate,
     paymentMethod: "STRIPE" as const,
   };
-  const { data: shortQuote, isLoading: shortLoading } = useQuery<QuoteResponse>({
+  const { data: shortQuote, isLoading: shortLoading, error: shortError } = useQuery<QuoteResponse>({
     queryKey: ["/api/quote", JSON.stringify(shortBody)],
     queryFn: async () => {
       const res = await apiRequest("POST", "/api/quote", shortBody);
@@ -265,7 +281,11 @@ export default function RoomDetail() {
                   show the total lease value with the deposit due now called out. */}
               {datesValid && isShortStay && (
                 <div className="mt-4 border-t border-border pt-4">
-                  {shortLoading || !shortQuote ? (
+                  {shortError ? (
+                    <p className="text-sm text-destructive" data-testid="text-quote-error">
+                      {quoteErrorMessage(shortError)}
+                    </p>
+                  ) : shortLoading || !shortQuote ? (
                     <p className="text-sm text-muted-foreground">Calculating your total…</p>
                   ) : (
                     <>
@@ -284,7 +304,11 @@ export default function RoomDetail() {
               )}
               {datesValid && isLeaseTerm && (
                 <div className="mt-4 border-t border-border pt-4">
-                  {leaseLoading || !leaseQuote ? (
+                  {leaseError ? (
+                    <p className="text-sm text-destructive" data-testid="text-lease-error">
+                      {quoteErrorMessage(leaseError)}
+                    </p>
+                  ) : leaseLoading || !leaseQuote ? (
                     <p className="text-sm text-muted-foreground">Calculating your total…</p>
                   ) : (
                     <>

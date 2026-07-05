@@ -1300,6 +1300,33 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Cancel a booking (admin). Sets status → CANCELLED, which both availability
+  // paths exclude (ne(status,"CANCELLED")), so the dates are released. Also frees
+  // a co-living room that this booking had marked OCCUPIED. Idempotent: cancelling
+  // an already-CANCELLED booking is a no-op. Used to clear stale/abandoned bookings
+  // that were silently holding dates.
+  app.post("/api/admin/bookings/:id/cancel", requireAdmin, async (req, res, next) => {
+    try {
+      const booking = await storage.getBooking(req.params.id);
+      if (!booking) return res.status(404).json({ message: "Booking not found" });
+      if (booking.status === "CANCELLED") {
+        return res.json({ ok: true, alreadyCancelled: true, reference: booking.reference });
+      }
+      await storage.updateBooking(booking.id, { status: "CANCELLED" });
+      // Free the co-living room this booking had occupied (STR has no room).
+      if (booking.roomId) {
+        const room = await storage.getRoom(booking.roomId);
+        if (room && room.status === "OCCUPIED") {
+          await storage.updateRoom(booking.roomId, { status: "AVAILABLE" });
+        }
+      }
+      log(`booking ${booking.reference} (${booking.id}) CANCELLED by admin`, "admin");
+      res.json({ ok: true, reference: booking.reference });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Reconciliation queue: pending manual payments with booking + guest context.
   app.get("/api/admin/reconciliation", requireAdmin, async (_req, res, next) => {
     try {
