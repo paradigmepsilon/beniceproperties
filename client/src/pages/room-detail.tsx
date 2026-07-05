@@ -182,7 +182,7 @@ export default function RoomDetail() {
       <SiteHeader />
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
         {property && (
-          <Link href={`/property/${property.id}`} className="mb-5 inline-flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+          <Link href={`/property/${property.id}`} className="bnp-pill mb-5 gap-1.5 border-primary bg-accent font-semibold text-primary hover:bg-primary hover:text-primary-foreground">
             <ArrowLeft className="h-4 w-4" /> {property.name}
           </Link>
         )}

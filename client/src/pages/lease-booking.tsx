@@ -217,7 +217,7 @@ export default function LeaseBooking() {
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
         <Link
           href={`/property/${propertyId}`}
-          className="mb-5 inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
+          className="bnp-pill mb-5 gap-1.5 border-primary bg-accent font-semibold text-primary hover:bg-primary hover:text-primary-foreground"
         >
           <ArrowLeft className="h-4 w-4" /> Back to property
         </Link>

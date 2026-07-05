@@ -121,7 +121,7 @@ export default function PropertyDetail() {
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
       <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
-        <Link href="/" className="mb-5 inline-flex min-h-11 items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+        <Link href="/" className="bnp-pill mb-5 gap-1.5 border-primary bg-accent font-semibold text-primary hover:bg-primary hover:text-primary-foreground">
           <ArrowLeft className="h-4 w-4" /> All stays
         </Link>
 
