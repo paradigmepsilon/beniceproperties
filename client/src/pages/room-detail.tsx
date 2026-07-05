@@ -16,10 +16,12 @@ import { apiRequest } from "@/lib/queryClient";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingGallery } from "@/components/listing-gallery";
 import { ListingStory } from "@/components/listing-story";
+import { InclusionsGrid } from "@/components/inclusions-grid";
+import { NeighborhoodBlock } from "@/components/neighborhood-block";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { money } from "@/lib/format";
+import { cityOf, money } from "@/lib/format";
 import { useRoomAvailability } from "@/hooks/use-availability";
 import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
 
@@ -208,6 +210,10 @@ export default function RoomDetail() {
               segment="room"
               className="mt-6"
             />
+
+            {/* What's included in the weekly rate, then the neighborhood. */}
+            <InclusionsGrid variant="compact" className="mt-8" />
+            {property && <NeighborhoodBlock city={cityOf(property.location)} className="mt-8" />}
           </div>
 
           <aside>

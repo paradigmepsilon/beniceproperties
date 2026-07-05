@@ -13,9 +13,11 @@ import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { ListingImage } from "@/components/listing-image";
 import { ListingGallery } from "@/components/listing-gallery";
 import { ListingStory } from "@/components/listing-story";
+import { InclusionsGrid } from "@/components/inclusions-grid";
+import { NeighborhoodBlock } from "@/components/neighborhood-block";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { Button } from "@/components/ui/button";
-import { fromNightly, money } from "@/lib/format";
+import { cityOf, fromNightly, money } from "@/lib/format";
 import { usePropertyAvailability } from "@/hooks/use-availability";
 import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
 
@@ -179,6 +181,14 @@ export default function PropertyDetail() {
               segment={property.type === "STR" ? "whole" : "room"}
               className="mt-6"
             />
+
+            {/* What's included — most meaningful for co-living rooms (utilities,
+                cleaning, etc. bundled into the weekly rate). */}
+            {property.type === "COLIVING" && <InclusionsGrid variant="compact" className="mt-8" />}
+
+            {/* Neighborhood storytelling, matched to the property's city. Renders
+                nothing when the city has no entry. */}
+            <NeighborhoodBlock city={cityOf(property.location)} className="mt-8" />
 
             {property.type === "COLIVING" && (
               <section className="mt-10">

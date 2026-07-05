@@ -13,6 +13,8 @@ import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PropertyCard, cardUnavailable } from "@/components/property-card";
 import { SearchBar } from "@/components/search-bar";
 import { HeroSlideshow } from "@/components/hero-slideshow";
+import { InclusionsGrid } from "@/components/inclusions-grid";
+import { Testimonials } from "@/components/testimonials";
 import { cityOf } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -199,8 +201,12 @@ export default function Home() {
         </div>
       </section>
 
+      {/* What's included — the biggest co-living objection (hidden costs),
+          answered right after the trust band and before the listings. */}
+      <InclusionsGrid className="mx-auto w-full max-w-6xl px-6 py-14" />
+
       {/* Listings */}
-      <main id="stays" className="mx-auto w-full max-w-6xl flex-1 scroll-mt-24 px-6 py-14">
+      <main id="stays" className="mx-auto w-full max-w-6xl flex-1 scroll-mt-24 border-t px-6 py-14">
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div>
             <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
@@ -273,6 +279,16 @@ export default function Home() {
           </div>
         </div>
       </main>
+
+      {/* Social proof — real guests, before the closing reassurance band. */}
+      <section className="border-t bg-card">
+        <Testimonials
+          className="mx-auto w-full max-w-6xl px-6 py-14"
+          heading="Guests who booked direct"
+          subhead="A few words from people who've stayed with us across Atlanta and Antigua."
+          limit={3}
+        />
+      </section>
 
       {/* Reassurance band */}
       <section id="how" className="scroll-mt-24 bg-primary py-16 text-primary-foreground">
