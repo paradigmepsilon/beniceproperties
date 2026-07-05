@@ -92,6 +92,37 @@ export const createBookingSchema = z
 
 export type CreateBookingRequest = z.infer<typeof createBookingSchema>;
 
+// Short-stay booking INTENT (payment-first). Guest is OPTIONAL — the intent is
+// created on page load before contact, then contact is attached via
+// /api/booking-intent/:id/contact before the guest confirms payment.
+export const bookingIntentSchema = z
+  .object({
+    propertyId: z.string().min(1),
+    roomId: z.string().optional(),
+    checkIn: z.string().optional(),
+    checkOut: z.string().optional(),
+    guest: z
+      .object({
+        name: z.string().optional(),
+        email: z.string().optional(),
+        phone: z.string().optional(),
+      })
+      .optional(),
+  })
+  .refine((d) => d.roomId || (d.checkIn && d.checkOut), {
+    message: "STR bookings need checkIn+checkOut; co-living needs a roomId",
+  });
+
+export type BookingIntentRequest = z.infer<typeof bookingIntentSchema>;
+
+export interface BookingIntentResponse {
+  reference: string;
+  clientSecret: string | null;
+  publishableKey?: string;
+  paymentIntentId: string;
+  quote: QuoteResponse;
+}
+
 export interface CreateBookingResponse {
   reference: string;
   bookingId: string;

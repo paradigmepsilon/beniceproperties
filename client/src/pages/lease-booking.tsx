@@ -455,15 +455,31 @@ export default function LeaseBooking() {
                       <span className="text-muted-foreground">Due at move-in — first week's rent</span>
                       <span className="font-medium" data-testid="text-due-today">{money(quote.dueToday)}</span>
                     </div>
+                    {quote.cleaningFeeTotal > 0 && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Due at move-in — one-time cleaning fee</span>
+                        <span className="font-medium" data-testid="text-cleaning-fee">{money(quote.cleaningFeeTotal)}</span>
+                      </div>
+                    )}
+                    {quote.cleaningFeeTotal > 0 && (
+                      <div className="flex justify-between rounded-md bg-accent px-2 py-1.5">
+                        <span className="font-medium">Total due at move-in</span>
+                        <span className="font-semibold" data-testid="text-move-in-total">
+                          {money(quote.dueToday + quote.cleaningFeeTotal)}
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between font-semibold">
                       <span>Total lease value</span>
                       <span data-testid="text-total-lease">{money(quote.totalLeaseValue)}</span>
                     </div>
                     {quote.depositTotal > 0 && (
                       <p className="text-xs text-muted-foreground">
-                        Only the refundable deposit is due now — it secures your room. Your first
-                        week's rent is due on your move-in date ({quote.startDate}), and the rest
-                        follows your schedule above.
+                        Only the refundable deposit is due now — it secures your room. On your move-in
+                        date ({quote.startDate}) your first week's rent
+                        {quote.cleaningFeeTotal > 0 ? " plus the one-time cleaning fee are" : " is"} due,
+                        and the rest follows your schedule above. You can pay each installment by card
+                        (3.5% fee) or by CashApp/Zelle (no fee).
                       </p>
                     )}
 

@@ -24,6 +24,9 @@ const mockStorage = vi.hoisted(() => ({
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
+const mockLeasePayments = vi.hoisted(() => ({ activateVerifiedLease: vi.fn() }));
+vi.mock("./leasePayments", () => mockLeasePayments);
+
 import {
   markPaid,
   approveLease,
@@ -82,6 +85,45 @@ describe("markPaid", () => {
     mockStorage.getEscalations.mockResolvedValue([{ id: "esc-1", scheduleSeq: 2, status: "OPEN" }]);
     await markPaid({ leaseId: "lease-1", scheduleSeq: 2, note: "x", actor: "alex" });
     expect(mockStorage.updateEscalation).toHaveBeenCalledWith("esc-1", expect.objectContaining({ status: "RESOLVED" }));
+  });
+
+  it("settling MANUAL seq 1 on an approved lease releases check-in (activates)", async () => {
+    mockStorage.getLease.mockResolvedValue({
+      ...lease,
+      status: "PENDING_VERIFICATION",
+      verificationStatus: "APPROVED",
+    });
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-1", scheduleSeq: 1, status: "DUE", paymentMethod: "MANUAL", amount: "250" },
+    ]);
+    await markPaid({ leaseId: "lease-1", scheduleSeq: 1, note: "Zelle move-in", actor: "alex" });
+    expect(mockLeasePayments.activateVerifiedLease).toHaveBeenCalledWith("lease-1");
+  });
+
+  it("settling a non-seq-1 MANUAL row does NOT trigger activation", async () => {
+    mockStorage.getLease.mockResolvedValue({
+      ...lease,
+      status: "PENDING_VERIFICATION",
+      verificationStatus: "APPROVED",
+    });
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-2", scheduleSeq: 2, status: "LATE", paymentMethod: "MANUAL", amount: "250" },
+    ]);
+    await markPaid({ leaseId: "lease-1", scheduleSeq: 2, note: "x", actor: "alex" });
+    expect(mockLeasePayments.activateVerifiedLease).not.toHaveBeenCalled();
+  });
+
+  it("settling MANUAL seq 1 before ID approval does NOT activate (waits for approval)", async () => {
+    mockStorage.getLease.mockResolvedValue({
+      ...lease,
+      status: "PENDING_VERIFICATION",
+      verificationStatus: "PENDING_REVIEW",
+    });
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-1", scheduleSeq: 1, status: "DUE", paymentMethod: "MANUAL", amount: "250" },
+    ]);
+    await markPaid({ leaseId: "lease-1", scheduleSeq: 1, note: "x", actor: "alex" });
+    expect(mockLeasePayments.activateVerifiedLease).not.toHaveBeenCalled();
   });
 });
 

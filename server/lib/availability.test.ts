@@ -8,6 +8,7 @@ const store = {
   strBookings: [] as any[],
   propertyBlocks: [] as any[],
   leases: [] as any[],
+  roomBookings: [] as any[],
   roomBlocks: [] as any[],
 };
 
@@ -16,6 +17,7 @@ vi.mock("../storage", () => ({
     getStrBookingsForProperty: vi.fn(async () => store.strBookings),
     getExternalBlocksForProperty: vi.fn(async () => store.propertyBlocks),
     getRoomBlockingLeasesForRoom: vi.fn(async () => store.leases),
+    getColivingBookingsForRoom: vi.fn(async () => store.roomBookings),
     getExternalBlocksForRoom: vi.fn(async () => store.roomBlocks),
   },
 }));
@@ -26,6 +28,7 @@ beforeEach(() => {
   store.strBookings = [];
   store.propertyBlocks = [];
   store.leases = [];
+  store.roomBookings = [];
   store.roomBlocks = [];
 });
 
@@ -64,5 +67,22 @@ describe("buildRoomAvailability", () => {
     const r = await buildRoomAvailability("room1");
     expect(r.busy[0]).toEqual({ start: FUTURE_A, end: "2999-08-15", source: "direct" }); // +1 day
     expect(r.busy[1]).toEqual({ start: FUTURE_C, end: FUTURE_D, source: "external" });
+  });
+
+  it("includes non-cancelled direct co-living bookings (half-open) so the calendar matches the quote path", async () => {
+    // A short co-living booking must show as busy — otherwise the calendar shows
+    // the dates free while /api/quote 409s (the exact bug this closes).
+    store.roomBookings = [{ checkIn: FUTURE_A, checkOut: FUTURE_B, status: "CONFIRMED" }];
+    const r = await buildRoomAvailability("room1");
+    expect(r.busy).toContainEqual({ start: FUTURE_A, end: FUTURE_B, source: "direct" });
+  });
+
+  it("drops open-ended (null checkOut) and past direct co-living bookings", async () => {
+    store.roomBookings = [
+      { checkIn: FUTURE_A, checkOut: null, status: "CONFIRMED" }, // open-ended → drop
+      { checkIn: "2000-01-01", checkOut: "2000-01-03", status: "PENDING_PAYMENT" }, // past → drop
+    ];
+    const r = await buildRoomAvailability("room1");
+    expect(r.busy).toHaveLength(0);
   });
 });

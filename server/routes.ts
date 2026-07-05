@@ -18,6 +18,7 @@ import { storage } from "./storage";
 import {
   quoteRequestSchema,
   createBookingSchema,
+  bookingIntentSchema,
   leaseQuoteRequestSchema,
   type CreateBookingResponse,
 } from "@shared/api-types";
@@ -43,6 +44,7 @@ import {
   buildStrChargeMetadata,
   buildLeaseChargeMetadata,
   buildRoomBookingChargeMetadata,
+  buildShortStayIntentMetadata,
 } from "./lib/paymentMetadata";
 import { createDraftLease, previewLease, signLease } from "./lib/leaseFlow";
 import {
@@ -56,10 +58,12 @@ import { billAccruedLateFees, handleChargeFailure } from "./lib/dunning";
 import {
   getPortalView,
   payInstallmentNow,
+  electManualInstallment,
   submitMessage,
   replyToThread,
   getThread,
 } from "./lib/portal";
+import { buildManualInstructions } from "./lib/manualPayment";
 import {
   uploadLicense,
   saveVehicle,
@@ -81,6 +85,8 @@ import {
   isStripeConfigured,
   createCheckoutSession,
   createOneTimePaymentIntent,
+  updatePaymentIntentContact,
+  refundPaymentIntent,
   createWeeklySubscriptionCheckout,
   constructWebhookEvent,
 } from "./lib/stripe";
@@ -401,6 +407,99 @@ export async function registerRoutes(app: Express): Promise<void> {
   });
 
   // =========================================================================
+  // PUBLIC — short-stay booking INTENT (payment-first, TRAD model)
+  //   Creates ONLY a Stripe PaymentIntent (no booking/payment row). All the data
+  //   needed to rebuild the booking rides in the PI metadata; the webhook
+  //   (payment_intent.succeeded) materializes the booking after payment. So an
+  //   abandoned checkout leaves ZERO db footprint and blocks NO dates.
+  //   Guest contact is optional here (Element mounts on load) and attached later
+  //   via /api/booking-intent/:id/contact before the guest confirms payment.
+  // =========================================================================
+  app.post("/api/booking-intent", async (req, res, next) => {
+    try {
+      const parsed = bookingIntentSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled yet (Stripe key not set)." });
+      }
+      const { propertyId, roomId, checkIn, checkOut, guest } = parsed.data;
+
+      // resolveBooking applies the same lease-vs-booking gate + availability check
+      // as /api/quote; anything that resolves is bookable as a short stay.
+      const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
+      const quote = buildQuote(resolved, "STRIPE");
+      const reference = generateReference();
+      const dueNow = quote.dueNow.total;
+      const surcharge = quote.dueNow.surcharge;
+
+      const metadata = buildShortStayIntentMetadata({
+        entity: resolved.property.entity,
+        property: resolved.property,
+        room: resolved.room ?? null,
+        model: resolved.model,
+        checkIn: resolved.checkIn,
+        checkOut: resolved.checkOut,
+        reference,
+        quotedTotal: dueNow,
+        amount: dueNow - surcharge,
+        surcharge,
+        rateCadence: resolved.model === "COLIVING" ? "WEEKLY" : resolved.rateTier ?? null,
+        guest: guest ?? undefined,
+      });
+
+      const paymentIntent = await createOneTimePaymentIntent({
+        amount: dueNow,
+        guestEmail: guest?.email ?? "",
+        reference,
+        metadata,
+        idempotencyKey: `intent:${reference}`,
+      });
+
+      res.json({
+        reference,
+        clientSecret: paymentIntent.client_secret,
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY,
+        paymentIntentId: paymentIntent.id,
+        quote,
+      });
+    } catch (err) {
+      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Attach final guest contact to a booking intent before the guest pays. This is
+  // the server-side "no email → no booking" gate: the webhook won't materialize a
+  // booking whose metadata lacks a guest email, and this is what fills it in.
+  app.post("/api/booking-intent/:id/contact", async (req, res, next) => {
+    try {
+      const schema = z.object({
+        name: z.string().min(1, "Name required"),
+        email: z.string().email("Valid email required"),
+        phone: z.string().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid contact" });
+      }
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled yet." });
+      }
+      await updatePaymentIntentContact({
+        paymentIntentId: req.params.id,
+        name: parsed.data.name,
+        email: parsed.data.email,
+        phone: parsed.data.phone,
+      });
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // =========================================================================
   // PUBLIC — co-living lease quote (full payment-schedule preview, Phase 2)
   // Creates nothing, charges nothing. Returns the schedule the guest will sign
   // (Phase 3) and pay (Phase 4), computed by the shared canonical generator.
@@ -596,6 +695,41 @@ export async function registerRoutes(app: Express): Promise<void> {
         });
       }
       res.json(payResult);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Elect to pay an open installment MANUALLY (CashApp / Zelle) instead of by
+  // card. Flips the row to MANUAL and returns pay-to instructions; the payment is
+  // held pending until an admin settles it via UO "Mark Paid". Not Stripe-gated —
+  // this is the no-card path.
+  app.post("/api/portal/:token/pay/:seq/manual", async (req, res, next) => {
+    try {
+      const seq = parseInt(req.params.seq, 10);
+      if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
+      const schema = z.object({ method: z.enum(["CASHAPP", "ZELLE"]) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "method must be CASHAPP or ZELLE" });
+
+      const instructions = await electManualInstallment(req.params.token, seq, parsed.data.method);
+
+      const portalData = await getPortalView(req.params.token).catch(() => null);
+      const portalGuestEmail = portalData?.guest?.email;
+      if (portalGuestEmail) {
+        posthog.capture({
+          distinctId: portalGuestEmail,
+          event: "portal_installment_manual_elected",
+          properties: {
+            portal_token: req.params.token,
+            schedule_seq: seq,
+            method: parsed.data.method,
+            amount: instructions.amount,
+          },
+        });
+      }
+      res.json(instructions);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -918,9 +1052,11 @@ export async function registerRoutes(app: Express): Promise<void> {
   app.get("/api/admin/reconciliation-report", requireAdmin, reconciliationHandler);
 
   // =========================================================================
-  // PUBLIC — create booking
-  //   STRIPE  → create payment record(s) + Stripe Checkout, return checkoutUrl
-  //   CASHAPP/ZELLE → pending booking + manual instructions
+  // PUBLIC — create booking (MANUAL only: CashApp / Zelle)
+  //   Card (STRIPE) short stays no longer go through here — they are payment-first
+  //   via /api/booking-intent, and the booking is materialized by the webhook
+  //   after payment. Only the manual path creates a PENDING_PAYMENT booking up
+  //   front (settled later via UO "Mark Paid").
   // =========================================================================
   app.post("/api/bookings", async (req, res, next) => {
     try {
@@ -929,6 +1065,14 @@ export async function registerRoutes(app: Express): Promise<void> {
         return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid booking" });
       }
       const { propertyId, roomId, checkIn, checkOut, paymentMethod, guest } = parsed.data;
+
+      // Card payments are payment-first now — route them to /api/booking-intent so
+      // no pending row (and no date hold) is created before the guest actually pays.
+      if (paymentMethod === "STRIPE") {
+        return res.status(400).json({
+          message: "Card payments use /api/booking-intent (payment-first).",
+        });
+      }
 
       // resolveBooking applies the lease-vs-booking gate: STR whole-property
       // stays and SHORT co-living stays (7–28 nights, paid in full upfront, no
@@ -939,9 +1083,11 @@ export async function registerRoutes(app: Express): Promise<void> {
 
       const quote = buildQuote(resolved, paymentMethod);
       const reference = generateReference();
+      const dueNow = quote.dueNow.total;
 
+      // Manual (CashApp/Zelle): create the guest + a PENDING_PAYMENT booking + a
+      // PENDING payment row. Settled later via UO "Mark Paid".
       const guestRow = await storage.upsertGuestByEmail(guest);
-
       const booking = await storage.createBooking({
         propertyId: resolved.property.id,
         roomId: resolved.room?.id ?? null,
@@ -952,13 +1098,8 @@ export async function registerRoutes(app: Express): Promise<void> {
         status: "PENDING_PAYMENT",
         paymentMethod,
         reference,
-        quotedTotal: String(quote.dueNow.total),
+        quotedTotal: String(dueNow),
       });
-
-      const dueNow = quote.dueNow.total;
-      const surcharge = quote.dueNow.surcharge;
-      // STR-only path now (co-living rejected above), so this is a one-time stay charge.
-      const paymentType = "ONE_TIME";
 
       const response: CreateBookingResponse = {
         reference,
@@ -967,85 +1108,23 @@ export async function registerRoutes(app: Express): Promise<void> {
         quote,
       };
 
-      if (paymentMethod === "STRIPE") {
-        if (!isStripeConfigured()) {
-          return res.status(503).json({
-            message: "Card payments aren't enabled yet (Stripe test key not set). Use CashApp or Zelle.",
-          });
-        }
-        // Deposit / one-time payment record (PENDING until webhook confirms).
-        const payment = await storage.createPayment({
-          bookingId: booking.id,
-          type: paymentType,
-          method: "STRIPE",
-          amount: String(dueNow - surcharge),
-          surcharge: String(surcharge),
-          status: "PENDING",
-          stripeRef: null,
-          confirmedBy: null,
-          paidAt: null,
-        });
-
-        // Full Stripe Metadata Contract. STR whole-property → STR_WHOLE (no room);
-        // short co-living → COLIVING_ROOM with the room fields populated and
-        // lease_id "null" (lease-less reservation). Built by the single-source
-        // helpers so the contract can never be partially populated.
-        const chargeMetadata =
-          resolved.model === "COLIVING"
-            ? buildRoomBookingChargeMetadata({
-                entity: resolved.property.entity,
-                property: resolved.property,
-                room: resolved.room!,
-                paymentKind: "BOOKING_DEPOSIT",
-                // Short stays price off the weekly rent; label the basis WEEKLY.
-                rateCadence: "WEEKLY",
-              })
-            : buildStrChargeMetadata({
-                entity: resolved.property.entity,
-                property: resolved.property,
-                paymentKind: "BOOKING_DEPOSIT",
-                rateCadence: resolved.rateTier ?? null,
-              });
-
-        // On-page embedded payment: create a one-time PaymentIntent and hand the
-        // client its client_secret. The client confirms it with Stripe Elements
-        // (no redirect); the booking is only marked CONFIRMED by the webhook
-        // (payment_intent.succeeded), never by the client.
-        const paymentIntent = await createOneTimePaymentIntent({
-          amount: dueNow,
-          guestEmail: guest.email,
-          reference,
-          metadata: chargeMetadata,
-          idempotencyKey: `booking:${reference}:one_time`,
-        });
-        await storage.updatePayment(payment.id, { stripeRef: paymentIntent.id });
-        response.clientSecret = paymentIntent.client_secret ?? undefined;
-        response.publishableKey = process.env.VITE_STRIPE_PUBLIC_KEY;
-        response.paymentIntentId = paymentIntent.id;
-      } else {
-        // CASHAPP / ZELLE — manual, no surcharge, pending until admin confirms.
-        await storage.createPayment({
-          bookingId: booking.id,
-          type: paymentType,
-          method: paymentMethod,
-          amount: String(dueNow),
-          surcharge: "0",
-          status: "PENDING",
-          stripeRef: null,
-          confirmedBy: null,
-          paidAt: null,
-        });
-        const handle =
-          paymentMethod === "CASHAPP"
-            ? process.env.CASHAPP_TAG ?? "$BeNiceProperties"
-            : process.env.ZELLE_HANDLE ?? "pay@beniceproperties.com";
-        response.manualInstructions = {
-          method: paymentMethod,
-          handle,
-          amount: dueNow,
-          memo: reference,
-        };
-      }
+      // CASHAPP / ZELLE — manual, no surcharge, pending until admin confirms.
+      await storage.createPayment({
+        bookingId: booking.id,
+        type: "ONE_TIME",
+        method: paymentMethod,
+        amount: String(dueNow),
+        surcharge: "0",
+        status: "PENDING",
+        stripeRef: null,
+        confirmedBy: null,
+        paidAt: null,
+      });
+      response.manualInstructions = buildManualInstructions({
+        method: paymentMethod,
+        amount: dueNow,
+        memo: reference,
+      });
 
       posthog.identify({
         distinctId: guest.email,
@@ -1216,6 +1295,33 @@ export async function registerRoutes(app: Express): Promise<void> {
     try {
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
       res.json(await storage.getBookings(status ? { status } : undefined));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Cancel a booking (admin). Sets status → CANCELLED, which both availability
+  // paths exclude (ne(status,"CANCELLED")), so the dates are released. Also frees
+  // a co-living room that this booking had marked OCCUPIED. Idempotent: cancelling
+  // an already-CANCELLED booking is a no-op. Used to clear stale/abandoned bookings
+  // that were silently holding dates.
+  app.post("/api/admin/bookings/:id/cancel", requireAdmin, async (req, res, next) => {
+    try {
+      const booking = await storage.getBooking(req.params.id);
+      if (!booking) return res.status(404).json({ message: "Booking not found" });
+      if (booking.status === "CANCELLED") {
+        return res.json({ ok: true, alreadyCancelled: true, reference: booking.reference });
+      }
+      await storage.updateBooking(booking.id, { status: "CANCELLED" });
+      // Free the co-living room this booking had occupied (STR has no room).
+      if (booking.roomId) {
+        const room = await storage.getRoom(booking.roomId);
+        if (room && room.status === "OCCUPIED") {
+          await storage.updateRoom(booking.roomId, { status: "AVAILABLE" });
+        }
+      }
+      log(`booking ${booking.reference} (${booking.id}) CANCELLED by admin`, "admin");
+      res.json({ ok: true, reference: booking.reference });
     } catch (err) {
       next(err);
     }
@@ -1404,6 +1510,123 @@ function subIdFromInvoice(invoice: import("stripe").Stripe.Invoice): string | un
   return lineSub;
 }
 
+/**
+ * Materialize a short-stay booking from a succeeded PaymentIntent's metadata
+ * (payment-first model). No booking row exists until this runs. Idempotent across
+ * Stripe retries (keyed on `reference`); re-checks availability so a rare
+ * concurrent double-book is refunded rather than overbooked.
+ */
+async function materializeShortStayBooking(
+  pi: import("stripe").Stripe.PaymentIntent,
+): Promise<void> {
+  const m = pi.metadata ?? {};
+  const reference = m.reference;
+  if (!reference) {
+    log(`short-stay PI ${pi.id} has no reference — cannot materialize`, "stripe");
+    return;
+  }
+
+  // Idempotency: if a booking with this reference already exists (Stripe retry, or
+  // a manual booking that reused the reference space), just ensure its payment is
+  // PAID and stop.
+  const existing = await storage.getBookingByReference(reference);
+  if (existing) {
+    const payment = await storage.getPaymentByStripeRef(pi.id);
+    if (payment && payment.status !== "PAID") {
+      await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
+    }
+    log(`short-stay booking ${reference} already exists — idempotent no-op`, "stripe");
+    return;
+  }
+
+  // Guest completeness guard: contact is attached before confirmPayment, so this
+  // should never be blank — but never write a booking we can't email.
+  const guestName = m.guest_name;
+  const guestEmail = m.guest_email;
+  if (!guestName || guestName === "null" || !guestEmail || guestEmail === "null") {
+    log(`short-stay PI ${pi.id} (${reference}) missing guest contact — NOT materializing`, "stripe");
+    posthog.capture({ distinctId: pi.id, event: "booking_intent_missing_contact", properties: { reference } });
+    return;
+  }
+
+  const propertyId = m.property_id;
+  const roomId = m.room_id && m.room_id !== "null" ? m.room_id : undefined;
+  const checkIn = m.check_in && m.check_in !== "null" ? m.check_in : undefined;
+  const checkOut = m.check_out && m.check_out !== "null" ? m.check_out : undefined;
+
+  // Availability race guard: re-check that the dates/room are still free. If they
+  // were taken since the intent was created, do NOT book — refund and alert.
+  try {
+    await resolveBooking({ propertyId, roomId, checkIn, checkOut });
+  } catch (err) {
+    if (err instanceof BookingError) {
+      log(
+        `short-stay ${reference} dates taken since intent — refunding PI ${pi.id}: ${err.message}`,
+        "stripe",
+      );
+      try {
+        await refundPaymentIntent({ paymentIntentId: pi.id, idempotencyKey: `refund:${pi.id}` });
+      } catch (refundErr) {
+        log(`REFUND FAILED for ${pi.id} (${reference}): ${(refundErr as Error).message}`, "stripe");
+      }
+      posthog.capture({
+        distinctId: guestEmail,
+        event: "booking_double_book_refunded",
+        properties: { reference, payment_intent_id: pi.id, reason: err.message },
+      });
+      return;
+    }
+    throw err;
+  }
+
+  // Rebuild the booking from metadata.
+  const model = m.model === "COLIVING" ? "COLIVING" : "STR";
+  const guestRow = await storage.upsertGuestByEmail({
+    name: guestName,
+    email: guestEmail,
+    phone: m.guest_phone && m.guest_phone !== "null" ? m.guest_phone : undefined,
+  });
+  const booking = await storage.createBooking({
+    propertyId,
+    roomId: roomId ?? null,
+    guestId: guestRow.id,
+    model,
+    checkIn: checkIn!,
+    checkOut: checkOut ?? null,
+    status: model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
+    paymentMethod: "STRIPE",
+    reference,
+    quotedTotal: m.quoted_total ?? "0",
+  });
+  if (roomId) await storage.updateRoom(roomId, { status: "OCCUPIED" });
+  await storage.createPayment({
+    bookingId: booking.id,
+    type: "ONE_TIME",
+    method: "STRIPE",
+    amount: m.amount ?? "0",
+    surcharge: m.surcharge ?? "0",
+    status: "PAID",
+    stripeRef: pi.id,
+    confirmedBy: null,
+    paidAt: new Date(),
+  });
+  posthog.capture({
+    distinctId: guestEmail,
+    event: "booking_confirmed",
+    properties: {
+      reference,
+      booking_id: booking.id,
+      property_id: propertyId,
+      property_type: model,
+      room_id: roomId ?? null,
+      check_in: checkIn,
+      check_out: checkOut,
+      payment_intent_id: pi.id,
+    },
+  });
+  log(`short-stay booking ${reference} materialized + confirmed via ${pi.id}`, "stripe");
+}
+
 async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<void> {
   switch (event.type) {
     case "checkout.session.completed": {
@@ -1509,42 +1732,11 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
       const hasLease = pi.metadata?.lease_id && pi.metadata.lease_id !== "null";
       if (kind === "BOOKING_DEPOSIT" && !hasLease) {
         // Short-stay one-time payment (STR whole-property, or a short 7–28-night
-        // co-living reservation). These carry no lease_id and are now paid on-page
-        // via a PaymentIntent (previously a hosted Checkout Session settled by
-        // checkout.session.completed). Confirm the booking here, keyed by the
-        // reference stamped into the PI metadata. Idempotent: safe to re-run.
-        const reference = pi.metadata?.reference;
-        const booking = reference ? await storage.getBookingByReference(reference) : null;
-        if (booking) {
-          const payment = await storage.getPaymentByStripeRef(pi.id);
-          if (payment && payment.status !== "PAID") {
-            await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
-          }
-          if (booking.status === "PENDING_PAYMENT") {
-            await storage.updateBooking(booking.id, {
-              status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
-            });
-            if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
-            const confirmedGuest = await storage.getGuest(booking.guestId);
-            if (confirmedGuest) {
-              posthog.capture({
-                distinctId: confirmedGuest.email,
-                event: "booking_confirmed",
-                properties: {
-                  reference,
-                  booking_id: booking.id,
-                  property_id: booking.propertyId,
-                  property_type: booking.model,
-                  room_id: booking.roomId ?? null,
-                  check_in: booking.checkIn,
-                  check_out: booking.checkOut,
-                  payment_intent_id: pi.id,
-                },
-              });
-            }
-          }
-          log(`booking ${reference} confirmed via payment_intent.succeeded`, "stripe");
-        }
+        // co-living reservation), payment-first: NO booking row existed before
+        // now. MATERIALIZE the booking from the PI metadata. Idempotent across
+        // Stripe retries (keyed on `reference`); re-checks availability so a rare
+        // concurrent double-book is refunded instead of overbooking.
+        await materializeShortStayBooking(pi);
       } else if (kind === "BOOKING_DEPOSIT" && hasLease) {
         // Co-living deposit succeeded → secure the room(s) + charge first week.
         await finalizeDepositPayment(pi.id);

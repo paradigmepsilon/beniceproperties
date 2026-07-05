@@ -22,6 +22,16 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
 
+interface ManualInstructions {
+  method: "CASHAPP" | "ZELLE";
+  handle: string;
+  amount: number;
+  memo: string;
+}
+
+// The server response plus the seq we requested (so the panel can re-switch method).
+type ManualInstructionsWithSeq = ManualInstructions & { seq: number };
+
 interface PortalView {
   lease: {
     id: string;
@@ -130,6 +140,23 @@ export default function Portal() {
       qc.invalidateQueries({ queryKey: key });
     },
     onError: (e: Error) => toast({ title: "Payment failed", description: cleanError(e), variant: "destructive" }),
+  });
+
+  // Instructions shown after the guest elects to pay an installment manually
+  // (CashApp / Zelle). The payment is held pending until we confirm receipt.
+  const [manualInstr, setManualInstr] = useState<ManualInstructionsWithSeq | null>(null);
+  const payManual = useMutation({
+    mutationFn: async (vars: { seq: number; method: "CASHAPP" | "ZELLE" }) => {
+      const instr = (await apiRequest("POST", `/api/portal/${token}/pay/${vars.seq}/manual`, {
+        method: vars.method,
+      })).json() as Promise<ManualInstructions>;
+      return { ...(await instr), seq: vars.seq };
+    },
+    onSuccess: (instr) => {
+      setManualInstr(instr);
+      qc.invalidateQueries({ queryKey: key });
+    },
+    onError: (e: Error) => toast({ title: "Could not set up manual payment", description: cleanError(e), variant: "destructive" }),
   });
 
   const [msgBody, setMsgBody] = useState("");
@@ -403,10 +430,23 @@ export default function Portal() {
                 <span className="flex items-center gap-2">
                   {money(s.amount)}
                   <Badge variant={statusVariant(s.status)} className={statusClass(s.status)}>{s.status}</Badge>
-                  {nextDue?.seq === s.seq && lease.hasSavedCard && s.paymentMethod !== "MANUAL" && (
-                    <Button size="sm" disabled={pay.isPending} onClick={() => pay.mutate(s.seq)} data-testid={`button-pay-${s.seq}`}>
-                      {pay.isPending ? "Paying…" : "Pay now"}
-                    </Button>
+                  {nextDue?.seq === s.seq && s.paymentMethod !== "MANUAL" && (
+                    <span className="flex items-center gap-2">
+                      {lease.hasSavedCard && (
+                        <Button size="sm" disabled={pay.isPending} onClick={() => pay.mutate(s.seq)} data-testid={`button-pay-${s.seq}`}>
+                          {pay.isPending ? "Paying…" : "Pay now"}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={payManual.isPending}
+                        onClick={() => payManual.mutate({ seq: s.seq, method: "CASHAPP" })}
+                        data-testid={`button-pay-manual-${s.seq}`}
+                      >
+                        {payManual.isPending ? "…" : "Pay by CashApp/Zelle"}
+                      </Button>
+                    </span>
                   )}
                 </span>
               </div>
@@ -414,8 +454,60 @@ export default function Portal() {
             {lease.prorationNote && (
               <p className="pt-2 text-xs text-muted-foreground">{lease.prorationNote}</p>
             )}
+            <p className="pt-1 text-xs text-muted-foreground">
+              Card payments include a 3.5% processing fee. CashApp/Zelle has no fee — your payment is
+              held pending until we confirm it.
+            </p>
           </CardContent>
         </Card>
+
+        {/* Manual payment instructions (after electing CashApp/Zelle). */}
+        {manualInstr && (
+          <Card data-testid="card-manual-instructions">
+            <CardHeader><CardTitle className="text-base">Send your payment</CardTitle></CardHeader>
+            <CardContent className="space-y-4 text-sm">
+              <p>
+                Send <strong>{money(manualInstr.amount)}</strong> via{" "}
+                <strong>{manualInstr.method === "CASHAPP" ? "CashApp" : "Zelle"}</strong> to:
+              </p>
+              <div className="rounded-md border p-4">
+                <div className="text-lg font-semibold">{manualInstr.handle}</div>
+                <div className="mt-2 text-muted-foreground">
+                  Include this reference in the memo: <strong>{manualInstr.memo}</strong>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                <span className="text-muted-foreground">Pay with:</span>
+                <Button
+                  size="sm"
+                  variant={manualInstr.method === "CASHAPP" ? "default" : "outline"}
+                  disabled={payManual.isPending}
+                  onClick={() => payManual.mutate({ seq: manualInstr.seq, method: "CASHAPP" })}
+                  data-testid="button-manual-cashapp"
+                >
+                  CashApp
+                </Button>
+                <Button
+                  size="sm"
+                  variant={manualInstr.method === "ZELLE" ? "default" : "outline"}
+                  disabled={payManual.isPending}
+                  onClick={() => payManual.mutate({ seq: manualInstr.seq, method: "ZELLE" })}
+                  data-testid="button-manual-zelle"
+                >
+                  Zelle
+                </Button>
+              </div>
+              <p className="text-muted-foreground">
+                This installment is now marked manual and held pending until we confirm receipt. Once
+                confirmed it shows as paid here. Prefer to pay by card instead? Contact us and we'll
+                switch it back.
+              </p>
+              <Button variant="outline" size="sm" onClick={() => setManualInstr(null)} data-testid="button-dismiss-manual">
+                Done
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Messages */}
         <Card>

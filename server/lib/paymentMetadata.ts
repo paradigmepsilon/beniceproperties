@@ -153,6 +153,64 @@ export function buildStrChargeMetadata(args: {
   };
 }
 
+/**
+ * Build metadata for a SHORT-STAY booking INTENT (payment-first model). Composes
+ * the reconciliation contract (STR whole-property OR short co-living room) PLUS
+ * the extra keys the webhook needs to REBUILD the booking after payment succeeds
+ * — because no booking row exists until then. Single source so the rebuild set
+ * can never be partially populated.
+ *
+ * `guest_*` may be blank at intent-create time (contact is attached later, before
+ * confirmPayment, via updatePaymentIntentContact); the webhook re-validates that
+ * guest_email/guest_name are present before materializing.
+ */
+export function buildShortStayIntentMetadata(args: {
+  entity: string;
+  property: Pick<Property, "id" | "name" | "type">;
+  room?: Pick<Room, "id" | "name" | "roomNumber"> | null;
+  model: "STR" | "COLIVING";
+  checkIn: string;
+  checkOut: string | null;
+  reference: string;
+  quotedTotal: number;
+  amount: number; // charged total minus surcharge
+  surcharge: number;
+  rateCadence?: string | null;
+  guest?: { name?: string | null; email?: string | null; phone?: string | null };
+}): StripeChargeMetadata {
+  const base =
+    args.model === "COLIVING" && args.room
+      ? buildRoomBookingChargeMetadata({
+          entity: args.entity,
+          property: args.property,
+          room: args.room,
+          paymentKind: "BOOKING_DEPOSIT",
+          rateCadence: args.rateCadence ?? "WEEKLY",
+        })
+      : buildStrChargeMetadata({
+          entity: args.entity,
+          property: args.property,
+          paymentKind: "BOOKING_DEPOSIT",
+          rateCadence: args.rateCadence ?? null,
+        });
+
+  return {
+    ...base,
+    // Booking-rebuild fields (read back by the webhook). property_id/room_id/
+    // reference already live in `base` / are added at PI-create time.
+    model: args.model,
+    check_in: str(args.checkIn),
+    check_out: str(args.checkOut),
+    reference: str(args.reference),
+    quoted_total: str(args.quotedTotal),
+    amount: str(args.amount),
+    surcharge: str(args.surcharge),
+    guest_name: str(args.guest?.name),
+    guest_email: str(args.guest?.email),
+    guest_phone: str(args.guest?.phone),
+  };
+}
+
 /** The contract's required keys — used by the validator + tests. */
 export const REQUIRED_METADATA_KEYS = [
   "entity",

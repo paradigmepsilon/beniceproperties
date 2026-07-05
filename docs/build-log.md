@@ -1565,3 +1565,208 @@ deposit line + incidentals note appear (lease); 35-night lease → deposit $200 
 total intact. STR path untouched (co-living-only file).
 
 DEPOSIT-LINE-CONDITIONAL: COMPLETE — tests green
+
+
+---
+
+## PAYMENTS-TRAD-PARITY — Stripe-only checkout, manual pay for lease rent, cleaning fee at move-in
+
+Branch `feat/payments-trad-parity-manual-lease-rent` off `578bd65`.
+
+**Why.** Align BNP payment options with the TRAD reference site and Alex's model: short-stay
+checkout is Stripe-only (TRAD has no manual path, no explicit method list); manual payment
+(CashApp/Zelle) is a per-payment choice on co-living LEASE payments only; a card is ALWAYS on file
+(deposit is always card); the cleaning fee is a MOVE-IN charge folded into the first payment (long
+co-living) or into the single payment (short stays); guests see full payment expectations before
+signing. Decisions confirmed with Alex via clarifying questions (card-always-on-file; manual on
+lease first payment + recurring rent; keep 3.5% surcharge on card; cleaning fee into first payment
+gated on ID verification; hold room as pending until UO confirms manual).
+
+**What / files.**
+- Part 1 — `client/src/pages/checkout.tsx`: reduced to Stripe-only (`PAYMENT_METHOD = "STRIPE"`),
+  removed the CashApp/Zelle method picker, manual-instructions screen, and manual button branches.
+  Server `POST /api/bookings` CASHAPP/ZELLE branch left intact (harmless dead path; refactored to
+  the shared `buildManualInstructions`). Kept the 3.5% surcharge line; wallets/BNPL stay
+  dashboard-driven via `automatic_payment_methods`.
+- Part 2 — `server/lib/leasePayments.ts`: moved the one-time cleaning-fee charge OUT of
+  `finalizeDepositPayment` (deposit is now the only charge that secures the room) and INTO
+  `activateVerifiedLease` (move-in, after ID approval), as its own `CLEANING_FEE` PaymentIntent
+  alongside first-week rent. A MANUAL first payment (seq 1) skips ALL card charges at activation.
+- Part 3 — new `server/lib/manualPayment.ts` (`manualHandle` / `buildManualInstructions`, single
+  source for the CashApp/Zelle handle). New `electManualInstallment(token, seq, method)` in
+  `server/lib/portal.ts` flips a next-due CARD_ON_FILE row to MANUAL, folds the unpaid cleaning fee
+  into the seq-1 amount, returns pay-to instructions (base amount, no surcharge). New endpoint
+  `POST /api/portal/:token/pay/:seq/manual` (`server/routes.ts`, not Stripe-gated). Portal UI
+  (`client/src/pages/portal.tsx`): "Pay by CashApp/Zelle" button + instructions panel with a
+  CashApp/Zelle toggle. `server/lib/uoApi.ts` `markPaid` extended: settling MANUAL seq 1 on an
+  approved+PENDING_VERIFICATION lease calls `activateVerifiedLease` to release check-in.
+- Part 4 — `client/src/pages/lease-booking.tsx`: pre-signing preview now shows the cleaning-fee
+  line + a combined "Total due at move-in" and notes the card/manual choice. `server/lib/
+  leaseDocument.ts`: sections 3 (first payment includes cleaning fee) and 7 (payment
+  authorization) reworded to reflect card-or-manual per installment.
+
+**No DB migration** — `payment_schedule.paymentMethod ∈ {CARD_ON_FILE, MANUAL}` and the
+cleaning-fee fields already existed; every downstream consumer (reconciliation split, rent-sweep
+skip, portal `(manual)` rendering, UO markPaid) already handled MANUAL.
+
+**Tests / verification.** `tsc` clean; `npm run build` clean (client + server bundle). Vitest 285
+passed (was 276) — 9 new tests: cleaning fee NOT charged at deposit, cleaning fee charged at
+activation (own `lease-cleaning-<id>` PI), MANUAL first payment charges nothing, `electManualInstallment`
+(flip to MANUAL/no money/base amount, folds cleaning fee into seq 1, idempotent + rejects paid),
+markPaid seq-1 activation (fires on approved lease, not on seq>1, not before approval). End-to-end
+against a fresh dev server on :3006 (branch code): new manual endpoint wired (404 on short/unknown
+token, 400 on bad method — no money moved); STR STRIPE quote shows base + cleaning fee + 3.5% card
+processing in one payment; lease-quote exposes cleaningFeeTotal/depositTotal/dueToday/schedule for
+the pre-signing preview.
+
+**Deferred / Alex's gate.** Full move-in charge with a Stripe TEST card (verifying the `CLEANING_FEE`
+PI fires at activation not deposit, and the manual first-payment → UO Mark Paid → check-in release)
+needs a real signed lease + TEST card and is Alex's manual verification gate per repo governance
+(money-moving Phase 4/5 paths). Inventory pricing (weekly rate / cleaning fee) is still unset on the
+seeded co-living rooms — a data gap, not a code gap.
+
+PAYMENTS-TRAD-PARITY: COMPLETE — tests green
+
+
+---
+
+## CHECKOUT-AUTOREVEAL — auto-show Stripe payment, split name, single Pay Now
+
+Branch `feat/payments-trad-parity-manual-lease-rent` (continues the payments work).
+
+**Why.** The short-stay checkout took three steps: fill details → click "Pay with card" (which
+created the booking + PaymentIntent) → only then did the Stripe Payment Element appear, inside the
+right-hand price-summary card. Alex wanted the card fields to surface as soon as the guest has
+entered enough to pay, positioned under the guest details, with one Pay Now button.
+
+**What / files.** Client-only — `client/src/pages/checkout.tsx`.
+- Split the single "Full name" field into **First name + Last name** (both required); joined into
+  the existing `guest.name` at submit, so no server/schema change.
+- Added a helper line under a new "Payment" card: "Enter your first name, last name, and email to
+  see your payment options." (`data-testid="text-payment-hint"`).
+- **Auto-create** the booking + PaymentIntent via a `useEffect` the instant first name + last name
+  + valid email are present and the quote is ready — no "Pay with card" button. Guarded by a
+  `useRef` flag so `POST /api/bookings` fires exactly once per page load (verified: one 201, no
+  repeats on re-render). On error the guard resets so the guest can retry.
+- Moved the embedded `<Elements>`/`<PaymentElement>` block **under the guest details** (left
+  column); the right column is now price-summary-only. Identity fields lock once the PaymentIntent
+  exists so the charged guest stays consistent.
+- Single **Pay Now** button inside `PayForm`, disabled until the Payment Element reports
+  `complete` (tracked via `onChange`).
+
+**Tests / verification.** `tsc` clean; `npm run build` clean; vitest 285 passed (no page unit
+tests — flow verified in-browser). Playwright against the running :3002 dev server (feature branch),
+STR property `88423aa4`, 2026-09-01→09-04: on load all four fields active, helper text shown, no
+Stripe element, no pay button; after First=Test / Last=Guest / valid email, the Payment Element
+auto-mounted under the details (Card + wallets/BNPL tabs), identity fields locked, Pay Now present
+and **disabled** (card not yet complete), price summary on the right ($279 + $100 cleaning + $13.27
+card = $392.27), 0 console errors, exactly one `POST /api/bookings` → 201. Did NOT submit a card
+(live Stripe keys) — stopped at element-rendered + Pay-Now-gated state per repo money-path governance.
+
+**Deferred.** Auto-creating on valid email means a guest who enters details then leaves creates one
+stale PENDING_PAYMENT booking + PaymentIntent (same pattern as the lease deposit flow). A cleanup
+job for stale PENDING_PAYMENT bookings is out of scope here — flagged for later.
+
+CHECKOUT-AUTOREVEAL: COMPLETE — tests green
+
+
+---
+
+## CHECKOUT-PAYMENT-FIRST — align short-stay Stripe checkout to TRAD (no pre-payment hold)
+
+Branch `feat/payments-trad-parity-manual-lease-rent`.
+
+**Why.** BNP's short-stay checkout wrote a PENDING_PAYMENT booking row BEFORE payment, and because
+availability counts any non-CANCELLED booking, a guest who merely entered a valid email held the
+dates indefinitely with no cleanup. TRAD avoids this: it creates only a PaymentIntent up front (all
+booking+guest details in metadata) and materializes the booking only after payment succeeds. This
+change adopts TRAD's payment-first model for BNP's STRIPE short-stay path, materializing in BNP's
+existing webhook (more reliable than TRAD's client-driven complete-booking — survives tab close,
+Stripe retries). Decisions confirmed with Alex: Element visible on load; availability race →
+auto-refund the loser + alert; confirmation page stays static.
+
+**What / files.**
+- `server/lib/paymentMetadata.ts` — new `buildShortStayIntentMetadata`: composes the reconciliation
+  contract + the booking-rebuild keys (model, check_in, check_out, reference, quoted_total, amount,
+  surcharge, guest_name/email/phone) so the webhook can rebuild the booking from PI metadata alone.
+- `server/lib/stripe.ts` — new `updatePaymentIntentContact` (attach guest at pay time). Fixed
+  `createOneTimePaymentIntent` to OMIT `receipt_email` when blank (Stripe rejects an empty string —
+  the intent is now created before contact). Reuses `refundPaymentIntent` for the race guard.
+- `server/routes.ts` — new `POST /api/booking-intent` (create intent, NO booking row) +
+  `POST /api/booking-intent/:id/contact` (attach + validate contact). `POST /api/bookings` split:
+  STRIPE now 400s (payment-first via booking-intent); CASHAPP/ZELLE still create a PENDING_PAYMENT
+  booking for UO settlement. Webhook `payment_intent.succeeded` short-stay branch rewritten into
+  `materializeShortStayBooking`: idempotent (getBookingByReference), guest-completeness guard,
+  availability re-check → auto-refund + `booking_double_book_refunded` on race, else upsert guest +
+  create CONFIRMED/ACTIVE booking + OCCUPIED room + PAID payment, all from metadata.
+- `shared/api-types.ts` — `bookingIntentSchema` (guest optional) + `BookingIntentResponse`.
+- `client/src/pages/checkout.tsx` — creates the intent on mount (no contact), mounts the Payment
+  Element immediately (visible on load), contact fields unlocked alongside; Pay Now attaches contact
+  then confirms; gated on contact-valid AND card-complete. Removed the debounced auto-create /
+  pending-row approach.
+
+**Tests / verification.** `tsc` clean; `npm run build` clean; vitest 288 passed (3 new: STR +
+short-COLIVING + blank-guest metadata rebuild). E2E on the restarted :3002 dev server (Playwright +
+curl): `/api/bookings` STRIPE → 400; `/api/booking-intent` (no guest) → 200 with clientSecret and
+NO booking row; `/api/booking-intent/:id/contact` → 400 bad email / 200 valid. In-browser: Payment
+Element (Card + wallets/BNPL) **visible on load before contact**; exactly one `POST /api/booking-
+intent` and ZERO `POST /api/bookings` on mount (no date hold); contact fields unlocked; Pay Now
+dual-gated (contact-valid AND card-complete). Did NOT submit a card (live keys) — stopped at the
+Pay-Now-gated state per repo money-path governance. **Alex's manual test-card gate:** a full test
+charge to confirm the webhook materializes the booking (CONFIRMED + OCCUPIED + PAID) from metadata,
+and the race auto-refund path.
+
+**Deferred.** The old pre-payment-hold behavior is fully removed, so the stale-PENDING_PAYMENT
+cleanup previously flagged is now moot for the Stripe path (manual bookings still create pending rows
+by design). Manual CASHAPP/ZELLE path unchanged.
+
+CHECKOUT-PAYMENT-FIRST: COMPLETE — tests green
+
+
+---
+
+## FIX-AVAILABILITY-DIVERGENCE — calendar vs quote disagreement + silent quote errors
+
+Branch `feat/payments-trad-parity-manual-lease-rent`.
+
+**Why (root cause, proven).** Certain co-living rooms hung forever on "Calculating your total…"
+after dates were picked. Two server paths computed availability from DIFFERENT sources:
+`buildRoomAvailability` (the calendar, `server/lib/availability.ts`) used only room-blocking leases
++ external iCal blocks, while `isRoomAvailableForRange` (the quote path, `server/storage.ts:929-964`)
+ALSO checks non-cancelled direct co-living bookings (`getColivingBookingsForRoom`). So a room with a
+direct booking showed FREE on the calendar but 409'd at quote time. The client (`room-detail.tsx`,
+`property-detail.tsx`) had NO error branch on the quote query — it only left the loading state when
+`data` was truthy — so a 409 hung the spinner permanently and swallowed the message. Confirmed via
+live-API probing: room "Prof" reported `busy:[]` yet a quote 409'd; sweeping the quote endpoint
+mapped the hidden direct-booking windows. The blocking rows were near-term direct bookings
+(including PENDING_PAYMENT rows left by earlier checkout testing).
+
+**What / files.**
+- `server/lib/availability.ts` — `buildRoomAvailability` now folds a THIRD source, non-cancelled
+  direct co-living bookings (`getColivingBookingsForRoom`, half-open checkOut, future-only), into
+  `busy`, mirroring `isRoomAvailableForRange`. Calendar and quote can no longer disagree.
+- `client/src/pages/room-detail.tsx` + `property-detail.tsx` — added an error branch to the quote
+  queries (expose `error`, render the server message via a `quoteErrorMessage` helper) so a failed
+  quote shows "Those dates are not available for this room" instead of an endless spinner. (This
+  file also carries a small pre-existing UX tweak from an earlier session: the co-living move-in
+  date now seeds empty instead of defaulting to today.)
+- `server/routes.ts` — new `POST /api/admin/bookings/:id/cancel` (requireAdmin): sets status →
+  CANCELLED (both availability paths exclude it), frees an OCCUPIED co-living room, idempotent. The
+  reusable way to release a stale/abandoned booking (none existed before).
+- `scripts/clean-stale-coliving-bookings.mjs` — dry-run-by-default script to list non-cancelled
+  co-living bookings and cancel a specific one (`--cancel <ref>`); nothing is deleted.
+
+**Tests / verification.** `tsc` clean; `npm run build` clean; vitest 290 passed (2 new: calendar
+includes direct co-living bookings; drops open-ended/past). E2E on :3002: created a manual co-living
+booking → calendar now shows the block (previously omitted) AND quote 409s for it (they agree);
+room page shows "Those dates include nights this room is already booked. Pick an open range." instead
+of hanging; admin cancel endpoint released the booking (calendar block gone, quote → 200, room →
+AVAILABLE).
+
+**Deferred — prod cleanup (task b, needs Alex).** The stale blocking rows live in the prod DB.
+Reading/cancelling them is a production-DB action the sandbox gates; NOT done here. To clear them:
+run `node scripts/clean-stale-coliving-bookings.mjs` (dry run) to review, then
+`--cancel <reference>` per stale row; OR use the new admin cancel endpoint. Once this branch deploys,
+the calendar fix means such rows also become visible on the calendar rather than silent.
+
+FIX-AVAILABILITY-DIVERGENCE: COMPLETE — tests green

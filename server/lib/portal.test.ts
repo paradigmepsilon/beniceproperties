@@ -27,6 +27,7 @@ vi.mock("./dunning", () => mockDunning);
 import {
   getPortalView,
   payInstallmentNow,
+  electManualInstallment,
   submitMessage,
   replyToThread,
 } from "./portal";
@@ -126,6 +127,53 @@ describe("payInstallmentNow", () => {
       { id: "row-2", scheduleSeq: 2, dueDate: "2026-07-08", amount: "250", status: "PAID", paymentMethod: "CARD_ON_FILE" },
     ]);
     await expect(payInstallmentNow(TOKEN, 2)).rejects.toThrow(/already paid/i);
+  });
+});
+
+describe("electManualInstallment", () => {
+  beforeEach(() => {
+    mockStorage.getLeaseByPortalToken.mockResolvedValue(lease());
+    mockStorage.updateScheduleRow.mockResolvedValue(undefined);
+  });
+
+  it("flips an open installment to MANUAL, moves NO money, and returns instructions (base amount, no surcharge)", async () => {
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-2", scheduleSeq: 2, dueDate: "2026-07-08", amount: "250", status: "DUE", paymentMethod: "CARD_ON_FILE" },
+    ]);
+
+    const instr = await electManualInstallment(TOKEN, 2, "CASHAPP");
+
+    expect(instr.method).toBe("CASHAPP");
+    expect(instr.amount).toBe(250); // base only — no 3.5% surcharge
+    expect(instr.memo).toContain("P2");
+    expect(mockStorage.updateScheduleRow).toHaveBeenCalledWith("row-2", { paymentMethod: "MANUAL" });
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("folds the unpaid cleaning fee into the seq-1 (move-in) manual amount", async () => {
+    mockStorage.getLeaseByPortalToken.mockResolvedValue(
+      lease({ cleaningFeeSnapshot: "150", cleaningFeeStatus: "PENDING" }),
+    );
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-1", scheduleSeq: 1, dueDate: "2026-07-01", amount: "250", status: "DUE", paymentMethod: "CARD_ON_FILE" },
+    ]);
+
+    const instr = await electManualInstallment(TOKEN, 1, "ZELLE");
+    expect(instr.amount).toBe(400); // 250 first installment + 150 cleaning fee
+  });
+
+  it("is idempotent for a row already MANUAL (no extra write) and rejects a PAID row", async () => {
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-2", scheduleSeq: 2, dueDate: "2026-07-08", amount: "250", status: "DUE", paymentMethod: "MANUAL" },
+    ]);
+    const instr = await electManualInstallment(TOKEN, 2, "CASHAPP");
+    expect(instr.amount).toBe(250);
+    expect(mockStorage.updateScheduleRow).not.toHaveBeenCalled();
+
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-2", scheduleSeq: 2, dueDate: "2026-07-08", amount: "250", status: "PAID", paymentMethod: "CARD_ON_FILE" },
+    ]);
+    await expect(electManualInstallment(TOKEN, 2, "CASHAPP")).rejects.toThrow(/already paid/i);
   });
 });
 

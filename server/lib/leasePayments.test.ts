@@ -259,6 +259,27 @@ describe("finalizeDepositPayment", () => {
     expect(mockStorage.updateRoom).not.toHaveBeenCalled();
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
   });
+
+  it("does NOT charge the cleaning fee at deposit time (it is a move-in charge)", async () => {
+    mockStorage.getLeases.mockResolvedValue([
+      lease({ depositStatus: "PENDING", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
+    ]);
+    // A lease WITH a cleaning fee — it must still not be charged here.
+    mockStorage.getLease.mockResolvedValue(
+      lease({
+        depositStatus: "PAID",
+        depositStripePaymentIntentId: "pi_dep_1",
+        stripeCustomerId: "cus_123",
+        cleaningFeeSnapshot: "150",
+        cleaningFeeStatus: "PENDING",
+      }),
+    );
+
+    await finalizeDepositPayment("pi_dep_1");
+
+    // No card charge of any kind at deposit — cleaning fee waits for move-in.
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
 });
 
 describe("activateVerifiedLease", () => {
@@ -318,6 +339,38 @@ describe("activateVerifiedLease", () => {
     mockStorage.getLease.mockResolvedValue(verifiedLease({ status: "ACTIVE" }));
     await activateVerifiedLease("lease-1");
     expect(mockStorage.updateLease).not.toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("charges the cleaning fee at move-in (activation), as its own CLEANING_FEE PI", async () => {
+    // Lease carries an unpaid cleaning fee; future move-in so rent defers, isolating the fee.
+    mockStorage.getLease.mockResolvedValue(
+      verifiedLease({ cleaningFeeSnapshot: "150", cleaningFeeStatus: "PENDING" }),
+    );
+    mockStorage.getScheduleByLease.mockResolvedValue([schedRow(1, { dueDate: "2099-01-01" })]);
+
+    await activateVerifiedLease("lease-1");
+
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    // The cleaning fee is charged now, on its own idempotency key.
+    expect(mockStripe.chargeSavedCard).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "lease-cleaning-lease-1" }),
+    );
+  });
+
+  it("MANUAL first payment: activates but charges NOTHING (fee + rent settled manually)", async () => {
+    mockStorage.getLease.mockResolvedValue(
+      verifiedLease({ cleaningFeeSnapshot: "150", cleaningFeeStatus: "PENDING" }),
+    );
+    // seq 1 elected manual, due today — must NOT card-charge cleaning fee OR rent.
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      schedRow(1, { dueDate: "2000-01-01", paymentMethod: "MANUAL" }),
+    ]);
+
+    await activateVerifiedLease("lease-1");
+
+    expect(mockStorage.updateLease).toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
   });
 });
