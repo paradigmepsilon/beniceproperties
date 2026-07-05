@@ -25,6 +25,7 @@ import {
 import {
   insertPropertySchema,
   insertRoomSchema,
+  insertNewsletterSubscriberSchema,
   US_STATE_CODES,
   COLIVING_MIN_DAYS,
   type PropertyListItem,
@@ -181,6 +182,22 @@ export async function registerRoutes(app: Express): Promise<void> {
       stripe: isStripeConfigured() ? "configured" : "test-placeholder",
       time: new Date().toISOString(),
     });
+  });
+
+  // Newsletter signup (owned email-capture list). Public. Idempotent: a valid
+  // email always returns 200, whether it's new or already subscribed — the
+  // storage upsert never discloses prior membership. Invalid email → 400.
+  app.post("/api/newsletter", async (req, res, next) => {
+    try {
+      const parsed = insertNewsletterSubscriberSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid email" });
+      }
+      await storage.upsertNewsletterSubscriber(parsed.data);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // =========================================================================

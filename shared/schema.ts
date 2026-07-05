@@ -620,6 +620,29 @@ export type AdminUser = typeof adminUsers.$inferSelect;
 export type InsertAdminUser = z.infer<typeof insertAdminUserSchema>;
 
 // =============================================================================
+// newsletter_subscribers — owned email-capture list for the marketing site.
+// Additive, standalone (no FKs). Email is unique; a repeat signup is idempotent
+// (handled in storage). Mirrors the admin_users id/email/timestamp idiom. Note:
+// the UNIQUE constraint is created by scripts/push-newsletter-subscribers.mjs —
+// the .unique() below is type-level only (this repo applies DDL via push scripts,
+// not drizzle-kit). No updated_at: a subscriber row is write-once.
+// =============================================================================
+
+export const newsletterSubscribers = pgTable("newsletter_subscribers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull().unique(),
+  name: text("name"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertNewsletterSubscriberSchema = createInsertSchema(newsletterSubscribers, {
+  email: z.string().email(),
+}).omit({ id: true, createdAt: true });
+
+export type NewsletterSubscriber = typeof newsletterSubscribers.$inferSelect;
+export type InsertNewsletterSubscriber = z.infer<typeof insertNewsletterSubscriberSchema>;
+
+// =============================================================================
 // leases — a co-living guest's fixed-term, recurring-payment agreement for one
 // or more rooms. STR nightly stays do NOT generate a lease (they use bookings).
 //

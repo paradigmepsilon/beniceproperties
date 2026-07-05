@@ -32,6 +32,7 @@ import {
   lifecycleEvents,
   heroImages,
   externalBookings,
+  newsletterSubscribers,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -71,6 +72,8 @@ import {
   type InsertLifecycleEvent,
   type ExternalBooking,
   type InsertExternalBooking,
+  type NewsletterSubscriber,
+  type InsertNewsletterSubscriber,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -111,6 +114,9 @@ export interface IStorage {
   getGuest(id: string): Promise<Guest | undefined>;
   getGuestByEmail(email: string): Promise<Guest | undefined>;
   upsertGuestByEmail(data: InsertGuest): Promise<Guest>;
+
+  // --- Newsletter (owned email-capture list) ---
+  upsertNewsletterSubscriber(data: InsertNewsletterSubscriber): Promise<NewsletterSubscriber>;
 
   // --- Bookings ---
   getBooking(id: string): Promise<Booking | undefined>;
@@ -359,6 +365,21 @@ class Storage implements IStorage {
       return row;
     }
     const [row] = await db.insert(guests).values(data).returning();
+    return row;
+  }
+
+  // Idempotent by email: a repeat signup returns the existing row unchanged
+  // (no disclosure of prior membership at the API layer). Mirrors the
+  // read-then-insert convention used for guests; the DB unique constraint is the
+  // safety net. Write-once — nothing to update, so an existing row is returned
+  // as-is.
+  async upsertNewsletterSubscriber(data: InsertNewsletterSubscriber): Promise<NewsletterSubscriber> {
+    const [existing] = await db
+      .select()
+      .from(newsletterSubscribers)
+      .where(eq(newsletterSubscribers.email, data.email));
+    if (existing) return existing;
+    const [row] = await db.insert(newsletterSubscribers).values(data).returning();
     return row;
   }
 
