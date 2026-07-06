@@ -31,6 +31,7 @@ import {
   guestMessages,
   lifecycleEvents,
   heroImages,
+  journalPosts,
   externalBookings,
   newsletterSubscribers,
   ltrInquiries,
@@ -39,6 +40,7 @@ import {
   type Property,
   type InsertProperty,
   type HeroImage,
+  type JournalPost,
   type Room,
   type InsertRoom,
   type Guest,
@@ -103,6 +105,10 @@ export class StorageError extends Error {
 export interface IStorage {
   // --- Hero images (BT-22): active homepage-hero slides, in display order. ---
   getActiveHeroImages(): Promise<HeroImage[]>;
+
+  // --- Journal: PUBLISHED posts only (drafts are never exposed publicly). ---
+  getPublishedJournalPosts(): Promise<JournalPost[]>;
+  getPublishedJournalPostBySlug(slug: string): Promise<JournalPost | undefined>;
 
   // --- Properties ---
   getProperties(opts?: { activeOnly?: boolean }): Promise<Property[]>;
@@ -302,6 +308,25 @@ class Storage implements IStorage {
       .from(heroImages)
       .where(eq(heroImages.isActive, true))
       .orderBy(asc(heroImages.displayOrder), asc(heroImages.createdAt));
+  }
+
+  // --- Journal (authored in Unified Ops; site reads published posts only) ---
+  async getPublishedJournalPosts(): Promise<JournalPost[]> {
+    return db
+      .select()
+      .from(journalPosts)
+      .where(eq(journalPosts.published, true))
+      // Newest first by publish date; fall back to created for any null.
+      .orderBy(desc(journalPosts.publishedAt), desc(journalPosts.createdAt));
+  }
+
+  async getPublishedJournalPostBySlug(slug: string): Promise<JournalPost | undefined> {
+    const [row] = await db
+      .select()
+      .from(journalPosts)
+      .where(and(eq(journalPosts.slug, slug), eq(journalPosts.published, true)))
+      .limit(1);
+    return row;
   }
 
   // --- Properties ---

@@ -6,7 +6,7 @@
 
 import { TESTIMONIALS, type Testimonial } from "@/content/testimonials";
 import { NEIGHBORHOODS, type Neighborhood } from "@/content/neighborhoods";
-import { JOURNAL_POSTS, type JournalPost } from "@/content/journal";
+// Journal posts are DB-backed (fetched from /api/journal), no longer selected here.
 
 // Testimonials, optionally narrowed to a city and/or capped to a count. City
 // match is case-insensitive against the testimonial's `city` (which mirrors the
@@ -29,12 +29,4 @@ export function neighborhoodFor(city: string): Neighborhood | undefined {
   const key = (city ?? "").trim().toLowerCase();
   if (!key) return undefined;
   return NEIGHBORHOODS.find((n) => n.city.trim().toLowerCase() === key);
-}
-
-// A journal post by slug, or undefined for an unknown slug (the article page
-// renders the not-found treatment in that case).
-export function postBySlug(slug: string): JournalPost | undefined {
-  const key = (slug ?? "").trim();
-  if (!key) return undefined;
-  return JOURNAL_POSTS.find((p) => p.slug === key);
 }

@@ -1,23 +1,35 @@
 // client/src/pages/journal-article.tsx  (/journal/:slug)
-// A single journal post, rendered from its structured blocks. Unknown slug →
-// the existing NotFound treatment. Block rendering mirrors the "render what's
-// present" convention: headings via font-display, paragraphs via <RichText>
-// (plain text, no markdown, no dangerouslySetInnerHTML), images via
-// <ListingImage> (graceful fallback keyed on the slug).
+// A single journal post, fetched from /api/journal/:slug (published posts only —
+// an unknown or unpublished slug 404s → the site's NotFound treatment). Block
+// rendering mirrors the "render what's present" convention: headings via
+// font-display, paragraphs via <RichText> (plain text, no markdown, no
+// dangerouslySetInnerHTML), images via <ListingImage> (graceful fallback).
 
 import { useParams, Link } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { RichText } from "@/components/rich-text";
 import { ListingImage } from "@/components/listing-image";
-import { postBySlug } from "@/lib/content";
+import type { JournalArticle } from "@/content/journal";
 import { shortDate } from "@/lib/format";
 import { useSeo, SITE_URL, SITE_NAME } from "@/lib/seo";
 import NotFound from "@/pages/not-found";
 
 export default function JournalArticle() {
   const { slug } = useParams();
-  const post = slug ? postBySlug(slug) : undefined;
+
+  // Published-only fetch; a 404 (draft/unknown) rejects → we render NotFound.
+  // retry:false so a genuine 404 doesn't retry. gcTime default is fine.
+  const {
+    data: post,
+    isLoading,
+    isError,
+  } = useQuery<JournalArticle>({
+    queryKey: ["/api/journal", slug],
+    enabled: !!slug,
+    retry: false,
+  });
 
   // useSeo must run unconditionally (rules of hooks), so build a safe input
   // whether or not the slug resolves to a real post.
@@ -40,8 +52,21 @@ export default function JournalArticle() {
       : undefined,
   });
 
-  // Unknown slug → reuse the site's 404 page (renders its own <main>).
-  if (!post) return <NotFound />;
+  // While loading, keep the chrome so there's no flash of 404.
+  if (isLoading) {
+    return (
+      <div className="flex min-h-screen flex-col">
+        <SiteHeader />
+        <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
+          <p className="text-muted-foreground">Loading…</p>
+        </main>
+        <SiteFooter />
+      </div>
+    );
+  }
+
+  // Unknown/unpublished slug (or fetch error) → reuse the site's 404 page.
+  if (isError || !post) return <NotFound />;
 
   return (
     <div className="flex min-h-screen flex-col">

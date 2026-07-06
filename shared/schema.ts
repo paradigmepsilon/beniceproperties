@@ -1233,6 +1233,46 @@ export type HeroImage = typeof heroImages.$inferSelect;
 export type InsertHeroImage = z.infer<typeof insertHeroImageSchema>;
 
 // =============================================================================
+// journal_posts — the public "Journal" blog (DB-backed as of 2026-07-06).
+// Authored/edited in Unified Ops; the public site READS published rows to render
+// /journal and /journal/:slug. Replaces the old static client/src/content/journal.ts.
+// Read-only on the site side (UO is the sole writer), like hero_images.
+//
+// `blocks` is an ordered list of content blocks (heading | paragraph | image) —
+// the exact shape the article renderer understands. `published` gates public
+// visibility; `published_at` is the display date (stamped on first publish).
+// Images (cover + inline) live in R2 (keyed bnp/journal/*); rows store public URLs.
+// =============================================================================
+
+export type JournalBlock =
+  | { type: "heading"; text: string }
+  | { type: "paragraph"; text: string }
+  | { type: "image"; src?: string; alt: string };
+
+export const journalPosts = pgTable(
+  "journal_posts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    slug: text("slug").notNull().unique(),
+    title: text("title").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // Public R2 URL; null → the site's branded gradient fallback.
+    coverUrl: text("cover_url"),
+    blocks: jsonb("blocks").$type<JournalBlock[]>().notNull().default(sql`'[]'::jsonb`),
+    published: boolean("published").notNull().default(false),
+    // Stamped on first publish; used as the display date.
+    publishedAt: timestamp("published_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    publishedIdx: index("journal_posts_published_idx").on(table.published, table.publishedAt),
+  }),
+);
+
+export type JournalPost = typeof journalPosts.$inferSelect;
+
+// =============================================================================
 // external_bookings — DATE BLOCKS ingested from each listing's Airbnb iCal feed.
 // A row is a blocked range, NOT a real booking: it carries NO guest PII and is
 // NEVER counted as revenue (mirrors UO/TRAD's two-record-type discipline). The

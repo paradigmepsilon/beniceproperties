@@ -280,6 +280,47 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Journal (public blog). Authored in Unified Ops; only PUBLISHED posts are
+  // exposed here. Shapes mirror the old static content model so the client
+  // renderer is unchanged: `date` is the publish date (ISO), `cover` the R2 URL.
+
+  // Index — cards, newest first. No `blocks` (keeps the list payload light).
+  app.get("/api/journal", async (_req, res, next) => {
+    try {
+      const posts = await storage.getPublishedJournalPosts();
+      res.json(
+        posts.map((p) => ({
+          slug: p.slug,
+          title: p.title,
+          date: (p.publishedAt ?? p.createdAt).toISOString().slice(0, 10),
+          excerpt: p.excerpt,
+          cover: p.coverUrl ?? undefined,
+        })),
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Single article — full post incl. blocks. 404 for unknown OR unpublished
+  // slug, so a draft is never reachable even if its slug is guessed.
+  app.get("/api/journal/:slug", async (req, res, next) => {
+    try {
+      const post = await storage.getPublishedJournalPostBySlug(req.params.slug);
+      if (!post) return res.status(404).json({ message: "Post not found" });
+      res.json({
+        slug: post.slug,
+        title: post.title,
+        date: (post.publishedAt ?? post.createdAt).toISOString().slice(0, 10),
+        excerpt: post.excerpt,
+        cover: post.coverUrl ?? undefined,
+        blocks: post.blocks,
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get("/api/properties", async (req, res, next) => {
     try {
       const today = new Date().toISOString().slice(0, 10);

@@ -1,10 +1,12 @@
 // client/src/pages/journal.tsx  (/journal)
-// The journal index — a grid of post cards over JOURNAL_POSTS (newest first).
-// Owned content; no third-party service. Empty list shows a gentle placeholder.
+// The journal index — a grid of post cards fetched from /api/journal (published
+// posts only, newest first, served by Unified Ops-authored content). Owned
+// content; no third-party service. Empty list shows a gentle placeholder.
 
+import { useQuery } from "@tanstack/react-query";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { JournalCard } from "@/components/journal-card";
-import { JOURNAL_POSTS } from "@/content/journal";
+import type { JournalPost } from "@/content/journal";
 import { useSeo } from "@/lib/seo";
 
 export default function Journal() {
@@ -15,8 +17,10 @@ export default function Journal() {
     path: "/journal",
   });
 
-  // Newest first by ISO date (string compare is correct for YYYY-MM-DD).
-  const posts = [...JOURNAL_POSTS].sort((a, b) => (a.date < b.date ? 1 : -1));
+  // The API already returns published posts newest-first.
+  const { data: posts = [], isLoading } = useQuery<JournalPost[]>({
+    queryKey: ["/api/journal"],
+  });
 
   return (
     <div className="flex min-h-screen flex-col">
@@ -31,7 +35,9 @@ export default function Journal() {
           who run the places.
         </p>
 
-        {posts.length === 0 ? (
+        {isLoading ? (
+          <p className="mt-12 text-muted-foreground">Loading…</p>
+        ) : posts.length === 0 ? (
           <p className="mt-12 text-muted-foreground">New posts are on the way.</p>
         ) : (
           <div className="mt-10 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">

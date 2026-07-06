@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { selectTestimonials, neighborhoodFor, postBySlug } from "./content";
+import { selectTestimonials, neighborhoodFor } from "./content";
 import { TESTIMONIALS } from "@/content/testimonials";
-import { JOURNAL_POSTS } from "@/content/journal";
 
 describe("selectTestimonials", () => {
   it("returns all testimonials when given no options", () => {
@@ -48,20 +47,5 @@ describe("neighborhoodFor", () => {
 
   it("returns undefined for an empty string", () => {
     expect(neighborhoodFor("")).toBeUndefined();
-  });
-});
-
-describe("postBySlug", () => {
-  it("returns the matching post", () => {
-    const slug = JOURNAL_POSTS[0].slug;
-    expect(postBySlug(slug)?.slug).toBe(slug);
-  });
-
-  it("returns undefined for an unknown slug", () => {
-    expect(postBySlug("does-not-exist")).toBeUndefined();
-  });
-
-  it("returns undefined for an empty slug", () => {
-    expect(postBySlug("")).toBeUndefined();
   });
 });
