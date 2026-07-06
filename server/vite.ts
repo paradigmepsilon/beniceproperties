@@ -44,6 +44,27 @@ export async function setupVite(app: Express, server: Server) {
   });
 
   app.use(vite.middlewares);
+
+  // Kill any service worker left over from an earlier build that ran the PWA in
+  // dev. Without this, requests for /sw.js fall through to the catch-all below
+  // and get served index.html (HTTP 200) — so the browser's SW update check
+  // never sees a dead worker and the zombie keeps serving a stale precached
+  // shell, blanking the page until a hard refresh. Serve a self-unregistering
+  // tombstone instead so the SW removes itself on its next update fetch.
+  app.get(/^\/(sw\.js|workbox-.*\.js)$/, (_req, res) => {
+    res
+      .status(200)
+      .set({ "Content-Type": "application/javascript", "Cache-Control": "no-store" })
+      .end(
+        "self.addEventListener('install',()=>self.skipWaiting());" +
+          "self.addEventListener('activate',(e)=>{e.waitUntil((async()=>{" +
+          "await self.registration.unregister();" +
+          "if(self.caches){for(const k of await caches.keys())await caches.delete(k);}" +
+          "const cs=await self.clients.matchAll();for(const c of cs)c.navigate(c.url);" +
+          "})());});",
+      );
+  });
+
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
     try {

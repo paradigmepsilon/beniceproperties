@@ -1827,3 +1827,42 @@ write-ups, and journal posts. Migrating the content constants to DB tables + an
 admin editing UI is the explicit next phase (out of scope here).
 
 CONTENT-COMMUNITY-LAYER: COMPLETE — tests green
+
+---
+
+## Dev fix — zombie service worker forced hard-refresh on every reload (2026-07-05)
+
+**Symptom:** In local dev, a normal page refresh rendered a blank page; only a
+hard refresh made the site visible.
+
+**Root cause:** An earlier build (commit d1e3b9e) registered the PWA service
+worker in dev. That worker precached the app shell and stayed installed in the
+browser even after commit 42ee03d stopped *registering* it in dev — but nothing
+ever *unregistered* the already-installed worker. On a normal reload the zombie
+SW served its stale precached HTML (referencing hashed JS chunks that no longer
+exist on a freshly restarted dev server), so the page never booted. A hard
+refresh bypassed the SW, loaded real `main.tsx`, and worked. Compounding it: in
+dev `/sw.js` fell through to the catch-all and returned index.html (HTTP 200),
+so the browser's SW update check never saw a dead worker to drop.
+
+Reproduced in Chrome via DevTools MCP (planted a controlling SW → normal reload
+gave empty `<title>` and 0 root children → confirmed recovery).
+
+**Fix (two layers):**
+- `server/vite.ts` — in dev, intercept `/sw.js` and `/workbox-*.js` *before* the
+  catch-all and serve a self-unregistering tombstone SW (`application/javascript`,
+  `no-store`) that calls `registration.unregister()`, clears all caches, and
+  navigates open clients. On the browser's next SW update fetch the zombie
+  replaces itself with the tombstone and self-destructs — zero user action, no
+  hard refresh. This is the durable root-cause fix.
+- `client/src/main.tsx` — defense-in-depth: when the real app does load in dev,
+  unregister any existing SW and purge caches.
+
+**Files touched:** `server/vite.ts`, `client/src/main.tsx`.
+**Tests run:** `tsc --noEmit` green. E2E via Chrome DevTools MCP — registering
+`/sw.js` installed the tombstone, which unregistered itself, cleared caches, and
+auto-rendered a clean page (0 registrations, no controller, no caches, full
+content). Normal reloads render correctly.
+**Note for the user:** existing browsers self-heal on the next reload against the
+restarted dev server. If a browser is stubbornly stuck, one hard refresh (or
+DevTools → Application → Service Workers → Unregister) forces it immediately.
