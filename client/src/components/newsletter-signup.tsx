@@ -20,12 +20,16 @@ import { cn } from "@/lib/utils";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export function NewsletterSignup({ centered = false }: { centered?: boolean } = {}) {
+  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
 
   const subscribe = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/newsletter", {
         email: email.trim(),
+        // Name is optional — only send it when provided; email is the only
+        // required field.
+        ...(name.trim() ? { name: name.trim() } : {}),
       });
       return res.json();
     },
@@ -46,6 +50,19 @@ export function NewsletterSignup({ centered = false }: { centered?: boolean } = 
           centered && "sm:justify-center",
         )}
       >
+        <Label htmlFor="newsletter-name" className="sr-only">
+          Name
+        </Label>
+        <Input
+          id="newsletter-name"
+          type="text"
+          placeholder="Your name (optional)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && canSubmit && subscribe.mutate()}
+          className="border-white/20 bg-white/10 text-background placeholder:text-white/40 sm:w-44"
+          data-testid="input-newsletter-name"
+        />
         <Label htmlFor="newsletter-email" className="sr-only">
           Email
         </Label>
