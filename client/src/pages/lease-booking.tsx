@@ -264,11 +264,11 @@ export default function LeaseBooking() {
                   </p>
                 ) : isShortStay ? (
                   <p className="text-xs text-muted-foreground" data-testid="text-mode-short">
-                    Short stay ({termNights} nights) — pay in full at checkout. No lease required.
+                    Short stay ({termNights} nights). Pay in full at checkout, no lease required.
                   </p>
                 ) : isLeaseTerm ? (
                   <p className="text-xs text-muted-foreground" data-testid="text-mode-lease">
-                    Stays over a month are set up as a lease — choose a payment schedule below.
+                    Stays over a month are set up as a lease. Choose a payment schedule below.
                   </p>
                 ) : (
                   <p className="text-xs text-muted-foreground">Stays run from 7 to 90 nights.</p>
@@ -389,7 +389,7 @@ export default function LeaseBooking() {
                           <span data-testid="text-short-total">{money(shortQuote.dueNow.total)}</span>
                         </div>
                         <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
-                          Stays of a month or less are booked as a reservation — you pay the full
+                          Stays of a month or less are booked as a reservation, so you pay the full
                           amount at checkout. No lease or signature required.
                         </p>
                         <Button
@@ -447,17 +447,17 @@ export default function LeaseBooking() {
                     <Separator />
                     {quote.depositTotal > 0 && (
                       <div className="flex justify-between rounded-md bg-accent px-2 py-1.5">
-                        <span className="font-medium">Due now — deposit to secure the room</span>
+                        <span className="font-medium">Due now: deposit to secure the room</span>
                         <span className="font-semibold" data-testid="text-deposit">{money(quote.depositTotal)}</span>
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Due at move-in — first week's rent</span>
+                      <span className="text-muted-foreground">Due at move-in: first week's rent</span>
                       <span className="font-medium" data-testid="text-due-today">{money(quote.dueToday)}</span>
                     </div>
                     {quote.cleaningFeeTotal > 0 && (
                       <div className="flex justify-between">
-                        <span className="text-muted-foreground">Due at move-in — one-time cleaning fee</span>
+                        <span className="text-muted-foreground">Due at move-in: one-time cleaning fee</span>
                         <span className="font-medium" data-testid="text-cleaning-fee">{money(quote.cleaningFeeTotal)}</span>
                       </div>
                     )}
@@ -475,7 +475,7 @@ export default function LeaseBooking() {
                     </div>
                     {quote.depositTotal > 0 && (
                       <p className="text-xs text-muted-foreground">
-                        Only the refundable deposit is due now — it secures your room. On your move-in
+                        Only the refundable deposit is due now, and it secures your room. On your move-in
                         date ({quote.startDate}) your first week's rent
                         {quote.cleaningFeeTotal > 0 ? " plus the one-time cleaning fee are" : " is"} due,
                         and the rest follows your schedule above. You can pay each installment by card

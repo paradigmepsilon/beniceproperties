@@ -86,7 +86,7 @@ export default function LeasePay() {
         <h1 className="font-display text-2xl font-semibold tracking-tight">Secure your room</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Pay your refundable deposit to secure the room and save your card. Only the deposit is due
-          now — your first week's rent is charged on your move-in date, on the same card.
+          now. Your first week's rent is charged on your move-in date, on the same card.
         </p>
 
         {error && (
@@ -157,7 +157,7 @@ function PayForm({ portalToken }: { portalToken: string | null }) {
       <div className="space-y-3 text-sm" data-testid="text-pay-success">
         <p className="font-medium">Room secured ✓</p>
         <p className="text-muted-foreground">
-          Your deposit is received and your room is secured — your lease is active. Your first week's
+          Your deposit is received and your room is secured. Your lease is active. Your first week's
           rent will be charged on your move-in date. Redirecting to your bookings…
         </p>
       </div>
@@ -173,7 +173,7 @@ function PayForm({ portalToken }: { portalToken: string | null }) {
       </Button>
       <p className="text-center text-xs text-muted-foreground">
         Your refundable deposit secures the room; your first week's rent is charged next on the same
-        card. Your card is securely saved by Stripe — we never see your card number.
+        card. Your card is securely saved by Stripe. We never see your card number.
       </p>
     </form>
   );

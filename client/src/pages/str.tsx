@@ -8,17 +8,25 @@ import { CalendarCheck, Home, Sparkles } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PageHero } from "@/components/page-hero";
 import { ListingsSection } from "@/components/listings-section";
+import { useSeo } from "@/lib/seo";
 
 // STR coral accent — tints the shared hero image (and is the no-image fallback).
 const STR_GRADIENT = "linear-gradient(135deg, #e87a5f, #9a3524)";
 
 const HIGHLIGHTS = [
-  { icon: Home, title: "The whole place", sub: "No shared walls — the entire property is yours." },
+  { icon: Home, title: "The whole place", sub: "No shared walls. The entire property is yours." },
   { icon: CalendarCheck, title: "Book by the night", sub: "Live calendars, instant confirmation, no back-and-forth." },
-  { icon: Sparkles, title: "Styled to remember", sub: "Themed, design-forward homes built for the occasion." },
+  { icon: Sparkles, title: "Made for the memory", sub: "Themed, beautifully designed homes for the occasions that matter." },
 ];
 
 export default function Str() {
+  useSeo({
+    title: "Whole-Home Short-Term Rentals in Atlanta",
+    description:
+      "Book a whole-home short-term rental in Atlanta and beyond. Themed, beautifully designed homes for a weekend away or a special occasion. Book direct, no platform markup.",
+    path: "/str",
+  });
+
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
@@ -27,7 +35,7 @@ export default function Str() {
       <PageHero
         eyebrow="Short-term rentals"
         title="Have the whole place to yourselves."
-        subtitle="Whole-home getaways for a weekend away, a family trip, or a night worth remembering. Pick your dates and book direct — no platform markup."
+        subtitle="Whole-home getaways for a weekend away, a family trip, or a night worth remembering. Pick your dates and book direct, with no platform markup."
         accent={STR_GRADIENT}
         image="/heroes/str.jpg"
       />

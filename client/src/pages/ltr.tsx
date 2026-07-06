@@ -10,17 +10,25 @@ import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PageHero } from "@/components/page-hero";
 import { ListingsSection } from "@/components/listings-section";
 import { LtrInquiryForm } from "@/components/ltr-inquiry-form";
+import { useSeo } from "@/lib/seo";
 
 // LTR amber accent — tints the shared hero image (and is the no-image fallback).
 const LTR_GRADIENT = "linear-gradient(135deg, #cf9b52, #8a5a1f)";
 
 const HIGHLIGHTS = [
   { icon: CalendarClock, title: "Built for the long haul", sub: "Full homes for a season, a year, or longer." },
-  { icon: MessageSquare, title: "Handled personally", sub: "No online checkout — we talk terms with you directly." },
+  { icon: MessageSquare, title: "Handled personally", sub: "No online checkout. We talk terms with you directly." },
   { icon: KeyRound, title: "Move-in ready", sub: "Furnished, maintained, and managed by the people who own them." },
 ];
 
 export default function Ltr() {
+  useSeo({
+    title: "Long-Term Furnished Home Rentals in Atlanta",
+    description:
+      "Furnished long-term homes in Atlanta for a season, a year, or longer. Move-in ready and managed by the people who own them. Tell us what you're looking for.",
+    path: "/ltr",
+  });
+
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
@@ -29,7 +37,7 @@ export default function Ltr() {
       <PageHero
         eyebrow="Long-term rentals"
         title="A home to settle into for the long run."
-        subtitle="Full furnished homes for extended stays. These are handled personally, not booked online — tell us what you're looking for and we'll take it from there."
+        subtitle="Full furnished homes for extended stays. These are handled personally, not booked online. Tell us what you're looking for and we'll take it from there."
         accent={LTR_GRADIENT}
         image="/heroes/ltr.jpg"
       />

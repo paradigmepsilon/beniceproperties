@@ -12,6 +12,7 @@ import { InclusionsGrid } from "@/components/inclusions-grid";
 import { Testimonials } from "@/components/testimonials";
 import { EditorialRow } from "@/components/editorial-row";
 import { cn } from "@/lib/utils";
+import { useSeo } from "@/lib/seo";
 
 // Co-living teal accent — matches the home/co-living identity (this is the
 // co-living community). Tints the shared hero image / is the no-image fallback.
@@ -40,7 +41,7 @@ const HOW = [
 const STRIP = [
   {
     src: "/editorial/community-1.jpg",
-    caption: "Dinners that happen because someone said “I’m cooking, come eat.”",
+    caption: "Dinners that happen because someone said \"I'm cooking, come eat.\"",
   },
   {
     src: "/editorial/community-2.jpg",
@@ -49,13 +50,20 @@ const STRIP = [
 ];
 
 export default function Community() {
+  useSeo({
+    title: "Our Co-living Community in Atlanta",
+    description:
+      "We run homes, not listings. Meet the hosts behind Be Nice Properties, see how our co-living community works, and read what guests say.",
+    path: "/community",
+  });
+
   return (
     <div className="flex min-h-screen flex-col">
       <SiteHeader />
 
       {/* Shared hero — fixed community art at the common height, teal accent. */}
       <PageHero
-        eyebrow="Community"
+        eyebrow="Our co-living community"
         title="More than a place to stay."
         subtitle="We run homes, not listings. That means real hosts, well-kept houses, and a standard we stand behind whether you're here for a weekend or a season."
         accent={COLIVING_GRADIENT}
@@ -72,7 +80,7 @@ export default function Community() {
         >
           <p>
             Most rentals hand you a code and disappear. We do the opposite. Every Be Nice
-            home is owned or managed by someone who actually lives this — who knows the
+            home is owned or managed by someone who actually lives it. They know the
             quirks of the house, the best coffee down the street, and your name.
           </p>
           <p>

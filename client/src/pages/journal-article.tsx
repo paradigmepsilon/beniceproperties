@@ -12,11 +12,33 @@ import { RichText } from "@/components/rich-text";
 import { ListingImage } from "@/components/listing-image";
 import { postBySlug } from "@/lib/content";
 import { shortDate } from "@/lib/format";
+import { useSeo, SITE_URL, SITE_NAME } from "@/lib/seo";
 import NotFound from "@/pages/not-found";
 
 export default function JournalArticle() {
   const { slug } = useParams();
   const post = slug ? postBySlug(slug) : undefined;
+
+  // useSeo must run unconditionally (rules of hooks), so build a safe input
+  // whether or not the slug resolves to a real post.
+  useSeo({
+    title: post ? post.title : "Journal",
+    description: post?.excerpt ?? "Notes from the homes at Be Nice Properties.",
+    path: `/journal/${slug ?? ""}`,
+    type: "article",
+    jsonLd: post
+      ? {
+          "@context": "https://schema.org",
+          "@type": "BlogPosting",
+          headline: post.title,
+          description: post.excerpt,
+          datePublished: post.date,
+          url: `${SITE_URL}/journal/${post.slug}`,
+          author: { "@type": "Organization", name: SITE_NAME },
+          publisher: { "@type": "Organization", name: SITE_NAME },
+        }
+      : undefined,
+  });
 
   // Unknown slug → reuse the site's 404 page (renders its own <main>).
   if (!post) return <NotFound />;

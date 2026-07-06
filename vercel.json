@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "vite build && npm run build:api",
+  "buildCommand": "vite build && npm run prerender && npm run build:api",
   "outputDirectory": "dist/public",
   "framework": null,
   "crons": [

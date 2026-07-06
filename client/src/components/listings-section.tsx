@@ -196,7 +196,7 @@ export function ListingsSection({
         {isLoading && <GridSkeleton />}
         {error && <p className="text-destructive">Could not load inventory.</p>}
         {data && filtered.length === 0 && (
-          <p className="py-12 text-center text-muted-foreground">Nothing listed here yet — check back soon.</p>
+          <p className="py-12 text-center text-muted-foreground">Nothing listed here yet. Check back soon.</p>
         )}
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((p) => (

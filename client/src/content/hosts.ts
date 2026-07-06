@@ -34,6 +34,6 @@ export const HOSTS: Host[] = [
     city: "Atlanta",
     role: "Co-founder",
     blurb:
-      "Makes sure every home feels welcoming from the moment you walk in — the linens, the little touches, and the move-in details that make a house feel like yours.",
+      "Makes sure every home feels welcoming from the moment you walk in: the linens, the little touches, and the move-in details that make a house feel like yours.",
   },
 ];

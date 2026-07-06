@@ -5,8 +5,16 @@
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { JournalCard } from "@/components/journal-card";
 import { JOURNAL_POSTS } from "@/content/journal";
+import { useSeo } from "@/lib/seo";
 
 export default function Journal() {
+  useSeo({
+    title: "Journal",
+    description:
+      "Notes from the homes: booking direct, what's included, and making the most of a stay, straight from the people who run the places.",
+    path: "/journal",
+  });
+
   // Newest first by ISO date (string compare is correct for YYYY-MM-DD).
   const posts = [...JOURNAL_POSTS].sort((a, b) => (a.date < b.date ? 1 : -1));
 
@@ -19,7 +27,7 @@ export default function Journal() {
           Notes from the homes
         </h1>
         <p className="mt-2 max-w-[52ch] text-muted-foreground">
-          Booking direct, what's included, and making the most of a stay — straight from the people
+          Booking direct, what's included, and making the most of a stay, straight from the people
           who run the places.
         </p>
 

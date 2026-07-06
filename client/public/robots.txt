@@ -1,0 +1,12 @@
+User-agent: *
+Allow: /
+
+# Transactional and private routes carry no SEO value and should not be crawled.
+Disallow: /checkout
+Disallow: /lease
+Disallow: /portal/
+Disallow: /confirmation/
+Disallow: /lookup
+Disallow: /admin
+
+Sitemap: https://beniceproperties.vercel.app/sitemap.xml

@@ -177,7 +177,7 @@ export default function Portal() {
   const uploadLicense = useMutation({
     mutationFn: async (file: File) => (await uploadFile(`/api/portal/${token}/license`, file)).json(),
     onSuccess: () => {
-      toast({ title: "License uploaded", description: "We're reviewing it — you'll hear from us soon." });
+      toast({ title: "License uploaded", description: "We're reviewing it. You'll hear from us soon." });
       qc.invalidateQueries({ queryKey: key });
     },
     onError: (e: Error) => toast({ title: "Upload failed", description: cleanError(e), variant: "destructive" }),
@@ -281,7 +281,7 @@ export default function Portal() {
                 </p>
               ) : verification.status === "PENDING_REVIEW" ? (
                 <p className="text-muted-foreground">
-                  Thanks — we received your driver's license and we're reviewing it. Your lease
+                  Thanks! We received your driver's license and we're reviewing it. Your lease
                   activates once it's approved. Your room is held in the meantime.
                 </p>
               ) : (
@@ -455,7 +455,7 @@ export default function Portal() {
               <p className="pt-2 text-xs text-muted-foreground">{lease.prorationNote}</p>
             )}
             <p className="pt-1 text-xs text-muted-foreground">
-              Card payments include a 3.5% processing fee. CashApp/Zelle has no fee — your payment is
+              Card payments include a 3.5% processing fee. CashApp/Zelle has no fee. Your payment is
               held pending until we confirm it.
             </p>
           </CardContent>

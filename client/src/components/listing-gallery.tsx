@@ -134,12 +134,12 @@ function Lightbox({ open, onOpenChange, photos, index, setIndex, alt }: Lightbox
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="grid h-[92vh] max-w-[96vw] grid-rows-[1fr_auto] gap-3 border-0 bg-black/95 p-3 sm:p-6">
-        <DialogTitle className="sr-only">{alt} — photo {index + 1} of {photos.length}</DialogTitle>
+        <DialogTitle className="sr-only">{alt}, photo {index + 1} of {photos.length}</DialogTitle>
 
         <div className="relative flex min-h-0 items-center justify-center">
           <img
             src={photos[index]}
-            alt={`${alt} — photo ${index + 1}`}
+            alt={`${alt}, photo ${index + 1}`}
             className="max-h-full max-w-full object-contain"
           />
           <button

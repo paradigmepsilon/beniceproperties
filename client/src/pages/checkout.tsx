@@ -346,7 +346,7 @@ function PayForm({
         {submitting ? "Processing…" : "Pay Now"}
       </Button>
       <p className="text-center text-xs text-muted-foreground">
-        Your card is securely processed by Stripe — we never see your card number.
+        Your card is securely processed by Stripe. We never see your card number.
       </p>
     </form>
   );

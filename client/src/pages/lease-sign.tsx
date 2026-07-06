@@ -113,7 +113,7 @@ export default function LeaseSign() {
           <CardContent className="space-y-4 text-sm">
             <p>
               Your lease is signed and is now <strong>pending your first payment</strong>. The final
-              step is to pay your first installment and save your card — this activates your lease.
+              step is to pay your first installment and save your card. That activates your lease.
             </p>
             <div className="flex flex-wrap gap-3">
               <Button

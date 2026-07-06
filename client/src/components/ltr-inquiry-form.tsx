@@ -69,7 +69,7 @@ export function LtrInquiryForm({ propertyId, propertyName, className }: Props) {
           className="mt-5 rounded-xl border bg-good-bg p-4 text-sm font-medium text-good"
           data-testid="ltr-inquiry-success"
         >
-          Thanks — your inquiry is in. We'll be in touch shortly.
+          Thanks! Your inquiry is in. We'll be in touch shortly.
         </div>
       ) : (
         <div className="mt-5 space-y-4">

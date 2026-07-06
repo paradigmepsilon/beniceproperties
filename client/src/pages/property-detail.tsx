@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { cityOf, fromNightly, money } from "@/lib/format";
 import { usePropertyAvailability } from "@/hooks/use-availability";
 import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
+import { useSeo, SITE_URL, DEFAULT_OG_IMAGE } from "@/lib/seo";
 
 interface DetailResponse {
   property: Property;
@@ -86,6 +87,31 @@ export default function PropertyDetail() {
       return res.json();
     },
     enabled: datedSearch,
+  });
+
+  // SEO must run unconditionally (rules of hooks), before the loading/not-found
+  // early returns. Data-driven from the loaded property; safe defaults otherwise.
+  const seoProp = data?.property;
+  const seoImage = seoProp?.photos?.[0] ? `${SITE_URL}${seoProp.photos[0]}` : DEFAULT_OG_IMAGE;
+  useSeo({
+    title: seoProp ? `${seoProp.name} in ${cityOf(seoProp.location)}` : "Stay",
+    description:
+      seoProp?.description?.slice(0, 200) ??
+      "Book direct with Be Nice Properties. Furnished homes and rooms in Atlanta and Antigua.",
+    path: `/property/${id ?? ""}`,
+    image: seoImage,
+    jsonLd: seoProp
+      ? {
+          "@context": "https://schema.org",
+          "@type": "LodgingBusiness",
+          name: seoProp.name,
+          description: seoProp.description ?? undefined,
+          address: { "@type": "PostalAddress", addressLocality: cityOf(seoProp.location) },
+          image: seoImage,
+          url: `${SITE_URL}/property/${seoProp.id}`,
+          ...(seoProp.basePrice ? { priceRange: `$${seoProp.basePrice}` } : {}),
+        }
+      : undefined,
   });
 
   if (isLoading) return <Shell><p className="text-muted-foreground">Loading…</p></Shell>;
@@ -211,8 +237,9 @@ export default function PropertyDetail() {
             {property.type === "COLIVING" && (
               <section className="mt-10">
                 <h2 className="font-display text-xl font-semibold">Available rooms</h2>
-                {/* One inline row on desktop (equal-width cards, any room count); stacked on mobile. */}
-                <div className="mt-4 grid gap-5 md:grid-flow-col md:auto-cols-fr">
+                {/* Stacked on mobile, then a capped grid so rooms wrap instead of
+                    shrinking into one cramped row when a property has many rooms. */}
+                <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                   {rooms.map((room) => {
                     // Blocked for the SELECTED dates (Airbnb/lease) though its
                     // manual status may be AVAILABLE — only meaningful when a

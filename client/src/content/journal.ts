@@ -39,24 +39,24 @@ export const JOURNAL_POSTS: JournalPost[] = [
     excerpt:
       "Booking straight through us means a better price for you and a real relationship with the people who run your home. Here's how it works and why it matters.",
     blocks: [
-      { type: "paragraph", text: "Every time a stay runs through a big booking platform, a slice of what you pay disappears into fees — and the connection between you and the people who actually run the home gets a little thinner." },
+      { type: "paragraph", text: "Every time a stay runs through a big booking platform, a slice of what you pay disappears into fees. And the connection between you and the people who actually run the home gets a little thinner." },
       { type: "heading", text: "A better price, plainly" },
       { type: "paragraph", text: "When you book direct, there's no platform markup layered on top. You see the real price up front: nightly for a whole-home getaway, or a simple weekly rate for a room, with everything included. No cleaning-fee surprises at the last screen." },
       { type: "heading", text: "A real relationship" },
-      { type: "paragraph", text: "You get a direct line to the host who runs the property — the person who can actually help, not a call center reading from a script. That's the whole point of what we're building." },
+      { type: "paragraph", text: "You get a direct line to the host who runs the property: the person who can actually help, not a call center reading from a script. That's the whole point of what we're building." },
       { type: "paragraph", text: "We own or manage every home ourselves, so the standard is the same whether you're staying a weekend or a season." },
     ],
   },
   {
     slug: "what-included-means",
-    title: "What “all-inclusive” actually means here",
+    title: "What \"all-inclusive\" actually means here",
     date: "2026-06-20",
     excerpt:
-      "Utilities, Wi-Fi, cleaning, furniture — we say “included” and we mean it. A quick walk through exactly what your rate covers.",
+      "Utilities, Wi-Fi, cleaning, furniture: we say \"included\" and we mean it. A quick walk through exactly what your rate covers.",
     blocks: [
-      { type: "paragraph", text: "“All-inclusive” gets thrown around a lot. Here's what it means for a room in one of our co-living homes, line by line." },
+      { type: "paragraph", text: "\"All-inclusive\" gets thrown around a lot. Here's what it means for a room in one of our co-living homes, line by line." },
       { type: "heading", text: "One flat rate" },
-      { type: "paragraph", text: "Your weekly rate covers the utilities — power, water, gas — plus fast Wi-Fi in every room. No separate bills to set up, no meter to worry about." },
+      { type: "paragraph", text: "Your weekly rate covers the utilities (power, water, gas) plus fast Wi-Fi in every room. No separate bills to set up, no meter to worry about." },
       { type: "heading", text: "Move-in ready" },
       { type: "paragraph", text: "The home is fully furnished before you arrive: bed, linens, a stocked kitchen, and living areas set up. You can cook dinner the night you move in." },
       { type: "heading", text: "Kept fresh" },
@@ -72,11 +72,11 @@ export const JOURNAL_POSTS: JournalPost[] = [
     blocks: [
       { type: "paragraph", text: "Co-living works best when a house full of people feels like a home instead of a set of strangers. Most of that happens in the first week." },
       { type: "heading", text: "Say hi early" },
-      { type: "paragraph", text: "A quick introduction to your housemates goes a long way. Everyone's a working professional here — busy, considerate, and glad to know who's who." },
+      { type: "paragraph", text: "A quick introduction to your housemates goes a long way. Everyone's a working professional here: busy, considerate, and glad to know who's who." },
       { type: "heading", text: "Learn the rhythms" },
       { type: "paragraph", text: "Kitchens and laundry have natural rush hours. A little awareness of when things are busy keeps a shared home running smoothly for everyone." },
       { type: "heading", text: "Ask your host anything" },
-      { type: "paragraph", text: "Where's the good coffee, the nearest gym, the fastest way downtown? Your host lives this neighborhood — that direct line is there for exactly these questions." },
+      { type: "paragraph", text: "Where's the good coffee, the nearest gym, the fastest way downtown? Your host lives this neighborhood, so that direct line is there for exactly these questions." },
     ],
   },
 ];

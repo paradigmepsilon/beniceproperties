@@ -2093,3 +2093,90 @@ fine at display size, can be regenerated larger if wanted.
 accounts). Hero could be regenerated at higher resolution if desired.
 
 PARTNER-PAGE-V2: COMPLETE — tests green
+
+---
+
+## MOBILE-SEO-HUMANIZE — site-wide mobile + SEO + humanization pass (2026-07-06)
+
+**What was built.** Three fronts in one pass, on branch `chore/mobile-seo-humanize`.
+
+*Humanization.* Removed every em dash from user-facing copy (39 sites across
+content files + pages), replacing with commas/colons/periods/parens so it reads
+naturally. Straightened curly quotes to straight quotes in journal + community
+copy. Reworded the one jargon hit: STR highlight "Styled to remember" /
+"design-forward homes built for the occasion" → "Made for the memory" /
+"beautifully designed homes for the occasions that matter." Code comments and the
+`"—"` empty-value glyph (admin stat tiles, empty `<option>`) left untouched.
+
+*Mobile.* Search-bar + co-living search-bar native controls changed from `text-sm`
+to `text-base sm:text-sm` (16px on mobile → no iOS zoom-on-focus; 14px desktop
+preserved). Dialog close button given a 44×44px hit area (`h-11 w-11` flex-center)
+while the X glyph stays 16px. Co-living room grid on property detail changed from
+`md:grid-flow-col md:auto-cols-fr` (cramped single row) to `sm:grid-cols-2
+lg:grid-cols-3` so rooms wrap.
+
+*SEO — meta layer.* New `client/src/lib/seo.ts`: dependency-free `useSeo` hook that
+upserts per-route `<title>`, description, canonical, OG + Twitter tags, and JSON-LD
+directly into `document.head` (idempotent upsert — no duplicate tags). Wired into
+home, /str, /ltr, /community, /about, /partner, /journal, /journal/:slug,
+/property/:id, /room/:id. JSON-LD: LodgingBusiness sitewide (home) + per-property;
+Product+Offer per room; BlogPosting per journal article. Home/str/community h1s and
+eyebrows tuned to include real keywords (Atlanta, co-living, furnished room,
+whole-home) without losing the warm voice. `client/index.html` given a static
+canonical + OG/Twitter fallback and the em dash removed from the title.
+
+*SEO — robots + sitemap.* New `client/public/robots.txt` (allow all, disallow
+transactional/admin routes, points to sitemap) and `client/public/sitemap.xml`
+(7 marketing routes + 3 journal articles). Both resolve as static files (Vercel's
+SPA rewrite excludes paths with a dot).
+
+*SEO — prerender.* New `scripts/prerender.mjs`: after `vite build`, serves
+`dist/public` locally, renders each of the 7 static marketing routes in headless
+Chrome via `playwright-core`, and writes the fully-rendered HTML back as
+`dist/public/<route>/index.html` — so non-JS crawlers get real content + baked-in
+per-route meta instead of an empty shell. Chrome is auto-discovered
+(PLAYWRIGHT_CHROME_PATH / common OS paths); if none is found the script skips
+gracefully and exits 0 (build never fails; runtime meta layer is the fallback).
+Wired into `package.json` `build` and `vercel.json` `buildCommand`.
+
+**Files touched.** New: `client/src/lib/seo.ts`, `scripts/prerender.mjs`,
+`client/public/robots.txt`, `client/public/sitemap.xml`. Edited (content/copy):
+`client/src/content/{company,hosts,inclusions,journal,neighborhoods}.ts`,
+`client/src/pages/{home,str,ltr,community,about,partner,journal,journal-article,property-detail,room-detail,lease-booking,lease-pay,lease-sign,checkout,portal}.tsx`,
+`client/src/components/{site-header,hosts-section,listings-section,listing-gallery,ltr-inquiry-form,search-bar,coliving-search-bar}.tsx`,
+`client/src/components/ui/dialog.tsx`, `client/index.html`. Config:
+`package.json` (prerender script + playwright-core devDep), `vercel.json`
+(buildCommand).
+
+**New dependency.** `playwright-core` (devDependency only, not shipped). Uses the
+build machine's system Chrome; no bundled browser.
+
+**Tests run + results.**
+- `npm run check` (tsc) — clean, exit 0 (multiple times through the pass + final).
+- `npm run build` full chain — vite build + prerender (7/7 routes) + esbuild, exit 0.
+- Prerendered HTML spot-checked: each route has its unique `<title>`, canonical,
+  OG tags, real rendered body content (h1/hero present), and JSON-LD; `#root` is
+  populated (not the empty shell); exactly 1 of each meta tag (no dupes from the
+  hook's upsert); hashed script/stylesheet links intact for hydration.
+- Browser (Playwright, headless, served built dist): home + /str load with correct
+  per-route titles, 0 console errors/warnings (no hydration mismatch). Mobile
+  (375px): search select computed font-size = 16px, no horizontal overflow.
+  Desktop (1280px): search select reverts to 14px.
+- Em-dash sweep: `grep "—"` over pages/components/content/index.html shows only
+  code comments and the `"—"` empty-value glyph remaining.
+
+**Decisions.** Dependency-free `useSeo` (document.head mutation via useEffect)
+instead of a head-manager package — leaner, and the prerender captures whatever it
+sets. Prerender scoped to the 7 static marketing routes only; dynamic
+property/room/article pages keep runtime meta (enough for Google, which runs JS).
+playwright-core + system Chrome (per owner decision) over bundled Puppeteer;
+script skips gracefully if Chrome is absent so a Chrome-less build still succeeds.
+Sitemap is static for now; dynamic property/room entries deferred until inventory
+grows (noted in the file).
+
+**Deferred.** Dynamic sitemap entries for DB-driven property/room pages (build
+script or `/api/sitemap.xml` route). `noindex` on transactional routes (checkout,
+lease flow, portal) — robots.txt disallows them, which covers the main need. A
+wide 1200×630 branded OG image (currently falls back to the round brand mark).
+
+MOBILE-SEO-HUMANIZE: COMPLETE — tests green

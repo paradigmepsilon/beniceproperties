@@ -24,6 +24,7 @@ import { Separator } from "@/components/ui/separator";
 import { cityOf, money } from "@/lib/format";
 import { useRoomAvailability } from "@/hooks/use-availability";
 import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
+import { useSeo, SITE_URL, DEFAULT_OG_IMAGE } from "@/lib/seo";
 
 interface RoomResponse {
   room: Room;
@@ -64,6 +65,34 @@ export default function RoomDetail() {
   // until the query resolves; the quote queries stay gated on `!!room`.
   const room = data?.room;
   const property = data?.property;
+
+  // SEO, run on every render (rules of hooks). Data-driven once the room loads.
+  const roomImage = room?.photos?.[0] ? `${SITE_URL}${room.photos[0]}` : DEFAULT_OG_IMAGE;
+  const roomCity = property ? cityOf(property.location) : "Atlanta";
+  useSeo({
+    title: room ? `${room.name} in ${roomCity}` : "Room",
+    description:
+      room?.description?.slice(0, 200) ??
+      `A furnished co-living room in ${roomCity}, with utilities and Wi-Fi included. Book direct with Be Nice Properties.`,
+    path: `/room/${id ?? ""}`,
+    image: roomImage,
+    jsonLd: room
+      ? {
+          "@context": "https://schema.org",
+          "@type": "Product",
+          name: room.name,
+          description: room.description ?? undefined,
+          image: roomImage,
+          url: `${SITE_URL}/room/${room.id}`,
+          offers: {
+            "@type": "Offer",
+            price: room.weeklyRent,
+            priceCurrency: "USD",
+            availability: "https://schema.org/InStock",
+          },
+        }
+      : undefined,
+  });
 
   // Seed the term from a range carried in from the property page / hero search
   // (?checkIn=&checkOut=) when it's a valid forward, not-past range; otherwise
@@ -250,7 +279,7 @@ export default function RoomDetail() {
                   </p>
                 ) : isShortStay ? (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Short stay ({termNights} nights) — pay in full at checkout.
+                    Short stay ({termNights} nights). Pay in full at checkout.
                   </p>
                 ) : isLeaseTerm ? (
                   <p className="mt-2 text-xs text-muted-foreground">

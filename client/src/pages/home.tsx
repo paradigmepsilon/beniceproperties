@@ -11,6 +11,7 @@ import { PageHero } from "@/components/page-hero";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { ListingsSection } from "@/components/listings-section";
 import { Testimonials } from "@/components/testimonials";
+import { useSeo, ORGANIZATION_JSON_LD } from "@/lib/seo";
 
 // Co-living teal accent — the home's lead product. Tints the shared hero image
 // (and is the no-image fallback), matching /community and the co-living identity.
@@ -40,11 +41,20 @@ const STEPS = [
   {
     n: "03 · Belong",
     title: "Settle in",
-    sub: "A furnished room in a well-run home, with a direct line to the people who run it — not a call center.",
+    sub: "A furnished room in a well-run home, with a direct line to the people who run it, not a call center.",
   },
 ];
 
 export default function Home() {
+  useSeo({
+    title: "Furnished Co-living Rooms & Rentals in Atlanta",
+    description:
+      "Private furnished co-living rooms, whole-home short-term rentals, and long-term homes in Atlanta and Antigua. Book direct with the people who run the place.",
+    path: "/",
+    appendSiteName: false,
+    jsonLd: ORGANIZATION_JSON_LD,
+  });
+
   // Honor a #hash once the page mounts (the SPA renders after the native anchor
   // pass, so a fresh /#stays link needs a nudge).
   useEffect(() => {
@@ -58,9 +68,9 @@ export default function Home() {
 
       {/* Shared hero — image slideshow at the common height, teal (co-living) accent. */}
       <PageHero
-        eyebrow="Atlanta · The Southeast US · and growing"
-        title="A room that already feels like home."
-        subtitle="Private, furnished rooms in beautifully run co-living homes. Book direct in a few minutes, and skip the platform fees."
+        eyebrow="Co-living in Atlanta · The Southeast US · and growing"
+        title="A furnished room that already feels like home."
+        subtitle="Private, furnished rooms in beautifully run co-living homes across Atlanta. Book direct in a few minutes, and skip the platform fees."
         accent={COLIVING_GRADIENT}
       />
 
@@ -143,7 +153,7 @@ export default function Home() {
           </h2>
           <p className="mt-3 max-w-[52ch] text-white/90">
             You're not gambling on some stranger's spare room. We own or manage every Be
-            Nice home ourselves, so every room meets the same standard — and someone real
+            Nice home ourselves, so every room meets the same standard. Someone real
             is always a message away.
           </p>
           <div className="mt-9 grid gap-6 md:grid-cols-3">

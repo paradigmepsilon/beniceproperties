@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Instagram, Facebook } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NewsletterSignup } from "@/components/newsletter-signup";
+import { COMPANY } from "@/content/company";
 
 // Shared nav-link classes. The active page gets a permanent foreground color plus
 // a subtle underline bar (an ::after pseudo-element, so it adds no layout shift);
@@ -183,7 +184,7 @@ export function SiteFooter() {
               beyond. Book direct, Be Nice.
             </p>
           </div>
-          <div className="flex flex-wrap gap-x-14 gap-y-8">
+          <div className="flex flex-wrap items-start gap-x-14 gap-y-8 md:flex-nowrap">
             <FooterCol title="Stays">
               {/* Each product now has its own page. Plain anchors so a real
                   navigation lands (and /#stays scrolls to the co-living grid). */}
@@ -201,12 +202,27 @@ export function SiteFooter() {
             <FooterCol title="Support">
               <a href="/lookup">My booking</a>
             </FooterCol>
+            <FooterCol title="Affiliates">
+              {/* Sister brands in the Be Nice family. External sites, so plain
+                  anchors that open in a new tab. */}
+              <a href="https://benicehospitality.com" target="_blank" rel="noopener noreferrer">
+                Be Nice Hospitality
+              </a>
+              <a href="https://beniceautos.com" target="_blank" rel="noopener noreferrer">
+                Be Nice Autos
+              </a>
+              <a href="https://theretreatatdouglasville.com" target="_blank" rel="noopener noreferrer">
+                The Retreat at Douglasville
+              </a>
+            </FooterCol>
           </div>
         </div>
 
+        <FooterSocial />
+
         <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t border-white/15 pt-6 text-xs text-white/50">
           <span>© {new Date().getFullYear()} Be Nice Properties.</span>
-          <span>Atlanta · Antigua</span>
+          <span>U.S. · Antigua</span>
         </div>
       </div>
     </footer>
@@ -220,5 +236,52 @@ function FooterCol({ title, children }: { title: string; children: React.ReactNo
       <h4 className="text-xs font-bold uppercase tracking-wider text-white/90">{title}</h4>
       {children}
     </div>
+  );
+}
+
+// Social icon row — plain links to the brand's profiles from company.ts. Each
+// entry hides itself if its handle is undefined. No live embed / external
+// script, consistent with FollowStrip.
+const FOOTER_SOCIAL = [
+  { key: "instagram", href: COMPANY.social.instagram, label: "Instagram", Icon: Instagram },
+  { key: "facebook", href: COMPANY.social.facebook, label: "Facebook", Icon: Facebook },
+  { key: "tiktok", href: COMPANY.social.tiktok, label: "TikTok", Icon: TikTokIcon },
+] as const;
+
+function FooterSocial() {
+  const active = FOOTER_SOCIAL.filter((s) => Boolean(s.href));
+  if (active.length === 0) return null;
+  return (
+    <div className="mt-12 flex gap-3">
+      {active.map(({ key, href, label, Icon }) => (
+        <a
+          key={key}
+          href={href}
+          target="_blank"
+          rel="noopener noreferrer"
+          aria-label={label}
+          className="flex h-11 w-11 items-center justify-center rounded-full border border-white/20 text-white/70 transition-colors hover:border-white/40 hover:text-white"
+          data-testid={`footer-social-${key}`}
+        >
+          <Icon className="h-5 w-5" />
+        </a>
+      ))}
+    </div>
+  );
+}
+
+// lucide-react has no TikTok glyph, so this is a minimal inline SVG matching the
+// lucide sizing convention (currentColor, 24x24 viewBox, className passthrough).
+function TikTokIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      className={className}
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path d="M16.5 3a5.6 5.6 0 0 0 4.5 4.5v3a8.4 8.4 0 0 1-4.5-1.32V15a6 6 0 1 1-6-6c.34 0 .67.03 1 .09v3.09a3 3 0 1 0 2 2.82V3h3z" />
+    </svg>
   );
 }

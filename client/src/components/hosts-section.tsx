@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 export function HostsSection({
   heading = "Meet your hosts",
-  subhead = "Real people who own and run these homes — and who you'll actually talk to.",
+  subhead = "Real people who own and run these homes, and who you'll actually talk to.",
   className,
 }: {
   heading?: string;

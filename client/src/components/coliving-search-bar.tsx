@@ -42,7 +42,7 @@ export function ColivingSearchBar({ cities, budgets, value, onChange, onSearch }
           id="coliving-city"
           value={value.city}
           onChange={(e) => set({ city: e.target.value })}
-          className="min-h-[2.75rem] w-full cursor-pointer bg-transparent text-sm text-foreground focus:outline-none sm:min-h-0"
+          className="min-h-[2.75rem] w-full cursor-pointer bg-transparent text-base text-foreground focus:outline-none sm:min-h-0 sm:text-sm"
           data-testid="coliving-city"
         >
           <option value="ALL">All locations</option>
@@ -61,7 +61,7 @@ export function ColivingSearchBar({ cities, budgets, value, onChange, onSearch }
           min={today}
           value={value.moveIn}
           onChange={(e) => set({ moveIn: e.target.value })}
-          className="min-h-[2.75rem] w-full bg-transparent text-sm text-foreground focus:outline-none sm:min-h-0"
+          className="min-h-[2.75rem] w-full bg-transparent text-base text-foreground focus:outline-none sm:min-h-0 sm:text-sm"
           data-testid="coliving-movein"
         />
       </SearchField>
@@ -71,7 +71,7 @@ export function ColivingSearchBar({ cities, budgets, value, onChange, onSearch }
           id="coliving-budget"
           value={value.budget}
           onChange={(e) => set({ budget: e.target.value })}
-          className="min-h-[2.75rem] w-full cursor-pointer bg-transparent text-sm text-foreground focus:outline-none sm:min-h-0"
+          className="min-h-[2.75rem] w-full cursor-pointer bg-transparent text-base text-foreground focus:outline-none sm:min-h-0 sm:text-sm"
           data-testid="coliving-budget"
         >
           <option value="ALL">Any price</option>
