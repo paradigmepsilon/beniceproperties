@@ -2180,3 +2180,42 @@ lease flow, portal) — robots.txt disallows them, which covers the main need. A
 wide 1200×630 branded OG image (currently falls back to the round brand mark).
 
 MOBILE-SEO-HUMANIZE: COMPLETE — tests green
+
+---
+
+## 2026-07-06 — LTR-UO-LISTINGS: LTR create/edit from the UO BNP Listings page
+
+**What was built.** The third listing type (LTR) is now manageable from Unified-Ops'
+BNP Listings admin alongside STR and co-living. LTR carries exactly two prices —
+the recurring monthly payment (reuses `monthly_rate`) and a new one-time
+`down_payment` column — and its create/edit forms show only those two fields.
+
+**Files touched (this repo).**
+- `shared/schema.ts` — additive nullable `properties.down_payment` numeric(10,2)
+  with LTR-only semantics documented inline.
+- `scripts/push-ltr-pricing.mjs` — idempotent `ADD COLUMN IF NOT EXISTS` push
+  script (same pattern as push-room-cleaning-fee.mjs). NOT YET RUN — the session's
+  permission gate blocked a live-DB ALTER; Alex runs `node scripts/push-ltr-pricing.mjs`
+  manually (safe no-op on re-run).
+
+**Files touched (Unified-Ops repo).**
+- `src/lib/bnp-db.ts` — schema mirror gains `downPayment`; type comment now STR | COLIVING | LTR.
+- `src/lib/bnp-admin/properties.ts` — `PropertyInput.type` gains "LTR"; `downPayment`
+  flows through create/list.
+- `src/lib/bnp/inventory.ts` — `InventoryProperty.downPayment` shaped through.
+- `src/components/bnp/admin/bnp-inventory-admin.tsx` — LTR option in both type
+  selectors (create dialog + detail sheet); pricing UIs collapse to Monthly
+  payment + Down payment for LTR; saves null stay-pricing fields on LTR (and null
+  down payment on non-LTR) so type switches shed stale rates.
+
+**Tests run + results.** `npx tsc --noEmit` clean in BOTH repos. End-to-end LTR
+save cannot pass until the down_payment column exists (migration pending above).
+
+**Decisions.** Down payment lives on `properties` (not rooms) since LTR is
+whole-property. Public site untouched: LTR stays inquiry-only ("Contact for
+details" card); the two prices are admin-side reference/quote numbers, never
+charged online.
+
+**Deferred.** Showing monthly/down payment on the public /ltr detail page (kept
+inquiry-only per existing design); the BNP site's own admin form (UO is the
+management surface).

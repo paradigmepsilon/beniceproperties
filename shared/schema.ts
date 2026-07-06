@@ -270,6 +270,12 @@ export const properties = pgTable("properties", {
   // price falls back to dailyRate ?? basePrice for that night. WEEKLY/MONTHLY tiers
   // ignore these (they use the scalar rate). See shared/rateSelection.ts
   // weekdayStayTotal(). STR (whole-property) only — co-living has no nightly path.
+  // LTR pricing (added 2026-07-06, additive nullable). LTR properties are
+  // inquiry-only (never booked/charged online) — these two numbers are the ONLY
+  // prices an LTR listing carries: the recurring monthly payment reuses
+  // monthlyRate above; downPayment is the one-time move-in amount. Managed from
+  // Unified-Ops; ignored by STR/COLIVING billing math entirely.
+  downPayment: decimal("down_payment", { precision: 10, scale: 2 }),
   monPrice: decimal("mon_price", { precision: 10, scale: 2 }),
   tuePrice: decimal("tue_price", { precision: 10, scale: 2 }),
   wedPrice: decimal("wed_price", { precision: 10, scale: 2 }),
