@@ -186,6 +186,29 @@ export async function registerRoutes(app: Express): Promise<void> {
     });
   });
 
+  // Public site configuration — feature/visibility flags the client reads to
+  // decide what to render. Managed from Unified-Ops (which writes the underlying
+  // app_settings rows directly). Unset flags default to VISIBLE, so a fresh DB
+  // behaves exactly as before this feature. A flag is stored as the string
+  // "true"/"false"; anything other than "false" reads as visible. Mirrors the
+  // public /api/payments/config shape.
+  app.get("/api/site-config", async (_req, res, next) => {
+    try {
+      const [ltr, journal] = await Promise.all([
+        storage.getSetting("page_ltr_visible"),
+        storage.getSetting("page_journal_visible"),
+      ]);
+      res.json({
+        pages: {
+          ltr: ltr?.value !== "false",
+          journal: journal?.value !== "false",
+        },
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+
   // Newsletter signup (owned email-capture list). Public. Idempotent: a valid
   // email always returns 200, whether it's new or already subscribed — the
   // storage upsert never discloses prior membership. Invalid email → 400.

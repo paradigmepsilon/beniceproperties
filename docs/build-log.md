@@ -2219,3 +2219,58 @@ charged online.
 **Deferred.** Showing monthly/down payment on the public /ltr detail page (kept
 inquiry-only per existing design); the BNP site's own admin form (UO is the
 management surface).
+
+---
+
+## 2026-07-06 — PAGE-VISIBILITY: UO-controlled show/hide for LTR + Journal pages
+
+**What was built.** Alex can now enable/disable the public LTR and Journal pages
+from Unified-Ops (BNP → Site Settings) while building out their content. A hidden
+page renders a branded "Coming soon" placeholder (not a 404) and drops out of the
+header + footer navigation; re-enabling restores the real page with no code change.
+
+**How it works.** Two flags in the existing BNP `app_settings` key/value table:
+`page_ltr_visible` / `page_journal_visible` ("true"/"false"). Absent = visible
+(fail-open) — the table is empty today, so on deploy both pages stay live exactly
+as before until a toggle is flipped. No schema migration.
+
+**Files touched (this repo).**
+- `server/routes.ts` — public `GET /api/site-config` returns `{ pages: { ltr, journal } }`
+  from app_settings (mirrors /api/payments/config; unset → true).
+- `client/src/lib/useSiteConfig.ts` — TanStack Query hook, fail-open defaults.
+- `client/src/pages/coming-soon.tsx` — reusable branded placeholder (SiteHeader +
+  PageHero + SiteFooter, per-page accent/eyebrow).
+- `client/src/App.tsx` — LtrGate + JournalGate wrappers gate /ltr, /journal, and
+  /journal/:slug (whole Journal section hides together).
+- `client/src/components/site-header.tsx` — header (Journal link, Properties-menu
+  LTR item) and footer (Stays LTR link, Company Journal link) hide per flag.
+
+**Files touched (Unified-Ops repo).**
+- `src/lib/bnp-db.ts` — app_settings added to the schema mirror + BnpAppSetting type.
+- `src/lib/bnp-admin/site-config.ts` — getSiteConfig / setPageVisibility (upsert
+  via bnpDb, same direct-DB pattern as properties/rooms).
+- `src/app/api/bnp-admin/site-config/route.ts` — GET + PATCH (MARKETING module,
+  audit-logged).
+- `src/components/bnp/admin/bnp-site-settings-admin.tsx` — Site Settings page with
+  two switches (optimistic, live/hidden status, Preview links).
+- `src/app/(platform)/[businessCode]/bnp-admin/site-settings/page.tsx` — route.
+- `src/components/bnp/admin/bnp-admin-nav.ts` — "Site Settings" sidebar item.
+
+**Tests run + results.** `npx tsc --noEmit` clean in BOTH repos. `vite build` +
+`node scripts/prerender.mjs` green (7/7 routes — gates fail-open during static
+render, so prerendered HTML keeps real content; runtime config hides when off).
+Live BNP DB checked read-only: app_settings table exists, 0 rows → both flags
+default visible.
+
+**Decisions.** Coming-soon placeholder over 404 (Alex's call — keeps the URL
+graceful while content is built). Dedicated "Site Settings" nav item over folding
+into Listings (Alex's call — room to grow). Fail-open everywhere: a config-fetch
+failure never blanks a live page.
+
+**Deferred.** Prerendered HTML of a hidden page still contains the real content
+(the runtime config query swaps it to Coming-soon on hydration) — fine for the
+"not ready yet" use case; if true removal from crawlers is ever needed, add the
+flag check to the prerender/SSR path. No admin UI yet to view LTR inquiry leads
+(separate pre-existing follow-up).
+
+PAGE-VISIBILITY: COMPLETE — tests green

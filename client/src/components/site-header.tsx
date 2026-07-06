@@ -4,6 +4,7 @@ import { ChevronDown, Instagram, Facebook } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NewsletterSignup } from "@/components/newsletter-signup";
 import { COMPANY } from "@/content/company";
+import { useSiteConfig } from "@/lib/useSiteConfig";
 
 // Shared nav-link classes. The active page gets a permanent foreground color plus
 // a subtle underline bar (an ::after pseudo-element, so it adds no layout shift);
@@ -15,6 +16,9 @@ const NAV_LINK_ACTIVE = "text-foreground after:scale-x-100";
 export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
   const [location] = useLocation();
+  // UO-controlled page visibility. Hidden pages drop out of the nav (they still
+  // resolve to a "Coming soon" placeholder if reached by direct URL).
+  const { config } = useSiteConfig();
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 10);
@@ -56,12 +60,14 @@ export function SiteHeader() {
           >
             Community
           </Link>
-          <Link
-            href="/journal"
-            className={cn(NAV_LINK_BASE, "hidden md:inline-flex", location.startsWith("/journal") && NAV_LINK_ACTIVE)}
-          >
-            Journal
-          </Link>
+          {config.pages.journal && (
+            <Link
+              href="/journal"
+              className={cn(NAV_LINK_BASE, "hidden md:inline-flex", location.startsWith("/journal") && NAV_LINK_ACTIVE)}
+            >
+              Journal
+            </Link>
+          )}
           {/* Partner: B2B page. Demoted below md like Journal to keep the mobile
               header uncrowded; on small screens it's reachable from the footer
               Company group (this header has no separate mobile menu). */}
@@ -71,8 +77,12 @@ export function SiteHeader() {
           >
             Partner
           </Link>
-          {/* Properties: STR + LTR consolidated into one dropdown. */}
-          <PropertiesMenu active={location === "/str" || location === "/ltr"} />
+          {/* Properties: STR + LTR consolidated into one dropdown. LTR item is
+              hidden when its page is toggled off from UO. */}
+          <PropertiesMenu
+            active={location === "/str" || location === "/ltr"}
+            showLtr={config.pages.ltr}
+          />
           <Link
             href="/lookup"
             className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 font-semibold text-primary-foreground transition-colors hover:bg-accent-foreground"
@@ -88,8 +98,9 @@ export function SiteHeader() {
 // "Properties" nav item: a click-to-open dropdown consolidating the two
 // whole-home products (Short-term → /str, Long-term → /ltr). Closes on outside
 // click or Escape; keyboard-accessible (aria-expanded + focusable menu links).
-// `active` marks the trigger when the current page is /str or /ltr.
-function PropertiesMenu({ active = false }: { active?: boolean }) {
+// `active` marks the trigger when the current page is /str or /ltr. `showLtr`
+// hides the Long-term item when that page is toggled off from UO.
+function PropertiesMenu({ active = false, showLtr = true }: { active?: boolean; showLtr?: boolean }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -147,16 +158,18 @@ function PropertiesMenu({ active = false }: { active?: boolean }) {
             <span aria-hidden className="h-2 w-2 rounded-full bg-segment-whole" />
             Short-term
           </Link>
-          <Link
-            href="/ltr"
-            role="menuitem"
-            onClick={() => setOpen(false)}
-            className="flex min-h-11 items-center gap-2 px-4 text-sm text-foreground transition-colors hover:bg-secondary"
-            data-testid="nav-properties-ltr"
-          >
-            <span aria-hidden className="h-2 w-2 rounded-full bg-segment-ltr" />
-            Long-term
-          </Link>
+          {showLtr && (
+            <Link
+              href="/ltr"
+              role="menuitem"
+              onClick={() => setOpen(false)}
+              className="flex min-h-11 items-center gap-2 px-4 text-sm text-foreground transition-colors hover:bg-secondary"
+              data-testid="nav-properties-ltr"
+            >
+              <span aria-hidden className="h-2 w-2 rounded-full bg-segment-ltr" />
+              Long-term
+            </Link>
+          )}
         </div>
       )}
     </div>
@@ -164,6 +177,9 @@ function PropertiesMenu({ active = false }: { active?: boolean }) {
 }
 
 export function SiteFooter() {
+  // Same UO-controlled visibility as the header: hidden pages drop their footer
+  // links too, so a toggled-off page isn't advertised anywhere in the chrome.
+  const { config } = useSiteConfig();
   return (
     <footer className="mt-20 bg-foreground text-background">
       <div className="mx-auto w-full max-w-6xl px-6 py-14">
@@ -190,13 +206,13 @@ export function SiteFooter() {
                   navigation lands (and /#stays scrolls to the co-living grid). */}
               <a href="/#stays">Co-living rooms</a>
               <a href="/str">Short-term rentals</a>
-              <a href="/ltr">Long-term rentals</a>
+              {config.pages.ltr && <a href="/ltr">Long-term rentals</a>}
             </FooterCol>
             <FooterCol title="Company">
               <a href="/about">About us</a>
               <a href="/community">Community</a>
               <a href="/partner">Partner with us</a>
-              <a href="/journal">Journal</a>
+              {config.pages.journal && <a href="/journal">Journal</a>}
               <a href="/#how">How it works</a>
             </FooterCol>
             <FooterCol title="Support">

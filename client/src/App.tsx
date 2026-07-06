@@ -27,13 +27,60 @@ import About from "@/pages/about";
 import AdminLogin from "@/pages/admin/login";
 import AdminDashboard from "@/pages/admin/dashboard";
 import NotFound from "@/pages/not-found";
+import { ComingSoon } from "@/pages/coming-soon";
+import { useSiteConfig } from "@/lib/useSiteConfig";
+
+// LTR segment (amber) and Journal accent gradients, reused for their Coming-soon
+// placeholders so a hidden page still reads in its section color.
+const LTR_GRADIENT = "linear-gradient(135deg, #cf9b52, #8a5a1f)";
+const JOURNAL_GRADIENT = "linear-gradient(135deg, #3f5c6b, #223743)";
+
+// Visibility gates: render the real page when its flag is on, otherwise the
+// branded Coming-soon placeholder. Flags default to visible (fail-open), so
+// while config loads the real page shows — no flash of "Coming soon" on a page
+// that's actually live.
+function LtrGate() {
+  const { config } = useSiteConfig();
+  return config.pages.ltr ? (
+    <Ltr />
+  ) : (
+    <ComingSoon
+      eyebrow="Long-term rentals"
+      title="Long-term homes are coming soon."
+      subtitle="We're getting our long-term listings ready. Tell us what you're looking for and we'll follow up directly."
+      accent={LTR_GRADIENT}
+      path="/ltr"
+      seoTitle="Long-Term Rentals — Coming Soon | Be Nice Properties"
+      seoDescription="Our long-term furnished home rentals are coming soon. Reach out and we'll help you directly in the meantime."
+    />
+  );
+}
+
+function JournalGate({ children }: { children: React.ReactNode }) {
+  const { config } = useSiteConfig();
+  return config.pages.journal ? (
+    <>{children}</>
+  ) : (
+    <ComingSoon
+      eyebrow="Journal"
+      title="The Journal is coming soon."
+      subtitle="We're writing the stories, guides, and neighborhood notes that will live here. Check back shortly."
+      accent={JOURNAL_GRADIENT}
+      path="/journal"
+      seoTitle="Journal — Coming Soon | Be Nice Properties"
+      seoDescription="The Be Nice Properties journal is coming soon — stories, guides, and neighborhood notes for our guests and residents."
+    />
+  );
+}
 
 function Router() {
   return (
     <Switch>
       <Route path="/" component={Home} />
       <Route path="/str" component={Str} />
-      <Route path="/ltr" component={Ltr} />
+      {/* LTR + Journal are gated by UO-controlled visibility flags; when off they
+          render a branded "Coming soon" placeholder (see App gates above). */}
+      <Route path="/ltr" component={LtrGate} />
       <Route path="/property/:id" component={PropertyDetail} />
       <Route path="/room/:id" component={RoomDetail} />
       <Route path="/checkout" component={Checkout} />
@@ -46,9 +93,19 @@ function Router() {
       <Route path="/community" component={Community} />
       <Route path="/partner" component={Partner} />
       {/* Specific slug route BEFORE the index so wouter's first-match Switch
-          doesn't let "/journal" swallow "/journal/:slug". */}
-      <Route path="/journal/:slug" component={JournalArticle} />
-      <Route path="/journal" component={Journal} />
+          doesn't let "/journal" swallow "/journal/:slug". Both are wrapped in the
+          Journal visibility gate so the whole section (index + articles) hides
+          together when the flag is off. */}
+      <Route path="/journal/:slug">
+        <JournalGate>
+          <JournalArticle />
+        </JournalGate>
+      </Route>
+      <Route path="/journal">
+        <JournalGate>
+          <Journal />
+        </JournalGate>
+      </Route>
       <Route path="/about" component={About} />
       <Route path="/admin/login" component={AdminLogin} />
       <Route path="/admin" component={AdminDashboard} />
