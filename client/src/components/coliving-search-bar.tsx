@@ -35,7 +35,7 @@ export function ColivingSearchBar({ cities, budgets, value, onChange, onSearch }
   return (
     <div
       role="search"
-      className="bnp-card flex max-w-3xl flex-col divide-y divide-border p-2 sm:flex-row sm:items-stretch sm:divide-x sm:divide-y-0"
+      className="bnp-card flex w-full flex-col divide-y divide-border p-2 sm:flex-row sm:items-stretch sm:divide-x sm:divide-y-0"
     >
       <SearchField label="Where" htmlFor="coliving-city">
         <select

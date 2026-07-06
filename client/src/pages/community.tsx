@@ -8,9 +8,9 @@
 import { CalendarHeart, MessagesSquare, KeyRound } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PageHero } from "@/components/page-hero";
-import { HostsSection } from "@/components/hosts-section";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { Testimonials } from "@/components/testimonials";
+import { EditorialRow } from "@/components/editorial-row";
 import { cn } from "@/lib/utils";
 
 // Co-living teal accent — matches the home/co-living identity (this is the
@@ -81,9 +81,6 @@ export default function Community() {
           </p>
         </EditorialRow>
 
-        {/* Meet your hosts — the people behind the homes. */}
-        <HostsSection className="mx-auto w-full max-w-6xl px-6 py-14" />
-
         {/* How it works — restyled from a hard card band into a lighter editorial
             block: a lead-in line, then three quiet columns with hairline dividers. */}
         <section className="border-t">
@@ -110,10 +107,11 @@ export default function Community() {
           </div>
         </section>
 
-        {/* Everything's included — leads with the candid couch image (#4). */}
+        {/* Everything's included — community page uses its own banner (a warm
+            co-living common-space scene); the home page keeps the original. */}
         <section className="border-t bg-card">
           <InclusionsGrid
-            image="/editorial/everything-included.jpg"
+            image="/editorial/everything-included-community.jpg"
             className="mx-auto w-full max-w-6xl px-6 py-14"
           />
         </section>
@@ -154,58 +152,12 @@ export default function Community() {
           <Testimonials
             className="mx-auto w-full max-w-6xl px-6 py-14"
             subhead="Real words from people who've stayed with us."
+            layout="scroll"
           />
         </section>
       </main>
 
       <SiteFooter />
     </div>
-  );
-}
-
-// -----------------------------------------------------------------------------
-// EditorialRow — a warm, alternating text/image band. Image sits right on desktop
-// (imageRight, default) or left; stacks image-first on mobile so the page always
-// opens visually. Local to this page; extract to a shared component only if a
-// second page needs the same rhythm.
-// -----------------------------------------------------------------------------
-function EditorialRow({
-  image,
-  imageAlt,
-  eyebrow,
-  heading,
-  imageRight = true,
-  children,
-}: {
-  image: string;
-  imageAlt: string;
-  eyebrow?: string;
-  heading: string;
-  imageRight?: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="mx-auto w-full max-w-6xl px-6 py-14">
-      <div className="grid items-center gap-8 sm:gap-12 lg:grid-cols-2">
-        {/* Image — order flips on desktop per imageRight; always first on mobile. */}
-        <div className={cn("overflow-hidden rounded-3xl", imageRight ? "lg:order-2" : "lg:order-1")}>
-          <img
-            src={image}
-            alt={imageAlt}
-            loading="lazy"
-            className="aspect-[4/3] w-full object-cover"
-          />
-        </div>
-        <div className={cn(imageRight ? "lg:order-1" : "lg:order-2")}>
-          {eyebrow && (
-            <p className="text-sm font-bold uppercase tracking-widest text-primary">{eyebrow}</p>
-          )}
-          <h2 className="mt-2 font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-            {heading}
-          </h2>
-          <div className="mt-4 space-y-4 leading-relaxed text-foreground/90">{children}</div>
-        </div>
-      </div>
-    </section>
   );
 }

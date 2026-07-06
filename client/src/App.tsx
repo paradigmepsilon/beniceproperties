@@ -20,6 +20,7 @@ import Portal from "@/pages/portal";
 import Confirmation from "@/pages/confirmation";
 import BookingLookup from "@/pages/booking-lookup";
 import Community from "@/pages/community";
+import Partner from "@/pages/partner";
 import Journal from "@/pages/journal";
 import JournalArticle from "@/pages/journal-article";
 import About from "@/pages/about";
@@ -43,6 +44,7 @@ function Router() {
       <Route path="/confirmation/:reference" component={Confirmation} />
       <Route path="/lookup" component={BookingLookup} />
       <Route path="/community" component={Community} />
+      <Route path="/partner" component={Partner} />
       {/* Specific slug route BEFORE the index so wouter's first-match Switch
           doesn't let "/journal" swallow "/journal/:slug". */}
       <Route path="/journal/:slug" component={JournalArticle} />

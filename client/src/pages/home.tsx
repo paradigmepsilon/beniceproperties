@@ -5,7 +5,7 @@
 // the wayfinding to the other products (short-term getaways, long-term homes).
 
 import { useEffect } from "react";
-import { CalendarCheck, Handshake, ShieldCheck, Star } from "lucide-react";
+import { CalendarCheck, Handshake, Star } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PageHero } from "@/components/page-hero";
 import { InclusionsGrid } from "@/components/inclusions-grid";
@@ -21,7 +21,6 @@ const COLIVING_GRADIENT = "linear-gradient(135deg, #3E92BC, #1C4A61)";
 // owner decision (2026-07-02). Edit freely; nothing below is computed.
 // -----------------------------------------------------------------------------
 const TRUST_ITEMS = [
-  { icon: ShieldCheck, title: "Verified & insured", sub: "Every stay, every host" },
   { icon: Star, title: "4.9 average", sub: "Across 200+ stays" },
   { icon: CalendarCheck, title: "Free cancellation", sub: "On most bookings" },
   { icon: Handshake, title: "Book direct", sub: "You skip the platform markup" },
@@ -59,7 +58,7 @@ export default function Home() {
 
       {/* Shared hero — image slideshow at the common height, teal (co-living) accent. */}
       <PageHero
-        eyebrow="Atlanta · Antigua · and growing"
+        eyebrow="Atlanta · The Southeast US · and growing"
         title="A room that already feels like home."
         subtitle="Private, furnished rooms in beautifully run co-living homes. Book direct in a few minutes, and skip the platform fees."
         accent={COLIVING_GRADIENT}
@@ -67,7 +66,7 @@ export default function Home() {
 
       {/* Trust band */}
       <section className="border-y bg-card">
-        <div className="mx-auto grid w-full max-w-6xl grid-cols-2 gap-6 px-6 py-6 lg:grid-cols-4">
+        <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-6 py-6 sm:grid-cols-3">
           {TRUST_ITEMS.map(({ icon: Icon, title, sub }) => (
             <div key={title} className="flex items-center gap-3">
               <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-segment-room-tint text-segment-room">
@@ -108,7 +107,8 @@ export default function Home() {
           className="mx-auto w-full max-w-6xl px-6 py-14"
           heading="Guests who booked direct"
           subhead="A few words from people who've stayed with us across Atlanta and Antigua."
-          limit={3}
+          layout="scroll"
+          limit={10}
         />
       </section>
 

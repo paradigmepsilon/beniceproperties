@@ -34,6 +34,7 @@ import {
   externalBookings,
   newsletterSubscribers,
   ltrInquiries,
+  partnerInquiries,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -77,6 +78,8 @@ import {
   type InsertNewsletterSubscriber,
   type LtrInquiry,
   type InsertLtrInquiry,
+  type PartnerInquiry,
+  type InsertPartnerInquiry,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -123,6 +126,9 @@ export interface IStorage {
 
   // --- LTR inquiries (long-term-rental lead capture; append-only) ---
   createLtrInquiry(data: InsertLtrInquiry): Promise<LtrInquiry>;
+
+  // --- Partner inquiries (B2B /partner lead capture; append-only) ---
+  createPartnerInquiry(data: InsertPartnerInquiry): Promise<PartnerInquiry>;
 
   // --- Bookings ---
   getBooking(id: string): Promise<Booking | undefined>;
@@ -393,6 +399,13 @@ class Storage implements IStorage {
   // plain insert (no dedupe/upsert, unlike the newsletter list above).
   async createLtrInquiry(data: InsertLtrInquiry): Promise<LtrInquiry> {
     const [row] = await db.insert(ltrInquiries).values(data).returning();
+    return row;
+  }
+
+  // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
+  // person may inquire more than once, so this is a plain insert (no dedupe).
+  async createPartnerInquiry(data: InsertPartnerInquiry): Promise<PartnerInquiry> {
+    const [row] = await db.insert(partnerInquiries).values(data).returning();
     return row;
   }
 

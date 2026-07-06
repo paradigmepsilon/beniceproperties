@@ -8,7 +8,6 @@ import { CalendarCheck, Home, Sparkles } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PageHero } from "@/components/page-hero";
 import { ListingsSection } from "@/components/listings-section";
-import { Testimonials } from "@/components/testimonials";
 
 // STR coral accent — tints the shared hero image (and is the no-image fallback).
 const STR_GRADIENT = "linear-gradient(135deg, #e87a5f, #9a3524)";
@@ -60,14 +59,6 @@ export default function Str() {
           className="mx-auto w-full max-w-6xl px-6 py-14"
         />
       </main>
-
-      <section className="border-t bg-card">
-        <Testimonials
-          className="mx-auto w-full max-w-6xl px-6 py-14"
-          heading="Guests who booked direct"
-          limit={3}
-        />
-      </section>
 
       <SiteFooter />
     </div>

@@ -27,6 +27,7 @@ import {
   insertRoomSchema,
   insertNewsletterSubscriberSchema,
   insertLtrInquirySchema,
+  insertPartnerInquirySchema,
   US_STATE_CODES,
   COLIVING_MIN_DAYS,
   type PropertyListItem,
@@ -214,6 +215,24 @@ export async function registerRoutes(app: Express): Promise<void> {
           .json({ message: parsed.error.errors[0]?.message ?? "Invalid inquiry" });
       }
       await storage.createLtrInquiry(parsed.data);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Partner inquiry capture. Public, append-only B2B lead (a person may inquire
+  // more than once). Valid → store → 200; invalid name/email → 400. Feeds the
+  // /partner page's contact form (invest / manage / design / events / community).
+  app.post("/api/partner-inquiries", async (req, res, next) => {
+    try {
+      const parsed = insertPartnerInquirySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ message: parsed.error.errors[0]?.message ?? "Invalid inquiry" });
+      }
+      await storage.createPartnerInquiry(parsed.data);
       res.status(200).json({ ok: true });
     } catch (err) {
       next(err);

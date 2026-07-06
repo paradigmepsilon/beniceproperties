@@ -55,7 +55,7 @@ export function InclusionsGrid({
         <div className="mb-9 overflow-hidden rounded-3xl">
           <img
             src={image}
-            alt="Housemates relaxing together in a Be Nice co-living common space"
+            alt="Housemates relaxing and cooking together in a bright, fully furnished Be Nice co-living home"
             className="aspect-[16/9] w-full object-cover sm:aspect-[21/9]"
             loading="lazy"
           />
@@ -68,13 +68,32 @@ export function InclusionsGrid({
         One simple rate covers it all. No surprise bills, no add-ons at checkout.
       </p>
       <ul className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {INCLUSIONS.map(({ icon: Icon, label, note }) => (
-          <li key={label} className="bnp-card p-5">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-accent text-primary">
+        {INCLUSIONS.map(({ icon: Icon, label, note, image }) => (
+          <li key={label} className="group relative overflow-hidden bnp-card p-5">
+            {/* Rollover image + dark scrim: a photo of this inclusion fades and
+                zooms in on hover. Sits at z-0 (above the card's opaque bg-card),
+                with the card content lifted to z-10 above it so text stays
+                readable over the scrim. */}
+            <img
+              src={image}
+              alt=""
+              aria-hidden
+              loading="lazy"
+              className="pointer-events-none absolute inset-0 z-0 h-full w-full scale-105 object-cover opacity-0 transition-all duration-500 ease-out group-hover:scale-100 group-hover:opacity-100"
+            />
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0 z-0 bg-foreground/70 opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+            />
+            <div className="relative z-10 grid h-10 w-10 place-items-center rounded-xl bg-accent text-primary transition-colors duration-300 group-hover:bg-white/15 group-hover:text-white">
               <Icon className="h-5 w-5" aria-hidden />
             </div>
-            <h3 className="mt-3.5 font-display text-base font-semibold">{label}</h3>
-            <p className="mt-1 text-sm leading-snug text-muted-foreground">{note}</p>
+            <h3 className="relative z-10 mt-3.5 font-display text-base font-semibold transition-colors duration-300 group-hover:text-white">
+              {label}
+            </h3>
+            <p className="relative z-10 mt-1 text-sm leading-snug text-muted-foreground transition-colors duration-300 group-hover:text-white/85">
+              {note}
+            </p>
           </li>
         ))}
       </ul>

@@ -115,33 +115,41 @@ export function ListingsSection({
   return (
     <section id={id} className={cn("scroll-mt-24", className)}>
       {enableDateSearch && (
-        <div className="mb-8">
-          <SearchBar
-            cities={cities}
-            value={{ city, checkIn, checkOut }}
-            onChange={(v) => {
-              setCity(v.city);
-              setCheckIn(v.checkIn);
-              setCheckOut(v.checkOut);
-            }}
-            onSearch={scrollToStays}
-          />
+        // Full-bleed: break out of the page's max-w container so the search bar
+        // spans the full viewport width (mirrors the co-living home search band).
+        <div className="relative left-1/2 right-1/2 -mx-[50vw] mb-8 w-screen border-y bg-card py-6">
+          <div className="mx-auto w-full max-w-6xl px-6">
+            <SearchBar
+              cities={cities}
+              value={{ city, checkIn, checkOut }}
+              onChange={(v) => {
+                setCity(v.city);
+                setCheckIn(v.checkIn);
+                setCheckOut(v.checkOut);
+              }}
+              onSearch={scrollToStays}
+            />
+          </div>
         </div>
       )}
 
       {enableColivingSearch && (
-        <div className="mb-8">
-          <ColivingSearchBar
-            cities={cities}
-            budgets={budgets}
-            value={{ city, moveIn, budget }}
-            onChange={(v) => {
-              setCity(v.city);
-              setMoveIn(v.moveIn);
-              setBudget(v.budget);
-            }}
-            onSearch={scrollToStays}
-          />
+        // Full-bleed: break out of the page's max-w container so the search bar
+        // spans the full viewport width, with a hairline band behind it.
+        <div className="relative left-1/2 right-1/2 -mx-[50vw] mb-8 w-screen border-y bg-card py-6">
+          <div className="mx-auto w-full max-w-6xl px-6">
+            <ColivingSearchBar
+              cities={cities}
+              budgets={budgets}
+              value={{ city, moveIn, budget }}
+              onChange={(v) => {
+                setCity(v.city);
+                setMoveIn(v.moveIn);
+                setBudget(v.budget);
+              }}
+              onSearch={scrollToStays}
+            />
+          </div>
         </div>
       )}
 

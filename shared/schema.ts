@@ -682,6 +682,42 @@ export type LtrInquiry = typeof ltrInquiries.$inferSelect;
 export type InsertLtrInquiry = z.infer<typeof insertLtrInquirySchema>;
 
 // =============================================================================
+// partner_inquiries — B2B lead capture for the /partner page. Someone who wants
+// to invest, have BNP manage/design their property, curate events, or build
+// community submits a contact form and we follow up off-platform. Same additive,
+// low-coupling conventions as ltr_inquiries: standalone (no FKs), nullable
+// optionals, APPEND-ONLY (a person may inquire more than once → no unique
+// constraint, no upsert, no updated_at). Created by
+// scripts/push-partner-inquiries.mjs (this repo applies DDL via push scripts).
+//
+// `interest` is a MULTI-SELECT (the offerings a partner cares about), so it's a
+// text[] array rather than a single column. Empty array = a general "let's talk"
+// inquiry with no specific offering picked.
+// =============================================================================
+
+export const partnerInquiries = pgTable("partner_inquiries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  phone: text("phone"),
+  company: text("company"),
+  // Which offerings the partner is interested in (INVEST | MANAGE | DESIGN |
+  // EVENTS | COMMUNITY | OTHER). Multi-select → array; empty when none picked.
+  interest: text("interest").array().notNull().default(sql`ARRAY[]::text[]`),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertPartnerInquirySchema = createInsertSchema(partnerInquiries, {
+  email: z.string().email(),
+  name: z.string().min(1),
+  interest: z.array(z.string()).optional(),
+}).omit({ id: true, createdAt: true });
+
+export type PartnerInquiry = typeof partnerInquiries.$inferSelect;
+export type InsertPartnerInquiry = z.infer<typeof insertPartnerInquirySchema>;
+
+// =============================================================================
 // leases — a co-living guest's fixed-term, recurring-payment agreement for one
 // or more rooms. STR nightly stays do NOT generate a lease (they use bookings).
 //

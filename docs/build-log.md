@@ -1986,3 +1986,110 @@ Couch image shared by home + community (same asset, intentional).
 one exists. Budget tiers are sparse ($200/$300) until room inventory has price spread.
 
 MARKETING-VISUAL-REFRESH: COMPLETE — tests green
+
+---
+
+## PARTNER-PAGE — B2B partner/lead-capture page (`/partner`)
+
+**Date.** 2026-07-06. Spec: `docs/superpowers/specs/2026-07-06-partner-page-design.md`.
+Notion Build Tracker: "Partner page — B2B lead-capture" (Project BNP).
+
+**What was built.** A public `/partner` page inviting people to work WITH BNP —
+invest in acquisitions, have BNP manage / design their property, curate events, or
+build community. Modeled on livingq.city/partnerships in BNP's voice. Lead-funnel
+only (no accounts/pipeline). Copies the proven `/ltr` inquiry flow end to end, with
+three deliberate deviations: `interest` is a multi-select stored as a Postgres
+`text[]`; a `company` field; success is a confirmation Dialog popup (not the LTR
+inline banner). Nav link added to top nav + footer.
+
+**Files touched.** New: `client/src/pages/partner.tsx`,
+`client/src/components/partner-inquiry-form.tsx`,
+`scripts/push-partner-inquiries.mjs`. Edited: `shared/schema.ts`
+(+`partnerInquiries` table, insert schema, types), `server/storage.ts`
+(+`createPartnerInquiry`), `server/routes.ts` (+`POST /api/partner-inquiries`),
+`client/src/App.tsx` (+`/partner` route), `client/src/components/site-header.tsx`
+(+Partner nav link + footer Company link).
+
+**Tests run + results.**
+- `npm run check` (tsc) — clean, exit 0.
+- Migration `node scripts/push-partner-inquiries.mjs` — created `partner_inquiries`;
+  re-ran → idempotent no-op (pre-state present, CREATE IF NOT EXISTS).
+- API (curl, dev server :3007): valid name+email → 200 `{ok:true}`; full payload with
+  `interest:["INVEST","MANAGE"]` → 200; invalid email → 400 `Invalid email`; missing
+  name → 400 `Required`. DB rows confirmed: minimal → `interest = {}` + null optionals;
+  full → array + all optionals populated.
+- UI (Playwright, headless, :3007): `/partner` renders hero (partner accent), 5 offering
+  cards, and form; 0 console error-level messages. Offering card "Get started" (Invest)
+  pre-selected the matching chip (`[pressed]`) and enabled submit once name+email present.
+  Submit fired the confirmation Dialog ("Thanks — we've got it."); "Done" closed + reset.
+  Row landed with `interest:["INVEST"]`, proving the card→form→API→DB round trip. Partner
+  link present in top nav and footer Company group.
+
+**Decisions.** `interest` multi-select rendered as toggle chips (`button` +
+`aria-pressed`) — no `checkbox` primitive in the repo, and the convention is to
+compose inline-form controls from primitives rather than add a dep. Offering cards
+pre-select a chip via a tiny module-level setter (`preselectPartnerInterest`) instead
+of context/prop-drilling (one page, one form instance). Partner accent is a deep
+emerald→slate gradient, deliberately distinct from the co-living/STR/LTR segment
+colors. `/heroes/partner.jpg` referenced but optional — the accent gradient is the
+graceful fallback (PageHero already tolerates a missing image).
+
+**Deferred.** No email/SMS notification on new inquiry (leads read from DB / Unified
+Ops for now). No Unified Ops read view of `partner_inquiries` yet. No partner accounts
+or deal tracking. A dedicated `/heroes/partner.jpg` asset can be dropped in later;
+until then the gradient shows.
+
+PARTNER-PAGE: COMPLETE — tests green
+
+---
+
+## PARTNER-PAGE-V2 — hero image, alternating service rows, form moved up
+
+**Date.** 2026-07-06. Follow-on to PARTNER-PAGE per user request: (1) a real hero
+image commensurate to the page, (2) an image per service with image+text on
+alternating sides, (3) the "Start a conversation" form moved to the top.
+
+**What was built.** Generated 6 warm-editorial images via Higgsfield (user-confirmed
+direction: warm editorial / literal-per-service / emerald accent) — 1 hero
+(nano_banana_pro, 16:9) + 5 service shots (soul_2, 4:3): invest, manage, design,
+events, community. Converted PNG→JPG (~470–900KB, matching existing assets) and
+placed at `client/public/heroes/partner.jpg` and
+`client/public/editorial/partner-{invest,manage,design,events,community}.jpg`.
+Extracted community.tsx's local `EditorialRow` into a shared
+`client/src/components/editorial-row.tsx` (added an `accentClassName` prop, default
+coral so community is byte-for-byte unchanged; partner passes emerald). Rebuilt
+`partner.tsx`: hero → form section (moved to top, `#partner-form`) → "Five ways"
+intro → 5 `EditorialRow`s alternating (imageRight flips per index) each with an
+emerald eyebrow + service copy + a CTA that pre-selects its interest chip and
+scrolls back up → a closing "Not sure which fits?" CTA. Dropped the old 3-column
+offering-card grid.
+
+**Files touched.** New: `client/src/components/editorial-row.tsx`,
+`client/public/heroes/partner.jpg`, `client/public/editorial/partner-*.jpg` (5).
+Edited: `client/src/pages/partner.tsx` (full layout rebuild),
+`client/src/pages/community.tsx` (import shared EditorialRow, remove local copy;
+kept `cn` import — still used by the HOW grid).
+
+**Tests run + results.**
+- `npm run check` (tsc) — clean, exit 0 (twice: after rebuild, and final).
+- Visual QA of generated images: hero (golden-hour Southern home, two partners
+  shaking hands, sky space for headline) and Invest (house model + keys + plans +
+  returns chart) reviewed directly — both excellent, on-brief.
+- UI (Playwright, headless, dev server :3005): /partner renders hero image + form at
+  top + all 5 alternating rows (each image loaded w/ descriptive alt) + closing CTA;
+  0 console error-level messages. Events row CTA pre-selected the "Curate events"
+  chip in the top form ([pressed]) — cross-component preselect still works after the
+  form moved. /community re-checked: renders via the shared EditorialRow, 0 console
+  errors, no regression.
+
+**Decisions.** Reused community's existing alternating-row pattern by extracting it
+(the component's own comment said "extract when a second page needs it" — /partner is
+that page) rather than building a parallel one. Emerald eyebrow via arbitrary
+`text-[#2f5d50]` (the hero gradient's emerald) — no new theme token for a
+single-page accent. Hero rendered at 1k (1376×768) vs the 2048-wide existing heroes;
+fine at display size, can be regenerated larger if wanted.
+
+**Deferred.** Same as PARTNER-PAGE (no inquiry notification, no UO read view, no
+accounts). Hero could be regenerated at higher resolution if desired.
+
+PARTNER-PAGE-V2: COMPLETE — tests green
