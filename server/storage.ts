@@ -33,6 +33,7 @@ import {
   heroImages,
   externalBookings,
   newsletterSubscribers,
+  ltrInquiries,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -74,6 +75,8 @@ import {
   type InsertExternalBooking,
   type NewsletterSubscriber,
   type InsertNewsletterSubscriber,
+  type LtrInquiry,
+  type InsertLtrInquiry,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -117,6 +120,9 @@ export interface IStorage {
 
   // --- Newsletter (owned email-capture list) ---
   upsertNewsletterSubscriber(data: InsertNewsletterSubscriber): Promise<NewsletterSubscriber>;
+
+  // --- LTR inquiries (long-term-rental lead capture; append-only) ---
+  createLtrInquiry(data: InsertLtrInquiry): Promise<LtrInquiry>;
 
   // --- Bookings ---
   getBooking(id: string): Promise<Booking | undefined>;
@@ -380,6 +386,13 @@ class Storage implements IStorage {
       .where(eq(newsletterSubscribers.email, data.email));
     if (existing) return existing;
     const [row] = await db.insert(newsletterSubscribers).values(data).returning();
+    return row;
+  }
+
+  // Append-only lead capture — a person may inquire more than once, so this is a
+  // plain insert (no dedupe/upsert, unlike the newsletter list above).
+  async createLtrInquiry(data: InsertLtrInquiry): Promise<LtrInquiry> {
+    const [row] = await db.insert(ltrInquiries).values(data).returning();
     return row;
   }
 

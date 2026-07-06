@@ -38,11 +38,17 @@
     --input: #ebe7e3;
     --ring: #e0533d;
 
-    /* Product-segment colors: whole-property = brand coral, by-the-room = a
-       distinct teal so the two offerings never blur together on cards/doors. */
+    /* Product-segment colors: the three offerings each get an accent that reads
+       as its stay-length feeling, so cards/doors/pages never blur together.
+       whole-property (STR) = brand coral (warm getaway); by-the-room (COLIVING)
+       = teal (rooted, communal); long-term (LTR) = warm amber/ochre (a settled,
+       year-long home). Amber is warm enough to sit in the same paper palette as
+       coral, yet clearly distinct from both coral and teal. */
     --segment-whole: #e0533d;
     --segment-room: #2c6e8f;
     --segment-room-tint: #eaf2f6;
+    --segment-ltr: #b8843f;
+    --segment-ltr-tint: #f6efe2;
 
     /* Positive-status tint (Available / Paid pills) — green stays reserved for
        status, never for brand surfaces. */

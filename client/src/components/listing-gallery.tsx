@@ -18,7 +18,7 @@ interface Props {
   photos?: string[] | null;
   alt: string;
   location?: string | null;
-  kind?: "STR" | "COLIVING" | "ROOM";
+  kind?: "STR" | "COLIVING" | "ROOM" | "LTR";
   rounded?: string;
 }
 

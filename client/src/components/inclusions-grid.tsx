@@ -11,9 +11,16 @@ import { cn } from "@/lib/utils";
 
 export function InclusionsGrid({
   variant = "full",
+  image,
   className,
 }: {
   variant?: "full" | "compact";
+  /**
+   * Optional warm banner image (a path under client/public) shown above the
+   * heading in the "full" variant only. The "compact" detail-page variant stays
+   * image-free so it reads as a tight essentials list.
+   */
+  image?: string;
   className?: string;
 }) {
   if (INCLUSIONS.length === 0) return null;
@@ -44,6 +51,16 @@ export function InclusionsGrid({
   // Full variant: a titled band with richer cards (label + note).
   return (
     <section className={cn(className)} data-testid="inclusions-full">
+      {image && (
+        <div className="mb-9 overflow-hidden rounded-3xl">
+          <img
+            src={image}
+            alt="Housemates relaxing together in a Be Nice co-living common space"
+            className="aspect-[16/9] w-full object-cover sm:aspect-[21/9]"
+            loading="lazy"
+          />
+        </div>
+      )}
       <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
         Everything's included
       </h2>

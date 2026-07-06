@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "wouter";
+import { ChevronDown } from "lucide-react";
 import { NewsletterSignup } from "@/components/newsletter-signup";
 
 export function SiteHeader() {
@@ -26,27 +27,24 @@ export function SiteHeader() {
             }
           />
         </Link>
-        {/* BT-23 mobile: min-h-11 on each link so nav items are 44px tap targets. */}
+        {/* BT-23 mobile: min-h-11 on each link so nav items are 44px tap targets.
+            The three product links lead; content links demote below sm. */}
         <nav className="flex items-center gap-4 text-sm font-medium text-muted-foreground sm:gap-6">
-          {/* Plain anchor: wouter Link doesn't scroll to hashes; a real
-              navigation to /#stays lands on home and scrolls to the listings. */}
+          {/* Co-living is the home page; a real /#stays navigation scrolls to the
+              rooms grid (wouter Link doesn't scroll to hashes). */}
           <a href="/#stays" className="inline-flex min-h-11 items-center transition-colors hover:text-foreground">
-            Browse stays
+            Co-living
           </a>
-          {/* Community: primary content nav, visible on all sizes. */}
-          <Link href="/community" className="inline-flex min-h-11 items-center transition-colors hover:text-foreground">
+          {/* Secondary content items hidden on the smallest screens to keep the
+              mobile header uncrowded. */}
+          <Link href="/community" className="hidden min-h-11 items-center transition-colors hover:text-foreground sm:inline-flex">
             Community
           </Link>
-          {/* Secondary items hidden on the smallest screens (same pattern as
-              "How it works") to keep the mobile header uncrowded. */}
-          <Link href="/journal" className="hidden min-h-11 items-center transition-colors hover:text-foreground sm:inline-flex">
+          <Link href="/journal" className="hidden min-h-11 items-center transition-colors hover:text-foreground md:inline-flex">
             Journal
           </Link>
-          {/* Plain anchor: wouter Link doesn't scroll to hashes; a real
-              navigation to /#how lands and scrolls natively. */}
-          <a href="/#how" className="hidden min-h-11 items-center transition-colors hover:text-foreground sm:inline-flex">
-            How it works
-          </a>
+          {/* Properties: STR + LTR consolidated into one dropdown. */}
+          <PropertiesMenu />
           <Link
             href="/lookup"
             className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 font-semibold text-primary-foreground transition-colors hover:bg-accent-foreground"
@@ -56,6 +54,71 @@ export function SiteHeader() {
         </nav>
       </div>
     </header>
+  );
+}
+
+// "Properties" nav item: a click-to-open dropdown consolidating the two
+// whole-home products (Short-term → /str, Long-term → /ltr). Closes on outside
+// click or Escape; keyboard-accessible (aria-expanded + focusable menu links).
+function PropertiesMenu() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onClick);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onClick);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="inline-flex min-h-11 items-center gap-1 transition-colors hover:text-foreground"
+        data-testid="nav-properties"
+      >
+        Properties
+        <ChevronDown className={`h-4 w-4 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div
+          role="menu"
+          className="absolute left-0 top-full z-50 mt-1 w-48 overflow-hidden rounded-xl border bg-card py-1 shadow-card"
+        >
+          <Link
+            href="/str"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="flex min-h-11 items-center gap-2 px-4 text-sm text-foreground transition-colors hover:bg-secondary"
+            data-testid="nav-properties-str"
+          >
+            <span aria-hidden className="h-2 w-2 rounded-full bg-segment-whole" />
+            Short-term
+          </Link>
+          <Link
+            href="/ltr"
+            role="menuitem"
+            onClick={() => setOpen(false)}
+            className="flex min-h-11 items-center gap-2 px-4 text-sm text-foreground transition-colors hover:bg-secondary"
+            data-testid="nav-properties-ltr"
+          >
+            <span aria-hidden className="h-2 w-2 rounded-full bg-segment-ltr" />
+            Long-term
+          </Link>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -70,19 +133,17 @@ export function SiteFooter() {
               <span className="font-display text-lg font-semibold">Be Nice Properties</span>
             </div>
             <p className="mt-3 text-sm text-white/60">
-              Whole-home stays and by-the-room co-living in Atlanta, Antigua, and beyond. Book
-              direct, stay comfortable.
+              Co-living rooms, short-term getaways, and long-term homes in Atlanta, Antigua,
+              and beyond. Book direct, stay comfortable.
             </p>
           </div>
           <div className="flex flex-wrap gap-x-14 gap-y-8">
             <FooterCol title="Stays">
-              {/* Plain anchors on purpose: these deep-link into home filters
-                  (/?type=…#stays) and need a real navigation to apply. */}
-              <a href="/#stays">Browse all</a>
-              <a href="/?type=STR#stays">Whole properties</a>
-              <a href="/?type=COLIVING#stays">Rooms</a>
-              <a href="/?city=Atlanta#stays">Atlanta</a>
-              <a href={`/?city=${encodeURIComponent("St. John's")}#stays`}>St. John&rsquo;s</a>
+              {/* Each product now has its own page. Plain anchors so a real
+                  navigation lands (and /#stays scrolls to the co-living grid). */}
+              <a href="/#stays">Co-living rooms</a>
+              <a href="/str">Short-term rentals</a>
+              <a href="/ltr">Long-term rentals</a>
             </FooterCol>
             <FooterCol title="Company">
               <a href="/about">About us</a>

@@ -29,7 +29,7 @@ import type { ListingContent } from "@shared/schema";
 import { RichText } from "@/components/rich-text";
 import { cn } from "@/lib/utils";
 
-type Segment = "whole" | "room";
+type Segment = "whole" | "room" | "ltr";
 
 // Named icons an admin can attach to an essential. Unknown/omitted names fall
 // back to a neutral dot, so a typo never breaks the render.
@@ -78,12 +78,15 @@ export function ListingStory({
     return <RichText text={description} className={cn("max-w-2xl", className)} />;
   }
 
-  // Segment accent: coral for whole-property, teal for by-the-room. Uses the
-  // existing design tokens so this can never drift from the rest of the site.
+  // Segment accent: coral for whole-property, teal for by-the-room, amber for
+  // long-term. Uses the existing design tokens so this can never drift from the
+  // rest of the site.
   const accent =
     segment === "whole"
       ? { text: "text-segment-whole", bg: "bg-segment-whole", tintText: "text-accent-foreground", tintBg: "bg-accent" }
-      : { text: "text-segment-room", bg: "bg-segment-room", tintText: "text-segment-room", tintBg: "bg-segment-room-tint" };
+      : segment === "ltr"
+        ? { text: "text-segment-ltr", bg: "bg-segment-ltr", tintText: "text-segment-ltr", tintBg: "bg-segment-ltr-tint" }
+        : { text: "text-segment-room", bg: "bg-segment-room", tintText: "text-segment-room", tintBg: "bg-segment-room-tint" };
 
   return (
     <div className={cn("max-w-2xl", className)}>

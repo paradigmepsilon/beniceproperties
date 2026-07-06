@@ -1,6 +1,7 @@
 // client/src/pages/property-detail.tsx
 // STR: hero image + sticky booking card (dates → checkout).
 // COLIVING: hero + photo-forward room cards → room detail.
+// LTR: hero gallery + sticky contact card (inquiry form, no online booking).
 
 import { useState } from "react";
 import { Link, useParams, useLocation, useSearch } from "wouter";
@@ -16,6 +17,7 @@ import { ListingStory } from "@/components/listing-story";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { NeighborhoodBlock } from "@/components/neighborhood-block";
 import { DateRangePicker } from "@/components/date-range-picker";
+import { LtrInquiryForm } from "@/components/ltr-inquiry-form";
 import { Button } from "@/components/ui/button";
 import { cityOf, fromNightly, money } from "@/lib/format";
 import { usePropertyAvailability } from "@/hooks/use-availability";
@@ -127,15 +129,16 @@ export default function PropertyDetail() {
           <ArrowLeft className="h-4 w-4" /> All stays
         </Link>
 
-        {/* Hero — STR gets a full gallery; co-living house shows a single image
-            (you book a room, not the house, so the house just needs one photo). */}
-        {property.type === "STR" ? (
+        {/* Hero — STR and LTR (whole-home products) get a full gallery; co-living
+            house shows a single image (you book a room, not the house, so the
+            house just needs one photo). */}
+        {property.type === "STR" || property.type === "LTR" ? (
           <ListingGallery
             id={property.id}
             photos={property.photos}
             alt={property.name}
             location={property.location}
-            kind="STR"
+            kind={property.type}
             rounded="rounded-3xl"
           />
         ) : (
@@ -151,34 +154,49 @@ export default function PropertyDetail() {
           </div>
         )}
 
-        {/* STR reserves a right column for the sticky booking card; co-living has
-            no sidebar, so details — and the room-card row — get the full width. */}
-        <div className={`mt-6 grid gap-10 ${property.type === "STR" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
+        {/* STR and LTR reserve a right column for the sticky booking/contact card;
+            co-living has no sidebar, so details — and the room-card row — get the
+            full width. */}
+        <div className={`mt-6 grid gap-10 ${property.type === "STR" || property.type === "LTR" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
           {/* Left: details */}
           <div>
             <span
               className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-semibold ${
                 property.type === "STR"
                   ? "bg-accent text-accent-foreground"
-                  : "bg-segment-room-tint text-segment-room"
+                  : property.type === "LTR"
+                    ? "bg-segment-ltr-tint text-segment-ltr"
+                    : "bg-segment-room-tint text-segment-room"
               }`}
             >
               <span
                 aria-hidden
-                className={`h-2 w-2 rounded-full ${property.type === "STR" ? "bg-segment-whole" : "bg-segment-room"}`}
+                className={`h-2 w-2 rounded-full ${
+                  property.type === "STR"
+                    ? "bg-segment-whole"
+                    : property.type === "LTR"
+                      ? "bg-segment-ltr"
+                      : "bg-segment-room"
+                }`}
               />
-              {property.type === "STR" ? "Whole property" : "By the room"}
+              {property.type === "STR"
+                ? "Whole property"
+                : property.type === "LTR"
+                  ? "Long-term rental"
+                  : "By the room"}
             </span>
             <h1 className="mt-3 font-display text-3xl font-semibold tracking-tight">{property.name}</h1>
             <p className="mt-1 flex items-center gap-1.5 text-muted-foreground">
               <MapPin className="h-4 w-4" /> {property.location}
             </p>
             {/* Editorial listing story when structured content exists; falls
-                back to plain prose. Coral accent for whole-property. */}
+                back to plain prose. Coral/teal/amber accent per product type. */}
             <ListingStory
               content={property.listingContent}
               description={property.description}
-              segment={property.type === "STR" ? "whole" : "room"}
+              segment={
+                property.type === "STR" ? "whole" : property.type === "LTR" ? "ltr" : "room"
+              }
               className="mt-6"
             />
 
@@ -328,6 +346,19 @@ export default function PropertyDetail() {
                 )}
                 <p className="mt-3 text-center text-xs text-muted-foreground">You won't be charged yet.</p>
               </div>
+            </aside>
+          )}
+
+          {/* Right: sticky contact card (LTR only) — long-term rentals are
+              inquiry-only, so the booking widget is replaced by a lead form that
+              writes to /api/ltr-inquiries. */}
+          {property.type === "LTR" && (
+            <aside>
+              <LtrInquiryForm
+                propertyId={property.id}
+                propertyName={property.name}
+                className="bnp-card sticky top-24 p-6"
+              />
             </aside>
           )}
         </div>

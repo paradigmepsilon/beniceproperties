@@ -36,13 +36,4 @@ export const HOSTS: Host[] = [
     blurb:
       "Makes sure every home feels welcoming from the moment you walk in — the linens, the little touches, and the move-in details that make a house feel like yours.",
   },
-  {
-    id: "host-antigua",
-    name: "Your Antigua host",
-    area: "St. John's getaways",
-    city: "St. John's",
-    role: "On-island host",
-    blurb:
-      "Looks after the whole-home getaways in Antigua — greeting guests, sharing the best local spots, and staying a text away without ever hovering.",
-  },
 ];

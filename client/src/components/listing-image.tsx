@@ -3,7 +3,7 @@
 // tasteful, DETERMINISTIC branded gradient placeholder (same id → same gradient)
 // with a context icon. Swap in real photos via admin/seed and these vanish.
 
-import { Palmtree, Home, BedDouble, Building2 } from "lucide-react";
+import { Palmtree, Home, BedDouble, Building2, KeyRound } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 // A small set of warm, on-brand gradient pairs. Chosen for hospitality warmth.
@@ -27,7 +27,7 @@ interface Props {
   photos?: string[] | null;
   alt: string;
   location?: string | null;
-  kind?: "STR" | "COLIVING" | "ROOM";
+  kind?: "STR" | "COLIVING" | "ROOM" | "LTR";
   className?: string;
   rounded?: string;
 }
@@ -52,9 +52,11 @@ export function ListingImage({ id, photos, alt, location, kind, className, round
       ? BedDouble
       : kind === "COLIVING"
         ? Building2
-        : location?.toLowerCase().includes("antigua")
-          ? Palmtree
-          : Home;
+        : kind === "LTR"
+          ? KeyRound
+          : location?.toLowerCase().includes("antigua")
+            ? Palmtree
+            : Home;
 
   // Placeholder fills its parent so the wrapper's aspect-ratio governs height.
   // (Unlike <img>, a bare div has no intrinsic size, so we pin it to the box.)

@@ -16,8 +16,11 @@ import { cn } from "@/lib/utils";
 // template by owner decision. Edit here.
 const RATING_PLACEHOLDER = "4.9";
 
-/** Bookable right now? COLIVING: any AVAILABLE room. STR: no stay covers today. */
+/** Bookable right now? COLIVING: any AVAILABLE room. STR: no stay covers today.
+ *  LTR is inquiry-only (no availability concept) — never "booked", so it's never
+ *  demoted or greyed in the grid. */
 export function isBookedNow(p: PropertyListItem): boolean {
+  if (p.type === "LTR") return false;
   return p.type === "COLIVING" ? !p.fromWeeklyRent : p.nextOpening != null;
 }
 
@@ -45,6 +48,7 @@ interface Props {
 
 export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
   const isRoom = p.type === "COLIVING";
+  const isLtr = p.type === "LTR";
   const dated = isDatedSearch(checkIn, checkOut);
   // During a date search the searched range decides availability; otherwise the
   // date-blind "booked now" status. `dateBlocked` = specifically unavailable for
@@ -73,12 +77,13 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
         )}
         data-testid={`card-property-${p.id}`}
       >
-        {/* Segment accent bar — whole-property coral vs by-the-room teal. */}
+        {/* Segment accent bar — coral (whole-property) / teal (by-the-room) /
+            amber (long-term). */}
         <span
           aria-hidden
           className={cn(
             "absolute inset-y-0 left-0 z-10 w-[5px]",
-            isRoom ? "bg-segment-room" : "bg-segment-whole",
+            isLtr ? "bg-segment-ltr" : isRoom ? "bg-segment-room" : "bg-segment-whole",
           )}
         />
 
@@ -88,7 +93,7 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
             photos={p.photos}
             alt={p.name}
             location={p.location}
-            kind={p.type as "STR" | "COLIVING"}
+            kind={p.type as "STR" | "COLIVING" | "LTR"}
             rounded="rounded-none"
             className="h-full w-full transition-transform duration-300 group-hover:scale-[1.05]"
           />
@@ -97,25 +102,33 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
               aria-hidden
               className={cn(
                 "h-2 w-2 rounded-full",
-                isRoom ? "bg-segment-room" : "bg-segment-whole",
+                isLtr ? "bg-segment-ltr" : isRoom ? "bg-segment-room" : "bg-segment-whole",
               )}
             />
-            {isRoom ? "By the room" : "Whole property"}
+            {isLtr ? "Long-term" : isRoom ? "By the room" : "Whole property"}
           </span>
-          <span
-            className={cn(
-              "absolute right-3.5 top-3.5 rounded-full px-2.5 py-1 text-xs font-bold",
-              booked ? "bg-secondary text-muted-foreground" : "bg-good-bg text-good",
-            )}
-          >
-            {belowColivingMin
-              ? "7-night minimum"
-              : dateBlocked
-                ? "Unavailable for your dates"
-                : booked
-                  ? "Fully booked"
-                  : "Available"}
-          </span>
+          {/* Status pill — LTR has no availability concept, so it shows a neutral
+              "Enquire" cue instead of Available/Fully-booked. */}
+          {isLtr ? (
+            <span className="absolute right-3.5 top-3.5 rounded-full bg-segment-ltr-tint px-2.5 py-1 text-xs font-bold text-[#8a5a1f]">
+              Enquire
+            </span>
+          ) : (
+            <span
+              className={cn(
+                "absolute right-3.5 top-3.5 rounded-full px-2.5 py-1 text-xs font-bold",
+                booked ? "bg-secondary text-muted-foreground" : "bg-good-bg text-good",
+              )}
+            >
+              {belowColivingMin
+                ? "7-night minimum"
+                : dateBlocked
+                  ? "Unavailable for your dates"
+                  : booked
+                    ? "Fully booked"
+                    : "Available"}
+            </span>
+          )}
         </div>
 
         <div className="flex flex-1 flex-col gap-1 p-4">
@@ -130,7 +143,11 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
           )}
           <div className="mt-auto flex items-center justify-between pt-3">
             <p className="text-sm">
-              {belowColivingMin ? (
+              {isLtr ? (
+                // Long-term rentals are inquiry-only — no online price. The detail
+                // page carries a contact form instead of a booking widget.
+                <span className="font-medium text-segment-ltr">Contact for details</span>
+              ) : belowColivingMin ? (
                 // Blocked because the searched stay is under the co-living minimum
                 // — tell the guest the rule, not that the room is taken.
                 <span className="font-medium text-muted-foreground">

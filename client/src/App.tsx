@@ -8,6 +8,8 @@ import { queryClient } from "@/lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { ScrollToTop } from "@/components/scroll-to-top";
 import Home from "@/pages/home";
+import Str from "@/pages/str";
+import Ltr from "@/pages/ltr";
 import PropertyDetail from "@/pages/property-detail";
 import RoomDetail from "@/pages/room-detail";
 import Checkout from "@/pages/checkout";
@@ -29,6 +31,8 @@ function Router() {
   return (
     <Switch>
       <Route path="/" component={Home} />
+      <Route path="/str" component={Str} />
+      <Route path="/ltr" component={Ltr} />
       <Route path="/property/:id" component={PropertyDetail} />
       <Route path="/room/:id" component={RoomDetail} />
       <Route path="/checkout" component={Checkout} />

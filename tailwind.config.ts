@@ -48,6 +48,8 @@ export default {
           whole: "var(--segment-whole)",
           room: "var(--segment-room)",
           "room-tint": "var(--segment-room-tint)",
+          ltr: "var(--segment-ltr)",
+          "ltr-tint": "var(--segment-ltr-tint)",
         },
         good: {
           DEFAULT: "var(--good)",

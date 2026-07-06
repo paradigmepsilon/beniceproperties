@@ -36,7 +36,11 @@ import { z } from "zod";
 // Enumerated string values (single source for both DB text columns and Zod)
 // -----------------------------------------------------------------------------
 
-export const PROPERTY_TYPES = ["STR", "COLIVING"] as const;
+// "STR" (book the whole place) | "COLIVING" (book a room within it) | "LTR"
+// (long-term rental — inquiry-only, never booked online). LTR is intentionally
+// ABSENT from BOOKING_MODELS below: it has no quote/checkout/payment path, so
+// the exclusion structurally keeps it out of shared/pricing.ts and /api/quote.
+export const PROPERTY_TYPES = ["STR", "COLIVING", "LTR"] as const;
 export const ROOM_STATUSES = ["AVAILABLE", "OCCUPIED", "HOLD"] as const;
 export const BOOKING_MODELS = ["STR", "COLIVING"] as const;
 export const BOOKING_STATUSES = [
@@ -235,7 +239,8 @@ export const properties = pgTable("properties", {
   // Free-text location label, e.g. "Atlanta" | "Antigua". Kept as text (not an
   // enum) so new markets don't require a migration.
   location: text("location").notNull(),
-  // "STR" (book the whole place) | "COLIVING" (book a room within it).
+  // "STR" (book the whole place) | "COLIVING" (book a room within it) | "LTR"
+  // (long-term rental — inquiry-only, no online booking; priced off-platform).
   type: text("type").notNull().default("STR"),
   // Owning entity: "TRAD" | "BNP". Sources the Stripe metadata `entity` field.
   // Defaults to BNP; TRAD properties set it explicitly. Additive column.
@@ -641,6 +646,40 @@ export const insertNewsletterSubscriberSchema = createInsertSchema(newsletterSub
 
 export type NewsletterSubscriber = typeof newsletterSubscribers.$inferSelect;
 export type InsertNewsletterSubscriber = z.infer<typeof insertNewsletterSubscriberSchema>;
+
+// =============================================================================
+// ltr_inquiries — lead capture for long-term-rental (LTR) properties, which are
+// inquiry-only (no online booking). A guest submits a contact form from an LTR
+// listing and we follow up off-platform. Additive, standalone (no FKs — propertyId
+// is a plain text reference, matching the repo's low-coupling convention so a new
+// market/listing never needs a constraint migration). APPEND-ONLY: a person may
+// inquire more than once, so there is no unique constraint and no upsert (unlike
+// newsletter_subscribers). Write-once rows, no updated_at. The table is created by
+// scripts/push-ltr-inquiries.mjs (this repo applies DDL via push scripts).
+// =============================================================================
+
+export const ltrInquiries = pgTable("ltr_inquiries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // The LTR property this inquiry is about. Nullable: a general "contact us about
+  // long-term options" inquiry (e.g. from the /ltr index) carries no property.
+  propertyId: text("property_id"),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  phone: text("phone"),
+  // Desired move-in, free text (e.g. "Sept 1" / "flexible") — not a date column,
+  // since inquiries are casual and we don't parse/validate it.
+  moveIn: text("move_in"),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertLtrInquirySchema = createInsertSchema(ltrInquiries, {
+  email: z.string().email(),
+  name: z.string().min(1),
+}).omit({ id: true, createdAt: true });
+
+export type LtrInquiry = typeof ltrInquiries.$inferSelect;
+export type InsertLtrInquiry = z.infer<typeof insertLtrInquirySchema>;
 
 // =============================================================================
 // leases — a co-living guest's fixed-term, recurring-payment agreement for one

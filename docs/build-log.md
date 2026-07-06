@@ -1866,3 +1866,123 @@ content). Normal reloads render correctly.
 **Note for the user:** existing browsers self-heal on the next reload against the
 restarted dev server. If a browser is stubbornly stuck, one hard refresh (or
 DevTools → Application → Service Workers → Unregister) forces it immediately.
+
+---
+
+## 2026-07-05 — SECTION-SPLIT-LTR: three-section site (Co-living / STR / LTR) + new LTR type
+
+**What was built.** Split the marketing site into three sections that share one visual
+system but each carry a distinct sub-identity, and added **LTR** (long-term rental) as a
+brand-new, inquiry-only property type.
+
+- **Design system.** Extended the existing two-segment color system (coral = STR, teal =
+  COLIVING) with a third accent for LTR — warm amber `--segment-ltr: #b8843f` (+ tint
+  `#f6efe2`) in `client/src/index.css`, exposed as `bg-segment-ltr`/`text-segment-ltr` via
+  `tailwind.config.ts`. One spine (paper bg, Fraunces/Inter, card anatomy); only the accent,
+  hero-door gradient, and eyebrow change per section.
+- **Home (`/`) → co-living focused.** Grid now shows COLIVING only; hero re-led with co-living
+  copy; the two hero "doors" became wayfinding to the other products (Short-term → `/str`,
+  Long-term → `/ltr`); teal reassurance band. Rewrote `client/src/pages/home.tsx` to consume the
+  new shared `ListingsSection`.
+- **New `/str` page** (`client/src/pages/str.tsx`) — coral hero band, keeps date search + online
+  booking. **New `/ltr` page** (`client/src/pages/ltr.tsx`) — amber hero band, no date search,
+  cards → detail page, plus a general inquiry form at the foot.
+- **LTR is inquiry-only.** `PropertyCard` shows an amber "Enquire" pill + "Contact for details"
+  (no price, never greyed — `isBookedNow` short-circuits LTR). `property-detail.tsx` renders the
+  new `LtrInquiryForm` in the booking-aside slot instead of a booking widget.
+- **Backend (non-destructive).** Added `"LTR"` to `PROPERTY_TYPES` (free-text column, no DDL for
+  the discriminator); deliberately **excluded from `BOOKING_MODELS`** so it never touches pricing/
+  quote/checkout. New append-only `ltr_inquiries` table + `insertLtrInquirySchema`, storage
+  `createLtrInquiry`, and `POST /api/ltr-inquiries`. Table created via idempotent
+  `scripts/push-ltr-inquiries.mjs` (CREATE TABLE IF NOT EXISTS). Seeded 3 placeholder LTR
+  properties via `scripts/seed-ltr-placeholders.mjs` (data only — proves rule #4, zero migration).
+
+**Files touched.** `shared/schema.ts`, `server/storage.ts`, `server/routes.ts`,
+`client/src/App.tsx`, `client/src/pages/{home,property-detail,str,ltr}.tsx`,
+`client/src/components/{property-card,listing-image,listing-gallery,listing-story,site-header,
+listings-section,ltr-inquiry-form}.tsx`, `client/src/index.css`, `tailwind.config.ts`,
+`scripts/{push-ltr-inquiries,seed-ltr-placeholders}.mjs`.
+
+**Tests run + results.**
+- `npm run check` (tsc) — green.
+- `npm run build` — succeeds (pre-existing chunk-size warning only).
+- API: `/api/properties` returns 3 LTR rows with `fromWeeklyRent=null`, `availableForDates=true`
+  (the "Contact for details, never greyed" state). `POST /api/ltr-inquiries` valid → 200; missing
+  name → 400. Rows confirmed written to `ltr_inquiries` (append-only), incl. correct `property_id`
+  from the detail page and `null` from the general form.
+- Browser walkthrough (dev): home = co-living only + two doors; `/str` = coral, STR only, date
+  search + booking; `/ltr` = amber, LTR only, no dates, "Contact for details" cards; LTR detail
+  page shows the inquiry form in the booking slot and submits with inline success. Test inquiry
+  rows deleted afterward; placeholder LTR properties retained.
+
+**Decisions.** LTR reuses `property-detail.tsx` (a third branch) rather than a separate detail
+page. LTR contact = form → DB (append-only, `property_id` nullable free-text, no FK). Home shows
+two doors (co-living needs none — it's the whole page). Shared `ListingsSection` extracted to
+avoid triplicating the grid across home/str/ltr.
+
+**Deferred.** Real LTR inventory (currently 3 `[PLACEHOLDER]` rows) — swap in via admin/seed.
+No admin surface yet to view/manage `ltr_inquiries` leads (follow-up).
+
+SECTION-SPLIT-LTR: COMPLETE — tests green
+
+---
+
+## Marketing visual + editorial refresh (home + section pages) — 2026-07-06
+
+Warm the marketing surfaces: a real co-living rooms search bar, Higgsfield editorial
+imagery in the key emotional slots, and a Community page that reads as a story instead of
+a stack of card bands. Branch `feat/section-split-ltr` (continues the section split above).
+
+**What was built.**
+- **Co-living rooms search bar.** New `client/src/components/coliving-search-bar.tsx` —
+  Where + Move-in + Weekly budget + "Search rooms", styled to match the STR `SearchBar`.
+  Wired into `listings-section.tsx` via a new `enableColivingSearch` prop; the home passes
+  it. **Where** and **Budget** filter the grid (budget caps derived from live `fromWeeklyRent`
+  in $100 tiers). **Move-in is prefill/display only** — co-living has no live-availability
+  backend, so it does not filter (commented in both files). STR (`enableDateSearch`) and LTR
+  (no search) paths untouched.
+- **8 Higgsfield images** (Soul 2.0, saved under `client/public/{heroes,editorial}/`,
+  PNG→JPG q82): section-page heroes `heroes/{community,str,ltr}.jpg`; editorial
+  `editorial/{everything-included,coliving-home-band,community-intro,community-1,community-2}.jpg`.
+- **`PageHero` gained an optional `image` prop** (`page-hero.tsx`) — a fixed per-page hero
+  photo behind the existing scrims + accent tint, skipping the DB slideshow. `/str`, `/ltr`,
+  `/community` each pass their own; the home keeps the DB slideshow.
+- **`InclusionsGrid` gained an optional `image` prop** (`inclusions-grid.tsx`) — a warm banner
+  above the heading in the **full** variant only (compact detail-page variant stays clean).
+  The candid couch shot (a group of African American friends relaxing in a designed shared
+  space) leads "Everything's included" on both home and community.
+- **Home reassurance band** ("A room in a home, not a room in a listing.") converted from a
+  flat teal block to an **image-backed band** (`coliving-home-band.jpg` + teal multiply/scrim,
+  glass step cards). Copy unchanged.
+- **Community page rewritten** (`community.tsx`) into a warm editorial flow: hero → "A home
+  has a keeper. A listing just has a lockbox." editorial text/image row (local `EditorialRow`
+  helper) → Meet your hosts → "Simple on purpose." lightweight How-it-works columns (was a
+  hard bordered card band) → couch banner + inclusions → **"What community actually looks like"
+  image strip** (2 captioned photos) → testimonials.
+- **Removed the Antigua host** (`content/hosts.ts`) — `host-antigua` deleted; Alex + Della
+  remain. Antigua stays a location (STR getaways) — only the host card was removed.
+
+**Files touched.** New: `client/src/components/coliving-search-bar.tsx`,
+`client/public/heroes/*.jpg`, `client/public/editorial/*.jpg`. Edited:
+`client/src/components/{page-hero,inclusions-grid,listings-section}.tsx`,
+`client/src/pages/{home,community,str,ltr}.tsx`, `client/src/content/hosts.ts`.
+
+**Tests run + results.**
+- `npm run check` (tsc) — clean, exit 0.
+- Browser walkthrough (headless Chrome, dev server :3005): all four pages render with their
+  images at the shared hero height, text legible over every photo; 0 console error-level
+  messages across `/`, `/str`, `/ltr`, `/community`; all 8 image requests 200.
+- Budget filter driven over CDP: options `["ALL","200","300"]` (from the $300 rooms); no cap →
+  2 cards, "≤$200" → 0 cards, "≤$300" → 2 cards. Filters both directions correctly.
+- Community shows exactly 2 host cards (Antigua gone); STR date search + LTR inquiry form
+  still work.
+
+**Decisions.** Co-living got its own search component rather than overloading STR's `SearchBar`
+(different fields/semantics). `EditorialRow` kept local to `community.tsx` (single consumer).
+Home hero left on the DB slideshow for continuity; only the three section pages got fixed art.
+Couch image shared by home + community (same asset, intentional).
+
+**Deferred.** No live co-living availability backend, so Move-in is inert (prefill only) until
+one exists. Budget tiers are sparse ($200/$300) until room inventory has price spread.
+
+MARKETING-VISUAL-REFRESH: COMPLETE — tests green

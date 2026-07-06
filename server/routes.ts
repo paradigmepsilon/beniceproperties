@@ -26,6 +26,7 @@ import {
   insertPropertySchema,
   insertRoomSchema,
   insertNewsletterSubscriberSchema,
+  insertLtrInquirySchema,
   US_STATE_CODES,
   COLIVING_MIN_DAYS,
   type PropertyListItem,
@@ -194,6 +195,25 @@ export async function registerRoutes(app: Express): Promise<void> {
         return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid email" });
       }
       await storage.upsertNewsletterSubscriber(parsed.data);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // LTR (long-term-rental) inquiry capture. Public. Append-only lead: a valid
+  // submission always returns 200 and writes a new row (no dedupe — a person may
+  // inquire more than once). Invalid name/email → 400. LTR properties are
+  // inquiry-only, so this is their sole conversion path (no booking/quote).
+  app.post("/api/ltr-inquiries", async (req, res, next) => {
+    try {
+      const parsed = insertLtrInquirySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ message: parsed.error.errors[0]?.message ?? "Invalid inquiry" });
+      }
+      await storage.createLtrInquiry(parsed.data);
       res.status(200).json({ ok: true });
     } catch (err) {
       next(err);
