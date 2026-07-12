@@ -2404,3 +2404,78 @@ FAQPage schema on /str + home are the next AEO lever. (4) Cover images for the
 35 posts (currently branded gradient fallback) via UO when convenient.
 
 SEO-AEO-CONTENT: COMPLETE — tests green
+
+## 2026-07-12 — JOURNAL-V2-LONGFORM + CANONICAL-DOMAIN: 35 posts expanded, covers, custom domain
+
+**What.** Two things in one drop. (1) Rewrote all 35 journal posts from ~350
+words to 1800-2500 words each, still SEO/AEO-shaped and humanized, and gave
+each post a generated editorial cover image. (2) Made www.beniceproperties.com
+the canonical domain everywhere (it was already connected via Vercel but every
+hardcoded URL still pointed at the .vercel.app address, so crawlers were told
+the wrong canonical host).
+
+**The domain finding.** beniceproperties.com resolves fine: the apex 308s to
+www.beniceproperties.com which serves the site (200). The reason earlier work
+kept "only seeing the vercel page" is that seo.ts SITE_URL, index.html
+canonical/OG, robots.txt, llms.txt, the sitemap route origin, the prerender API
+origin, and the guest email-link fallbacks all hardcoded
+https://beniceproperties.vercel.app. Search engines and AI crawlers were being
+handed the vercel.app URL as the canonical, splitting authority off the real
+domain. All of those now use https://www.beniceproperties.com. Added a
+vercel.json 301 redirect from the .vercel.app host to www.beniceproperties.com
+(excluding /api/*) so the duplicate host consolidates.
+
+**How (content).**
+- 35 posts rewritten by 7 parallel agents against a shared RULES.md (1800-2500
+  words, answer-first 40-70 word opening paragraph, 6-9 sentence-case headings
+  incl. one question heading, primary keyword 4-8x incl. one heading, no em/en
+  dashes, no curly quotes, no AI-tell phrases, no invented stats). Validated
+  with a standalone checker; several first-pass posts came back short or with
+  banned phrases ("is not just", "not only", "whether you're", stray "unlock")
+  and were fixed before any DB write. Final range 1801-2058 words, 65,052 total.
+- 35 cover images generated (Higgsfield marketing_studio_image, 3:2, editorial
+  film-grain style, warm palette, no text/faces/logos), one per post matched to
+  its topic, saved as client/public/journal-covers/<slug>.jpg (~11 MB total).
+- DB updated via scripts/update-journal-posts-v2.mjs (new; idempotent,
+  UPDATE-by-slug only so UO stays the author of record, validates 1800-2500
+  words + full ban list + curly quotes before writing, sets cover_url to
+  https://www.beniceproperties.com/journal-covers/<slug>.jpg). Data in
+  scripts/data/journal_posts_2026_07_v2.json (committed).
+
+**How (domain).** seo.ts, index.html, robots.txt, llms.txt, server/routes.ts
+(sitemap origin), scripts/prerender.mjs (API origin default), and the
+publicBaseUrl() fallbacks in server/lib/{lifecycle,dunning,verification}.ts all
+swapped to www.beniceproperties.com; the VERCEL_URL middle term was dropped from
+those email-link fallbacks so guest links never point at a .vercel.app
+deployment URL. vercel.json gained the host 301. api/*.js rebuilt.
+
+**Files touched.** scripts/update-journal-posts-v2.mjs (new),
+scripts/data/journal_posts_2026_07_v2.json (new),
+client/public/journal-covers/*.jpg (new, 35),
+client/src/lib/seo.ts, client/index.html, client/public/{robots.txt, llms.txt},
+server/routes.ts, server/lib/{lifecycle,dunning,verification}.ts,
+scripts/prerender.mjs, vercel.json, api/{index,cron/sweep}.js (rebuilt).
+
+**Tests run + results.** `npm run check` (tsc) clean. `npx vitest run` 305/305
+green (25 files). Update-script dry-run validated 35/35 (words 1801-2058, zero
+dashes/curly-quotes/banned-phrases). Local `vite build && npm run prerender`
+baked 42/42 routes; verified /journal/what-is-coliving-atlanta/index.html has
+the new long-form body, canonical + og:image on www.beniceproperties.com, and
+BlogPosting JSON-LD with the cover image. Live API (custom domain) confirmed
+the updated post (1895 words, cover_url set) before deploy.
+
+**Decisions.** Rewrote in place (UPDATE-by-slug), keeping each post's id, slug,
+title, published state, and staggered publish dates from the v1 seed. Cover
+images are AI-generated editorial stock (no text, no faces) rather than photos
+of actual BNP properties; swap for real property photos via UO when available.
+Canonical host is the www subdomain (matches how Vercel currently serves;
+apex 308s to www).
+
+**Deferred.** (1) Confirm the deploy's build log shows 42/42 prerendered on
+Vercel and that www.beniceproperties.com serves the new content + covers and
+301s the vercel.app host. (2) Submit the sitemap in Google Search Console under
+the www.beniceproperties.com property. (3) Cover images are ~300 KB JPEGs; fine
+for now, could convert to WebP later. (4) FAQPage schema on /str + home is still
+the next AEO lever.
+
+JOURNAL-V2-LONGFORM + CANONICAL-DOMAIN: COMPLETE — tests green
