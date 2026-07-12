@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { track } from "@/lib/analytics";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -48,6 +49,12 @@ export function LtrInquiryForm({ propertyId, propertyName, className }: Props) {
         message: message.trim() || undefined,
       });
       return res.json();
+    },
+    onSuccess: () => {
+      track("ltr_inquiry_submitted", {
+        has_property: Boolean(propertyId),
+        has_move_in: moveIn.trim().length > 0,
+      });
     },
   });
 

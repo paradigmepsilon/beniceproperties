@@ -1,6 +1,11 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
+import { initAnalytics } from "./lib/analytics";
+
+// Initialize client-side PostHog before the app renders. No-ops if the key is
+// unset or during the build-time prerender pass.
+initAnalytics();
 
 // Register the PWA service worker in production only. In dev, an active SW
 // serves a stale precached HTML/JS shell in front of Vite, which forces a

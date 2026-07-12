@@ -16,6 +16,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
+import { track } from "@/lib/analytics";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -32,6 +33,9 @@ export function NewsletterSignup({ centered = false }: { centered?: boolean } = 
         ...(name.trim() ? { name: name.trim() } : {}),
       });
       return res.json();
+    },
+    onSuccess: () => {
+      track("newsletter_signup", { has_name: name.trim().length > 0 });
     },
   });
 

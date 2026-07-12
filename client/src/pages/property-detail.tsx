@@ -23,6 +23,7 @@ import { cityOf, fromNightly, money } from "@/lib/format";
 import { usePropertyAvailability } from "@/hooks/use-availability";
 import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
 import { useSeo, SITE_URL, DEFAULT_OG_IMAGE } from "@/lib/seo";
+import { track } from "@/lib/analytics";
 
 interface DetailResponse {
   property: Property;
@@ -143,6 +144,11 @@ export default function PropertyDetail() {
     rangeHitsBusy(checkIn, checkOut, busy, true);
 
   function continueToCheckout() {
+    track("booking_started", {
+      product_type: "STR_WHOLE",
+      entity: property.entity,
+      flow: "checkout",
+    });
     const params = new URLSearchParams({ propertyId: property.id, checkIn, checkOut });
     navigate(`/checkout?${params.toString()}`);
   }

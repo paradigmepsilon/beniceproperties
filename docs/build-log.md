@@ -2274,3 +2274,57 @@ flag check to the prerender/SSR path. No admin UI yet to view LTR inquiry leads
 (separate pre-existing follow-up).
 
 PAGE-VISIBILITY: COMPLETE — tests green
+
+## 2026-07-12 — CLIENT-POSTHOG: client-side PostHog (pageviews + conversions + replay)
+
+**What was built.** Front-end analytics for the public BNP site via `posthog-js`.
+Server-side capture (`posthog-node`) already existed; this adds the missing client
+half: automatic SPA pageviews, four named conversion events, and session replay
+(input-masked). Client + server share the same `phc_` project key, so all events
+land in the SAME PostHog project (verified against the account's several projects).
+
+**How it works.** `client/src/lib/analytics.ts` initializes PostHog once on boot
+from `VITE_POSTHOG_KEY` / `VITE_POSTHOG_HOST`. It no-ops when the key is unset
+(dev/preview never error) and during the build-time prerender pass (headless UA
+guard) so the static-render browser is not counted as a visitor. `capture_pageview`
+is off in the SDK; instead an `AnalyticsPageviews` component fires `$pageview` on
+every Wouter location change (an SPA has no full page loads to hook). Session replay
+is requested with `maskAllInputs: true` but only records once "Session Replay" is
+toggled ON in the BNP project settings (project `/decide` currently returns
+`sessionRecording: false`).
+
+**Conversion events.** `booking_started` (STR whole-property, short co-living, and
+co-living lease entry points, tagged product_type/entity/flow), `ltr_inquiry_submitted`,
+`partner_inquiry_submitted`, `newsletter_signup`. All fire in the mutation
+`onSuccess` (or navigate handler) with category-level props only — no raw
+names/emails/phones.
+
+**Files touched.**
+- `client/src/lib/analytics.ts` — new: init + capturePageview + track + guards.
+- `client/src/main.tsx` — `initAnalytics()` before render.
+- `client/src/App.tsx` — `AnalyticsPageviews` route-change pageview component.
+- `client/src/pages/property-detail.tsx` — booking_started (STR checkout).
+- `client/src/pages/room-detail.tsx` — booking_started (co-living checkout + lease).
+- `client/src/components/{partner-inquiry-form,ltr-inquiry-form,newsletter-signup}.tsx`
+  — conversion event on submit success.
+- `.env` — `VITE_POSTHOG_KEY` / `VITE_POSTHOG_HOST` (same project key as server).
+- `.env.example` — server + client PostHog keys documented (keys only).
+- `package.json` — `posthog-js` dependency.
+
+**Tests run + results.** `npm run check` (tsc) clean. Live browser smoke test
+(non-headless Chrome via Playwright, port 3009): on `/partner` load a `$pageview`
+POST to `us.i.posthog.com/e/` returned 200; submitting the partner form drove
+`/api/partner-inquiries` → 200 AND a `partner_inquiry_submitted` POST to
+`us.i.posthog.com/i/v0/e/` → 200. No console errors.
+
+**Decisions (confirmed with Alex).** Pageviews + key conversions (not full
+autocapture). Session replay ON with input masking. Capture on load (no consent
+gate — BNP has no EU cookie-banner requirement today). Reuse the server's proven
+project key on the client to guarantee same-project landing.
+
+**Deferred / manual step.** Session Replay must be toggled ON in the BNP PostHog
+project settings for recordings to actually happen — dashboard step, Alex's to do.
+The pre-existing uncommitted `client/src/pages/partner.tsx` change (form swap from
+an earlier session) is unrelated to this work.
+
+CLIENT-POSTHOG: COMPLETE — tests green

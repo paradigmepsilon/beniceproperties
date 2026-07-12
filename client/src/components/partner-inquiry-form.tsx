@@ -26,6 +26,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { track } from "@/lib/analytics";
 import {
   Dialog,
   DialogContent,
@@ -96,7 +97,13 @@ export function PartnerInquiryForm({ className }: Props) {
       });
       return res.json();
     },
-    onSuccess: () => setShowConfirm(true),
+    onSuccess: () => {
+      track("partner_inquiry_submitted", {
+        has_company: company.trim().length > 0,
+        interest_count: interest.length,
+      });
+      setShowConfirm(true);
+    },
   });
 
   const canSubmit =

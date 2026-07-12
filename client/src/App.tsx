@@ -2,11 +2,13 @@
 // Wouter router root + providers. Mirrors the TRAD app's structure. Routes are
 // added per-phase; Phase 1 ships Home + a 404 catch-all.
 
-import { Switch, Route } from "wouter";
+import { useEffect } from "react";
+import { Switch, Route, useLocation } from "wouter";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { Toaster } from "@/components/ui/toaster";
 import { ScrollToTop } from "@/components/scroll-to-top";
+import { capturePageview } from "@/lib/analytics";
 import Home from "@/pages/home";
 import Str from "@/pages/str";
 import Ltr from "@/pages/ltr";
@@ -114,10 +116,22 @@ function Router() {
   );
 }
 
+// Fires a PostHog $pageview whenever the SPA route changes. A single-page app
+// has no full page loads for PostHog to hook, so we drive pageviews off Wouter's
+// location. No-ops until analytics is initialized (key present, not prerender).
+function AnalyticsPageviews() {
+  const [location] = useLocation();
+  useEffect(() => {
+    capturePageview(location);
+  }, [location]);
+  return null;
+}
+
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <ScrollToTop />
+      <AnalyticsPageviews />
       <Router />
       <Toaster />
     </QueryClientProvider>

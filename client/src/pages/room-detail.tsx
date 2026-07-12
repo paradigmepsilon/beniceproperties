@@ -25,6 +25,7 @@ import { cityOf, money } from "@/lib/format";
 import { useRoomAvailability } from "@/hooks/use-availability";
 import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
 import { useSeo, SITE_URL, DEFAULT_OG_IMAGE } from "@/lib/seo";
+import { track } from "@/lib/analytics";
 
 interface RoomResponse {
   room: Room;
@@ -183,12 +184,22 @@ export default function RoomDetail() {
   function proceedToCheckout() {
     // Short co-living stay (7–28 nights) → the same direct-booking checkout STR
     // uses. Full stay total paid upfront; /checkout collects identity + method.
+    track("booking_started", {
+      product_type: "COLIVING_ROOM",
+      entity: property?.entity,
+      flow: "checkout",
+    });
     const qs = new URLSearchParams({ propertyId: room!.propertyId, roomId: room!.id, checkIn: startDate, checkOut: endDate });
     navigate(`/checkout?${qs.toString()}`);
   }
   function proceedToLease() {
     // Lease-length stay (> 28 nights) → the lease flow (cadence + full schedule +
     // signature). Carry the picked term so /lease seeds from it.
+    track("booking_started", {
+      product_type: "COLIVING_ROOM",
+      entity: property?.entity,
+      flow: "lease",
+    });
     const qs = new URLSearchParams({ propertyId: room!.propertyId, roomId: room!.id, checkIn: startDate, checkOut: endDate });
     navigate(`/lease?${qs.toString()}`);
   }
