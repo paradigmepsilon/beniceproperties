@@ -38,6 +38,8 @@ export default function JournalArticle() {
     description: post?.excerpt ?? "Notes from the homes at Be Nice Properties.",
     path: `/journal/${slug ?? ""}`,
     type: "article",
+    // Cover doubles as the social-share image when the post has one.
+    image: post?.cover,
     jsonLd: post
       ? {
           "@context": "https://schema.org",
@@ -46,8 +48,14 @@ export default function JournalArticle() {
           description: post.excerpt,
           datePublished: post.date,
           url: `${SITE_URL}/journal/${post.slug}`,
+          mainEntityOfPage: `${SITE_URL}/journal/${post.slug}`,
+          ...(post.cover ? { image: post.cover } : {}),
           author: { "@type": "Organization", name: SITE_NAME },
-          publisher: { "@type": "Organization", name: SITE_NAME },
+          publisher: {
+            "@type": "Organization",
+            name: SITE_NAME,
+            url: SITE_URL,
+          },
         }
       : undefined,
   });

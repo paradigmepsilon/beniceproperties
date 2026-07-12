@@ -114,11 +114,26 @@ export function useSeo(input: SeoInput) {
 export const ORGANIZATION_JSON_LD = {
   "@context": "https://schema.org",
   "@type": "LodgingBusiness",
+  "@id": `${SITE_URL}/#organization`,
   name: SITE_NAME,
   description:
     "Furnished co-living rooms, whole-home short-term rentals, and long-term homes in Atlanta and Antigua. Book direct.",
   url: SITE_URL,
   image: DEFAULT_OG_IMAGE,
-  areaServed: ["Atlanta, GA", "St. John's, Antigua"],
+  logo: DEFAULT_OG_IMAGE,
+  address: {
+    "@type": "PostalAddress",
+    addressLocality: "Douglasville",
+    addressRegion: "GA",
+    addressCountry: "US",
+  },
+  areaServed: ["Atlanta, GA", "Douglasville, GA", "St. John's, Antigua"],
   priceRange: "$$",
+  knowsAbout: [
+    "co-living",
+    "furnished rooms",
+    "short-term rentals",
+    "vacation rentals",
+    "long-term rentals",
+  ],
 };

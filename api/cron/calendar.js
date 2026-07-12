@@ -75,7 +75,10 @@ __export(schema_exports, {
   insertLeaseRoomSchema: () => insertLeaseRoomSchema,
   insertLeaseSchema: () => insertLeaseSchema,
   insertLifecycleEventSchema: () => insertLifecycleEventSchema,
+  insertLtrInquirySchema: () => insertLtrInquirySchema,
+  insertNewsletterSubscriberSchema: () => insertNewsletterSubscriberSchema,
   insertNotificationLogSchema: () => insertNotificationLogSchema,
+  insertPartnerInquirySchema: () => insertPartnerInquirySchema,
   insertPaymentScheduleSchema: () => insertPaymentScheduleSchema,
   insertPaymentSchema: () => insertPaymentSchema,
   insertPropertySchema: () => insertPropertySchema,
@@ -84,13 +87,17 @@ __export(schema_exports, {
   insertUoEscalationSchema: () => insertUoEscalationSchema,
   insertVehicleSchema: () => insertVehicleSchema,
   isDirectCoLivingStay: () => isDirectCoLivingStay,
+  journalPosts: () => journalPosts,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
   leaseRooms: () => leaseRooms,
   leases: () => leases,
   lifecycleEvents: () => lifecycleEvents,
   listingContentSchema: () => listingContentSchema,
+  ltrInquiries: () => ltrInquiries,
+  newsletterSubscribers: () => newsletterSubscribers,
   notificationLog: () => notificationLog,
+  partnerInquiries: () => partnerInquiries,
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
   properties: () => properties,
@@ -115,7 +122,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-var PROPERTY_TYPES = ["STR", "COLIVING"];
+var PROPERTY_TYPES = ["STR", "COLIVING", "LTR"];
 var ROOM_STATUSES = ["AVAILABLE", "OCCUPIED", "HOLD"];
 var BOOKING_MODELS = ["STR", "COLIVING"];
 var BOOKING_STATUSES = [
@@ -281,7 +288,8 @@ var properties = pgTable("properties", {
   // Free-text location label, e.g. "Atlanta" | "Antigua". Kept as text (not an
   // enum) so new markets don't require a migration.
   location: text("location").notNull(),
-  // "STR" (book the whole place) | "COLIVING" (book a room within it).
+  // "STR" (book the whole place) | "COLIVING" (book a room within it) | "LTR"
+  // (long-term rental — inquiry-only, no online booking; priced off-platform).
   type: text("type").notNull().default("STR"),
   // Owning entity: "TRAD" | "BNP". Sources the Stripe metadata `entity` field.
   // Defaults to BNP; TRAD properties set it explicitly. Additive column.
@@ -311,6 +319,12 @@ var properties = pgTable("properties", {
   // price falls back to dailyRate ?? basePrice for that night. WEEKLY/MONTHLY tiers
   // ignore these (they use the scalar rate). See shared/rateSelection.ts
   // weekdayStayTotal(). STR (whole-property) only — co-living has no nightly path.
+  // LTR pricing (added 2026-07-06, additive nullable). LTR properties are
+  // inquiry-only (never booked/charged online) — these two numbers are the ONLY
+  // prices an LTR listing carries: the recurring monthly payment reuses
+  // monthlyRate above; downPayment is the one-time move-in amount. Managed from
+  // Unified-Ops; ignored by STR/COLIVING billing math entirely.
+  downPayment: decimal("down_payment", { precision: 10, scale: 2 }),
   monPrice: decimal("mon_price", { precision: 10, scale: 2 }),
   tuePrice: decimal("tue_price", { precision: 10, scale: 2 }),
   wedPrice: decimal("wed_price", { precision: 10, scale: 2 }),
@@ -366,6 +380,11 @@ var rooms = pgTable(
     photos: jsonb("photos").$type().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
     depositAmount: decimal("deposit_amount", { precision: 10, scale: 2 }).notNull(),
+    // Per-room cleaning fee (added 2026-07-04). Mirrors properties.cleaningFee for
+    // STR: a one-time fee collected at booking. On a short stay it folds into the
+    // upfront charge via calculateBreakdown; on a lease it is charged as its own
+    // CLEANING_FEE PaymentIntent at move-in (non-refundable). Nullable, "0" default.
+    cleaningFee: decimal("cleaning_fee", { precision: 10, scale: 2 }).default("0"),
     // Day/month rates (added 2026-06-27). weekly_rent is the weekly value used by
     // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
     // next shorter tier. See shared/rateSelection.ts.
@@ -550,6 +569,50 @@ var adminUsers = pgTable("admin_users", {
 var insertAdminUserSchema = createInsertSchema(adminUsers, {
   email: z.string().email()
 }).omit({ id: true, createdAt: true, updatedAt: true });
+var newsletterSubscribers = pgTable("newsletter_subscribers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull().unique(),
+  name: text("name"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
+var insertNewsletterSubscriberSchema = createInsertSchema(newsletterSubscribers, {
+  email: z.string().email()
+}).omit({ id: true, createdAt: true });
+var ltrInquiries = pgTable("ltr_inquiries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // The LTR property this inquiry is about. Nullable: a general "contact us about
+  // long-term options" inquiry (e.g. from the /ltr index) carries no property.
+  propertyId: text("property_id"),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  phone: text("phone"),
+  // Desired move-in, free text (e.g. "Sept 1" / "flexible") — not a date column,
+  // since inquiries are casual and we don't parse/validate it.
+  moveIn: text("move_in"),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
+var insertLtrInquirySchema = createInsertSchema(ltrInquiries, {
+  email: z.string().email(),
+  name: z.string().min(1)
+}).omit({ id: true, createdAt: true });
+var partnerInquiries = pgTable("partner_inquiries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  phone: text("phone"),
+  company: text("company"),
+  // Which offerings the partner is interested in (INVEST | MANAGE | DESIGN |
+  // EVENTS | COMMUNITY | OTHER). Multi-select → array; empty when none picked.
+  interest: text("interest").array().notNull().default(sql`ARRAY[]::text[]`),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
+var insertPartnerInquirySchema = createInsertSchema(partnerInquiries, {
+  email: z.string().email(),
+  name: z.string().min(1),
+  interest: z.array(z.string()).optional()
+}).omit({ id: true, createdAt: true });
 var leases = pgTable(
   "leases",
   {
@@ -589,6 +652,16 @@ var leases = pgTable(
     depositStatus: text("deposit_status").notNull().default("PENDING"),
     depositStripePaymentIntentId: text("deposit_stripe_payment_intent_id"),
     depositPaidAt: timestamp("deposit_paid_at"),
+    // --- One-time cleaning fee (added 2026-07-04). Snapshotted at lease creation
+    // from the included room(s) (sum of rooms.cleaningFee) so a later re-price never
+    // changes a signed lease. Unlike the deposit it is NOT refundable — it is a real
+    // cost, charged as its own CLEANING_FEE PaymentIntent at move-in alongside the
+    // deposit, and never counted as rent. "0" default; charge skipped when 0. ---
+    cleaningFeeSnapshot: decimal("cleaning_fee_snapshot", { precision: 10, scale: 2 }).default("0"),
+    // "PENDING" | "PAID" | "WAIVED" (no REFUNDED — the fee is non-refundable).
+    cleaningFeeStatus: text("cleaning_fee_status").notNull().default("PENDING"),
+    cleaningFeeStripePaymentIntentId: text("cleaning_fee_stripe_payment_intent_id"),
+    cleaningFeePaidAt: timestamp("cleaning_fee_paid_at"),
     // --- Tenant identity verification (driver's license review). The tenant
     // uploads a license from the portal; an admin reviews it against signedName
     // and APPROVES to activate the lease. The license image lives in R2 (private);
@@ -906,6 +979,26 @@ var insertHeroImageSchema = createInsertSchema(heroImages).omit({
   createdAt: true,
   updatedAt: true
 });
+var journalPosts = pgTable(
+  "journal_posts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    slug: text("slug").notNull().unique(),
+    title: text("title").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // Public R2 URL; null → the site's branded gradient fallback.
+    coverUrl: text("cover_url"),
+    blocks: jsonb("blocks").$type().notNull().default(sql`'[]'::jsonb`),
+    published: boolean("published").notNull().default(false),
+    // Stamped on first publish; used as the display date.
+    publishedAt: timestamp("published_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    publishedIdx: index("journal_posts_published_idx").on(table.published, table.publishedAt)
+  })
+);
 var externalBookings = pgTable(
   "external_bookings",
   {
@@ -997,6 +1090,14 @@ var Storage = class {
   async getActiveHeroImages() {
     return db.select().from(heroImages).where(eq(heroImages.isActive, true)).orderBy(asc(heroImages.displayOrder), asc(heroImages.createdAt));
   }
+  // --- Journal (authored in Unified Ops; site reads published posts only) ---
+  async getPublishedJournalPosts() {
+    return db.select().from(journalPosts).where(eq(journalPosts.published, true)).orderBy(desc(journalPosts.publishedAt), desc(journalPosts.createdAt));
+  }
+  async getPublishedJournalPostBySlug(slug) {
+    const [row] = await db.select().from(journalPosts).where(and(eq(journalPosts.slug, slug), eq(journalPosts.published, true))).limit(1);
+    return row;
+  }
   // --- Properties ---
   async getProperties(opts) {
     if (opts?.activeOnly) {
@@ -1048,6 +1149,29 @@ var Storage = class {
       return row2;
     }
     const [row] = await db.insert(guests).values(data).returning();
+    return row;
+  }
+  // Idempotent by email: a repeat signup returns the existing row unchanged
+  // (no disclosure of prior membership at the API layer). Mirrors the
+  // read-then-insert convention used for guests; the DB unique constraint is the
+  // safety net. Write-once — nothing to update, so an existing row is returned
+  // as-is.
+  async upsertNewsletterSubscriber(data) {
+    const [existing] = await db.select().from(newsletterSubscribers).where(eq(newsletterSubscribers.email, data.email));
+    if (existing) return existing;
+    const [row] = await db.insert(newsletterSubscribers).values(data).returning();
+    return row;
+  }
+  // Append-only lead capture — a person may inquire more than once, so this is a
+  // plain insert (no dedupe/upsert, unlike the newsletter list above).
+  async createLtrInquiry(data) {
+    const [row] = await db.insert(ltrInquiries).values(data).returning();
+    return row;
+  }
+  // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
+  // person may inquire more than once, so this is a plain insert (no dedupe).
+  async createPartnerInquiry(data) {
+    const [row] = await db.insert(partnerInquiries).values(data).returning();
     return row;
   }
   // --- Bookings ---

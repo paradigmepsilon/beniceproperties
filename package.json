@@ -68,6 +68,7 @@
     "zod-validation-error": "^3.4.0"
   },
   "devDependencies": {
+    "@sparticuz/chromium": "^149.0.0",
     "@tailwindcss/typography": "^0.5.15",
     "@types/compression": "^1.8.1",
     "@types/connect-pg-simple": "^7.0.3",

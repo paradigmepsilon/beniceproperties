@@ -90,7 +90,10 @@ __export(schema_exports, {
   insertLeaseRoomSchema: () => insertLeaseRoomSchema,
   insertLeaseSchema: () => insertLeaseSchema,
   insertLifecycleEventSchema: () => insertLifecycleEventSchema,
+  insertLtrInquirySchema: () => insertLtrInquirySchema,
+  insertNewsletterSubscriberSchema: () => insertNewsletterSubscriberSchema,
   insertNotificationLogSchema: () => insertNotificationLogSchema,
+  insertPartnerInquirySchema: () => insertPartnerInquirySchema,
   insertPaymentScheduleSchema: () => insertPaymentScheduleSchema,
   insertPaymentSchema: () => insertPaymentSchema,
   insertPropertySchema: () => insertPropertySchema,
@@ -99,13 +102,17 @@ __export(schema_exports, {
   insertUoEscalationSchema: () => insertUoEscalationSchema,
   insertVehicleSchema: () => insertVehicleSchema,
   isDirectCoLivingStay: () => isDirectCoLivingStay,
+  journalPosts: () => journalPosts,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
   leaseRooms: () => leaseRooms,
   leases: () => leases,
   lifecycleEvents: () => lifecycleEvents,
   listingContentSchema: () => listingContentSchema,
+  ltrInquiries: () => ltrInquiries,
+  newsletterSubscribers: () => newsletterSubscribers,
   notificationLog: () => notificationLog,
+  partnerInquiries: () => partnerInquiries,
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
   properties: () => properties,
@@ -130,7 +137,7 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
-var PROPERTY_TYPES = ["STR", "COLIVING"];
+var PROPERTY_TYPES = ["STR", "COLIVING", "LTR"];
 var ROOM_STATUSES = ["AVAILABLE", "OCCUPIED", "HOLD"];
 var BOOKING_MODELS = ["STR", "COLIVING"];
 var BOOKING_STATUSES = [
@@ -296,7 +303,8 @@ var properties = pgTable("properties", {
   // Free-text location label, e.g. "Atlanta" | "Antigua". Kept as text (not an
   // enum) so new markets don't require a migration.
   location: text("location").notNull(),
-  // "STR" (book the whole place) | "COLIVING" (book a room within it).
+  // "STR" (book the whole place) | "COLIVING" (book a room within it) | "LTR"
+  // (long-term rental — inquiry-only, no online booking; priced off-platform).
   type: text("type").notNull().default("STR"),
   // Owning entity: "TRAD" | "BNP". Sources the Stripe metadata `entity` field.
   // Defaults to BNP; TRAD properties set it explicitly. Additive column.
@@ -326,6 +334,12 @@ var properties = pgTable("properties", {
   // price falls back to dailyRate ?? basePrice for that night. WEEKLY/MONTHLY tiers
   // ignore these (they use the scalar rate). See shared/rateSelection.ts
   // weekdayStayTotal(). STR (whole-property) only — co-living has no nightly path.
+  // LTR pricing (added 2026-07-06, additive nullable). LTR properties are
+  // inquiry-only (never booked/charged online) — these two numbers are the ONLY
+  // prices an LTR listing carries: the recurring monthly payment reuses
+  // monthlyRate above; downPayment is the one-time move-in amount. Managed from
+  // Unified-Ops; ignored by STR/COLIVING billing math entirely.
+  downPayment: decimal("down_payment", { precision: 10, scale: 2 }),
   monPrice: decimal("mon_price", { precision: 10, scale: 2 }),
   tuePrice: decimal("tue_price", { precision: 10, scale: 2 }),
   wedPrice: decimal("wed_price", { precision: 10, scale: 2 }),
@@ -381,6 +395,11 @@ var rooms = pgTable(
     photos: jsonb("photos").$type().default(sql`'[]'::jsonb`),
     weeklyRent: decimal("weekly_rent", { precision: 10, scale: 2 }).notNull(),
     depositAmount: decimal("deposit_amount", { precision: 10, scale: 2 }).notNull(),
+    // Per-room cleaning fee (added 2026-07-04). Mirrors properties.cleaningFee for
+    // STR: a one-time fee collected at booking. On a short stay it folds into the
+    // upfront charge via calculateBreakdown; on a lease it is charged as its own
+    // CLEANING_FEE PaymentIntent at move-in (non-refundable). Nullable, "0" default.
+    cleaningFee: decimal("cleaning_fee", { precision: 10, scale: 2 }).default("0"),
     // Day/month rates (added 2026-06-27). weekly_rent is the weekly value used by
     // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
     // next shorter tier. See shared/rateSelection.ts.
@@ -565,6 +584,50 @@ var adminUsers = pgTable("admin_users", {
 var insertAdminUserSchema = createInsertSchema(adminUsers, {
   email: z.string().email()
 }).omit({ id: true, createdAt: true, updatedAt: true });
+var newsletterSubscribers = pgTable("newsletter_subscribers", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  email: text("email").notNull().unique(),
+  name: text("name"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
+var insertNewsletterSubscriberSchema = createInsertSchema(newsletterSubscribers, {
+  email: z.string().email()
+}).omit({ id: true, createdAt: true });
+var ltrInquiries = pgTable("ltr_inquiries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // The LTR property this inquiry is about. Nullable: a general "contact us about
+  // long-term options" inquiry (e.g. from the /ltr index) carries no property.
+  propertyId: text("property_id"),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  phone: text("phone"),
+  // Desired move-in, free text (e.g. "Sept 1" / "flexible") — not a date column,
+  // since inquiries are casual and we don't parse/validate it.
+  moveIn: text("move_in"),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
+var insertLtrInquirySchema = createInsertSchema(ltrInquiries, {
+  email: z.string().email(),
+  name: z.string().min(1)
+}).omit({ id: true, createdAt: true });
+var partnerInquiries = pgTable("partner_inquiries", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  phone: text("phone"),
+  company: text("company"),
+  // Which offerings the partner is interested in (INVEST | MANAGE | DESIGN |
+  // EVENTS | COMMUNITY | OTHER). Multi-select → array; empty when none picked.
+  interest: text("interest").array().notNull().default(sql`ARRAY[]::text[]`),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
+var insertPartnerInquirySchema = createInsertSchema(partnerInquiries, {
+  email: z.string().email(),
+  name: z.string().min(1),
+  interest: z.array(z.string()).optional()
+}).omit({ id: true, createdAt: true });
 var leases = pgTable(
   "leases",
   {
@@ -604,6 +667,16 @@ var leases = pgTable(
     depositStatus: text("deposit_status").notNull().default("PENDING"),
     depositStripePaymentIntentId: text("deposit_stripe_payment_intent_id"),
     depositPaidAt: timestamp("deposit_paid_at"),
+    // --- One-time cleaning fee (added 2026-07-04). Snapshotted at lease creation
+    // from the included room(s) (sum of rooms.cleaningFee) so a later re-price never
+    // changes a signed lease. Unlike the deposit it is NOT refundable — it is a real
+    // cost, charged as its own CLEANING_FEE PaymentIntent at move-in alongside the
+    // deposit, and never counted as rent. "0" default; charge skipped when 0. ---
+    cleaningFeeSnapshot: decimal("cleaning_fee_snapshot", { precision: 10, scale: 2 }).default("0"),
+    // "PENDING" | "PAID" | "WAIVED" (no REFUNDED — the fee is non-refundable).
+    cleaningFeeStatus: text("cleaning_fee_status").notNull().default("PENDING"),
+    cleaningFeeStripePaymentIntentId: text("cleaning_fee_stripe_payment_intent_id"),
+    cleaningFeePaidAt: timestamp("cleaning_fee_paid_at"),
     // --- Tenant identity verification (driver's license review). The tenant
     // uploads a license from the portal; an admin reviews it against signedName
     // and APPROVES to activate the lease. The license image lives in R2 (private);
@@ -921,6 +994,26 @@ var insertHeroImageSchema = createInsertSchema(heroImages).omit({
   createdAt: true,
   updatedAt: true
 });
+var journalPosts = pgTable(
+  "journal_posts",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    slug: text("slug").notNull().unique(),
+    title: text("title").notNull(),
+    excerpt: text("excerpt").notNull(),
+    // Public R2 URL; null → the site's branded gradient fallback.
+    coverUrl: text("cover_url"),
+    blocks: jsonb("blocks").$type().notNull().default(sql`'[]'::jsonb`),
+    published: boolean("published").notNull().default(false),
+    // Stamped on first publish; used as the display date.
+    publishedAt: timestamp("published_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull()
+  },
+  (table) => ({
+    publishedIdx: index("journal_posts_published_idx").on(table.published, table.publishedAt)
+  })
+);
 var externalBookings = pgTable(
   "external_bookings",
   {
@@ -1072,6 +1165,14 @@ var Storage = class {
   async getActiveHeroImages() {
     return db.select().from(heroImages).where(eq(heroImages.isActive, true)).orderBy(asc(heroImages.displayOrder), asc(heroImages.createdAt));
   }
+  // --- Journal (authored in Unified Ops; site reads published posts only) ---
+  async getPublishedJournalPosts() {
+    return db.select().from(journalPosts).where(eq(journalPosts.published, true)).orderBy(desc(journalPosts.publishedAt), desc(journalPosts.createdAt));
+  }
+  async getPublishedJournalPostBySlug(slug) {
+    const [row] = await db.select().from(journalPosts).where(and(eq(journalPosts.slug, slug), eq(journalPosts.published, true))).limit(1);
+    return row;
+  }
   // --- Properties ---
   async getProperties(opts) {
     if (opts?.activeOnly) {
@@ -1123,6 +1224,29 @@ var Storage = class {
       return row2;
     }
     const [row] = await db.insert(guests).values(data).returning();
+    return row;
+  }
+  // Idempotent by email: a repeat signup returns the existing row unchanged
+  // (no disclosure of prior membership at the API layer). Mirrors the
+  // read-then-insert convention used for guests; the DB unique constraint is the
+  // safety net. Write-once — nothing to update, so an existing row is returned
+  // as-is.
+  async upsertNewsletterSubscriber(data) {
+    const [existing] = await db.select().from(newsletterSubscribers).where(eq(newsletterSubscribers.email, data.email));
+    if (existing) return existing;
+    const [row] = await db.insert(newsletterSubscribers).values(data).returning();
+    return row;
+  }
+  // Append-only lead capture — a person may inquire more than once, so this is a
+  // plain insert (no dedupe/upsert, unlike the newsletter list above).
+  async createLtrInquiry(data) {
+    const [row] = await db.insert(ltrInquiries).values(data).returning();
+    return row;
+  }
+  // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
+  // person may inquire more than once, so this is a plain insert (no dedupe).
+  async createPartnerInquiry(data) {
+    const [row] = await db.insert(partnerInquiries).values(data).returning();
     return row;
   }
   // --- Bookings ---
@@ -1720,6 +1844,19 @@ var createBookingSchema = z2.object({
 }).refine((d) => d.roomId || d.checkIn && d.checkOut, {
   message: "STR bookings need checkIn+checkOut; co-living needs a roomId"
 });
+var bookingIntentSchema = z2.object({
+  propertyId: z2.string().min(1),
+  roomId: z2.string().optional(),
+  checkIn: z2.string().optional(),
+  checkOut: z2.string().optional(),
+  guest: z2.object({
+    name: z2.string().optional(),
+    email: z2.string().optional(),
+    phone: z2.string().optional()
+  }).optional()
+}).refine((d) => d.roomId || d.checkIn && d.checkOut, {
+  message: "STR bookings need checkIn+checkOut; co-living needs a roomId"
+});
 var leaseQuoteRequestSchema = z2.object({
   propertyId: z2.string().min(1),
   // One or more rooms in the same property (co-living can rent multiple rooms).
@@ -2010,7 +2147,8 @@ async function resolveBooking(input) {
       checkIn: input.checkIn,
       checkOut: input.checkOut,
       baseAmount: priced.baseAmount,
-      cleaningFee: 0,
+      // Per-room cleaning fee, folded into the upfront charge like STR. 0 if unset.
+      cleaningFee: room.cleaningFee ? parseFloat(room.cleaningFee) : 0,
       nights: n2,
       shortStay: {
         weeks: priced.weeks,
@@ -2064,7 +2202,11 @@ function buildQuote(resolved, paymentMethod) {
       dueNow: { lines: lines2, subtotal: b2.subtotal, tax: b2.tax, surcharge: b2.surcharge, total: b2.total }
     };
   }
-  const b = calculateBreakdown({ baseAmount: resolved.baseAmount, paymentMethod });
+  const b = calculateBreakdown({
+    baseAmount: resolved.baseAmount,
+    cleaningFee: resolved.cleaningFee,
+    paymentMethod
+  });
   const ss = resolved.shortStay;
   const lines = [];
   if (ss) {
@@ -2083,6 +2225,7 @@ function buildQuote(resolved, paymentMethod) {
   } else {
     lines.push({ label: `Stay (${resolved.nights} nights)`, amount: resolved.baseAmount });
   }
+  if (resolved.cleaningFee > 0) lines.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
   if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
   return {
     model: "COLIVING",
@@ -2161,6 +2304,7 @@ async function buildLeaseQuote(input) {
   const dailyTotal = sumRate(rooms2, (r) => r.dailyRate);
   const monthlyTotal = sumRate(rooms2, (r) => r.monthlyRate);
   const depositTotal = sumRate(rooms2, (r) => r.depositAmount) ?? 0;
+  const cleaningFeeTotal = sumRate(rooms2, (r) => r.cleaningFee) ?? 0;
   let chosen;
   try {
     chosen = chooseRate({
@@ -2217,6 +2361,7 @@ async function buildLeaseQuote(input) {
     allowedCadences: allowed,
     weeklyRateTotal,
     depositTotal,
+    cleaningFeeTotal,
     termDays: generated.totalDays,
     schedule,
     totalLeaseValue: generated.totalLeaseValue,
@@ -2248,9 +2393,11 @@ async function buildRoomAvailability(roomId) {
   const today = todayIso();
   const leases2 = await storage.getRoomBlockingLeasesForRoom(roomId);
   const leaseRanges = leases2.filter((l) => l.endDate >= today).map((l) => ({ start: l.startDate, end: exclusiveEnd(l.endDate), source: "direct" }));
+  const bookings2 = await storage.getColivingBookingsForRoom(roomId);
+  const bookingRanges = bookings2.filter((b) => b.checkOut && b.checkOut >= today).map((b) => ({ start: b.checkIn, end: b.checkOut, source: "direct" }));
   const blocks = await storage.getExternalBlocksForRoom(roomId);
   const externalRanges = blocks.filter((b) => b.endDate >= today).map((b) => ({ start: b.startDate, end: b.endDate, source: "external" }));
-  return { busy: sortByStart([...leaseRanges, ...externalRanges]), minDate: today };
+  return { busy: sortByStart([...leaseRanges, ...bookingRanges, ...externalRanges]), minDate: today };
 }
 
 // server/lib/nextOpening.ts
@@ -2328,6 +2475,35 @@ function buildStrChargeMetadata(args) {
     rate_cadence: str(args.rateCadence ?? null)
   };
 }
+function buildShortStayIntentMetadata(args) {
+  const base = args.model === "COLIVING" && args.room ? buildRoomBookingChargeMetadata({
+    entity: args.entity,
+    property: args.property,
+    room: args.room,
+    paymentKind: "BOOKING_DEPOSIT",
+    rateCadence: args.rateCadence ?? "WEEKLY"
+  }) : buildStrChargeMetadata({
+    entity: args.entity,
+    property: args.property,
+    paymentKind: "BOOKING_DEPOSIT",
+    rateCadence: args.rateCadence ?? null
+  });
+  return {
+    ...base,
+    // Booking-rebuild fields (read back by the webhook). property_id/room_id/
+    // reference already live in `base` / are added at PI-create time.
+    model: args.model,
+    check_in: str(args.checkIn),
+    check_out: str(args.checkOut),
+    reference: str(args.reference),
+    quoted_total: str(args.quotedTotal),
+    amount: str(args.amount),
+    surcharge: str(args.surcharge),
+    guest_name: str(args.guest?.name),
+    guest_email: str(args.guest?.email),
+    guest_phone: str(args.guest?.phone)
+  };
+}
 var REQUIRED_METADATA_KEYS = [
   "entity",
   "product_type",
@@ -2374,19 +2550,23 @@ var DEFAULT_LEASE_TEMPLATE = {
     },
     {
       heading: "3. Rent & Payment Schedule",
-      body: "Rent is billed on a {{cadenceLabel}} basis at a combined rate of {{weeklyRateLabel}} per week across all rented room(s). The first payment is due on the start date. The complete schedule of payments and amounts appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}"
+      body: "Rent is billed on a {{cadenceLabel}} basis at a combined rate of {{weeklyRateLabel}} per week across all rented room(s). The first payment is due on the start date (move-in) and includes the one-time cleaning fee described below. The complete schedule of payments and amounts appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}"
     },
     {
-      heading: "4. Late Fees",
+      heading: "4. Move-in Charges (Deposit & Cleaning Fee)",
+      body: "At move-in the Resident pays a refundable security deposit of {{depositTotal}}, which secures the room(s) and is returned at the end of the term less any deductions permitted by law.{{cleaningFeeClause}} These move-in charges are separate from rent and from the payment schedule below."
+    },
+    {
+      heading: "5. Late Fees",
       body: "If a scheduled payment is not received by its due date, a late fee of {{lateFeePerDay}} per day accrues beginning the day after the due date and continues to accrue daily until the balance is paid. Accrued late fees are billed as a separate charge from rent."
     },
     {
-      heading: "5. House Rules",
+      heading: "6. House Rules",
       body: "The Resident agrees to: keep shared spaces clean; respect quiet hours and other residents; not sublet or assign the room; not engage in illegal activity on the premises; and follow any posted property-specific house rules. Repeated or serious violations may result in termination of this Agreement."
     },
     {
-      heading: "6. Payment Authorization",
-      body: "The Resident authorizes Be Nice Properties to charge the saved payment method on file for each scheduled payment and for any accrued late fees, on or after each due date."
+      heading: "7. Payment Authorization",
+      body: "A payment method is kept on file for the term of this lease. The Resident may pay each scheduled payment either by that card (subject to a 3.5% processing fee) or manually by CashApp/Zelle (no processing fee); a manual payment is held pending until confirmed. The Resident authorizes Be Nice Properties to charge the saved payment method on file for any scheduled payment not elected as manual, and for any accrued late fees, on or after each due date."
     }
   ],
   signatureStatement: "By typing my full legal name below and submitting this Agreement, I acknowledge that I have read and agree to its terms, and I intend my typed name to be my legally binding electronic signature under the U.S. E-SIGN Act and UETA."
@@ -2414,6 +2594,9 @@ function tokenMap(data) {
     cadenceLabel: CADENCE_LABEL[data.cadence],
     weeklyRateLabel: fmtMoney(data.weeklyRateTotal),
     totalLeaseValue: fmtMoney(data.totalLeaseValue),
+    depositTotal: fmtMoney(data.depositTotal),
+    // Only state a cleaning fee when one applies; it is non-refundable.
+    cleaningFeeClause: data.cleaningFeeTotal > 0 ? ` A one-time, non-refundable cleaning fee of ${fmtMoney(data.cleaningFeeTotal)} is also due at move-in.` : "",
     prorationNote: data.prorationNote,
     lateFeePerDay: fmtMoney(LATE_FEE_PER_DAY)
   };
@@ -2473,6 +2656,8 @@ function docDataFrom(leaseId, quote, guest, location) {
     cadence: quote.cadence,
     weeklyRateTotal: quote.weeklyRateTotal,
     totalLeaseValue: quote.totalLeaseValue,
+    depositTotal: quote.depositTotal,
+    cleaningFeeTotal: quote.cleaningFeeTotal,
     prorationNote: quote.prorationNote,
     schedule: quote.schedule.map((s) => ({
       seq: s.seq,
@@ -2526,6 +2711,10 @@ async function createDraftLease(input) {
       // changes a signed lease. This is the amount that secures the room.
       depositAmountSnapshot: String(quote.depositTotal),
       depositStatus: "PENDING",
+      // Freeze the one-time cleaning fee at booking too (non-refundable; charged as
+      // its own PaymentIntent at move-in). "0" when no room carries a fee.
+      cleaningFeeSnapshot: String(quote.cleaningFeeTotal),
+      cleaningFeeStatus: "PENDING",
       status: "PENDING_SIGNATURE",
       portalToken: portalTokenGen()
     },
@@ -2585,6 +2774,8 @@ async function signLease(input) {
     cadence: lease.paymentCadence,
     weeklyRateTotal: parseFloat(lease.weeklyRateSnapshot),
     totalLeaseValue: parseFloat(lease.totalLeaseValue),
+    depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
+    cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
     prorationNote: lease.prorationNote ?? "",
     schedule: schedule.map((s) => ({
       seq: s.scheduleSeq,
@@ -2666,13 +2857,27 @@ async function createOneTimePaymentIntent(opts) {
     {
       amount: toCents(opts.amount),
       currency: "usd",
-      receipt_email: opts.guestEmail,
+      // Only set receipt_email when we actually have one — in the payment-first
+      // flow the intent is created before contact, and Stripe rejects an empty
+      // string. It's set later via updatePaymentIntentContact.
+      ...opts.guestEmail ? { receipt_email: opts.guestEmail } : {},
       automatic_payment_methods: { enabled: true },
       // Carry the booking reference alongside the contract for webhook correlation.
       metadata: { ...opts.metadata, reference: opts.reference }
     },
     { idempotencyKey: opts.idempotencyKey }
   );
+}
+async function updatePaymentIntentContact(opts) {
+  const s = requireStripe();
+  return s.paymentIntents.update(opts.paymentIntentId, {
+    receipt_email: opts.email,
+    metadata: {
+      guest_name: opts.name,
+      guest_email: opts.email,
+      guest_phone: opts.phone && opts.phone !== "" ? opts.phone : "null"
+    }
+  });
 }
 async function chargeSavedCard(opts) {
   const s = requireStripe();
@@ -3252,6 +3457,19 @@ async function activateVerifiedLease(leaseId) {
   const savedPaymentMethodId = lease.stripePaymentMethodId ?? null;
   const schedule = await storage.getScheduleByLease(lease.id);
   const first = schedule.find((s) => s.scheduleSeq === 1);
+  const firstIsManual = first?.paymentMethod === "MANUAL";
+  if (firstIsManual) {
+    log(
+      `lease ${lease.id} first payment is MANUAL \u2014 cleaning fee + first week held for manual settlement (UO Mark Paid)`,
+      "stripe"
+    );
+    return;
+  }
+  if (savedPaymentMethodId) {
+    await chargeCleaningFeeOffSession(lease.id, savedPaymentMethodId).catch((err) => {
+      log(`cleaning-fee charge on activation failed lease ${lease.id}: ${err.message}`, "stripe");
+    });
+  }
   const dueNow = first && first.status !== "PAID" && first.dueDate <= todayYmd();
   if (dueNow && savedPaymentMethodId) {
     await chargeFirstWeekOffSession(lease.id, savedPaymentMethodId).catch((err) => {
@@ -3317,8 +3535,46 @@ async function chargeFirstWeekOffSession(leaseId, paymentMethodId) {
     log(`first-week receipt error lease ${lease.id}: ${err.message}`, "stripe");
   }
 }
+async function chargeCleaningFeeOffSession(leaseId, paymentMethodId) {
+  const { lease, property, rooms: rooms2 } = await loadLeaseContext(leaseId);
+  if (!lease.stripeCustomerId) throw new LeaseError("Lease has no Stripe customer", 500);
+  const fee = parseFloat(lease.cleaningFeeSnapshot ?? "0");
+  if (!(fee > 0)) return;
+  if (lease.cleaningFeeStatus === "PAID") return;
+  const amount = chargeTotalFor(fee);
+  const metadata = buildLeaseChargeMetadata({
+    entity: property.entity,
+    property,
+    lease,
+    rooms: rooms2,
+    paymentKind: "CLEANING_FEE",
+    scheduleSeq: null
+  });
+  const pi = await chargeSavedCard({
+    amount,
+    customerId: lease.stripeCustomerId,
+    paymentMethodId,
+    metadata,
+    idempotencyKey: `lease-cleaning-${lease.id}`
+  });
+  await storage.updateLease(lease.id, { cleaningFeeStripePaymentIntentId: pi.id });
+  log(`lease ${lease.id} cleaning fee charged off-session ${pi.id}`, "stripe");
+}
 function todayYmd() {
   return (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+}
+
+// server/lib/manualPayment.ts
+function manualHandle(method) {
+  return method === "CASHAPP" ? process.env.CASHAPP_TAG ?? "$BeNiceProperties" : process.env.ZELLE_HANDLE ?? "pay@beniceproperties.com";
+}
+function buildManualInstructions(args) {
+  return {
+    method: args.method,
+    handle: manualHandle(args.method),
+    amount: args.amount,
+    memo: args.memo
+  };
 }
 
 // server/lib/portal.ts
@@ -3452,6 +3708,25 @@ async function payInstallmentNow(token, scheduleSeq) {
   } catch {
   }
   return { paid: true, amount, paymentIntentId: pi.id };
+}
+async function electManualInstallment(token, scheduleSeq, method) {
+  const lease = await resolvePortalLease(token);
+  const schedule = await storage.getScheduleByLease(lease.id);
+  const row = schedule.find((s) => s.scheduleSeq === scheduleSeq);
+  if (!row) throw new LeaseError("Installment not found", 404);
+  if (row.status === "PAID") throw new LeaseError("That installment is already paid", 409);
+  if (row.status === "WAIVED") throw new LeaseError("That installment was waived", 409);
+  if (!OPEN_FOR_PAY.has(row.status)) throw new LeaseError("That installment can't be paid now", 409);
+  let amount = parseFloat(row.amount);
+  if (row.scheduleSeq === 1 && lease.cleaningFeeStatus !== "PAID") {
+    amount += parseFloat(lease.cleaningFeeSnapshot ?? "0");
+  }
+  amount = Math.round(amount * 100) / 100;
+  if (row.paymentMethod !== "MANUAL") {
+    await storage.updateScheduleRow(row.id, { paymentMethod: "MANUAL" });
+  }
+  const memo = `LEASE-${lease.id.slice(0, 8).toUpperCase()}-P${row.scheduleSeq}`;
+  return buildManualInstructions({ method, amount, memo });
 }
 async function submitMessage(token, input) {
   const lease = await resolvePortalLease(token);
@@ -3950,6 +4225,13 @@ async function markPaid(args) {
       await storage.updateEscalation(e.id, { status: "RESOLVED", resolvedAt: /* @__PURE__ */ new Date(), resolvedBy: args.actor });
     }
   }
+  if (row.scheduleSeq === 1 && lease.status === "PENDING_VERIFICATION" && lease.verificationStatus === "APPROVED") {
+    try {
+      await activateVerifiedLease(lease.id);
+    } catch (err) {
+      log(`manual seq-1 settle: activation deferred for lease ${lease.id}: ${err.message}`, "uo");
+    }
+  }
   return { alreadyPaid: false, scheduleSeq: row.scheduleSeq };
 }
 async function approveLease(leaseId, actor) {
@@ -4248,12 +4530,156 @@ async function registerRoutes(app) {
       time: (/* @__PURE__ */ new Date()).toISOString()
     });
   });
+  app.get("/api/site-config", async (_req, res, next) => {
+    try {
+      const [ltr, journal] = await Promise.all([
+        storage.getSetting("page_ltr_visible"),
+        storage.getSetting("page_journal_visible")
+      ]);
+      res.json({
+        pages: {
+          ltr: ltr?.value !== "false",
+          journal: journal?.value !== "false"
+        }
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/newsletter", async (req, res, next) => {
+    try {
+      const parsed = insertNewsletterSubscriberSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid email" });
+      }
+      await storage.upsertNewsletterSubscriber(parsed.data);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/ltr-inquiries", async (req, res, next) => {
+    try {
+      const parsed = insertLtrInquirySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid inquiry" });
+      }
+      await storage.createLtrInquiry(parsed.data);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.post("/api/partner-inquiries", async (req, res, next) => {
+    try {
+      const parsed = insertPartnerInquirySchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid inquiry" });
+      }
+      await storage.createPartnerInquiry(parsed.data);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
   app.get("/api/hero-images", async (_req, res, next) => {
     try {
       const imgs = await storage.getActiveHeroImages();
       res.json(
         imgs.map((h) => ({ id: h.id, url: h.s3Url, alt: h.altText ?? "" }))
       );
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/api/journal", async (_req, res, next) => {
+    try {
+      const posts = await storage.getPublishedJournalPosts();
+      res.json(
+        posts.map((p) => ({
+          slug: p.slug,
+          title: p.title,
+          date: (p.publishedAt ?? p.createdAt).toISOString().slice(0, 10),
+          excerpt: p.excerpt,
+          cover: p.coverUrl ?? void 0
+        }))
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/api/journal/:slug", async (req, res, next) => {
+    try {
+      const post = await storage.getPublishedJournalPostBySlug(req.params.slug);
+      if (!post) return res.status(404).json({ message: "Post not found" });
+      res.json({
+        slug: post.slug,
+        title: post.title,
+        date: (post.publishedAt ?? post.createdAt).toISOString().slice(0, 10),
+        excerpt: post.excerpt,
+        cover: post.coverUrl ?? void 0,
+        blocks: post.blocks
+      });
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/sitemap.xml", async (_req, res, next) => {
+    try {
+      const origin = process.env.PUBLIC_BASE_URL || "https://beniceproperties.vercel.app";
+      const [ltrFlag, journalFlag, properties2, posts] = await Promise.all([
+        storage.getSetting("page_ltr_visible"),
+        storage.getSetting("page_journal_visible"),
+        storage.getProperties({ activeOnly: true }),
+        storage.getPublishedJournalPosts()
+      ]);
+      const ltrVisible = ltrFlag?.value !== "false";
+      const journalVisible = journalFlag?.value !== "false";
+      const entries = [
+        { path: "/", changefreq: "weekly", priority: "1.0" },
+        { path: "/str", changefreq: "weekly", priority: "0.9" },
+        ...ltrVisible ? [{ path: "/ltr", changefreq: "weekly", priority: "0.9" }] : [],
+        { path: "/community", changefreq: "monthly", priority: "0.7" },
+        { path: "/about", changefreq: "monthly", priority: "0.6" },
+        { path: "/partner", changefreq: "monthly", priority: "0.7" }
+      ];
+      for (const p of properties2) {
+        if (p.type === "LTR" && !ltrVisible) continue;
+        entries.push({ path: `/property/${p.id}`, changefreq: "weekly", priority: "0.8" });
+        if (p.type === "COLIVING") {
+          const rooms2 = await storage.getRoomsByProperty(p.id);
+          for (const r of rooms2) {
+            entries.push({ path: `/room/${r.id}`, changefreq: "weekly", priority: "0.7" });
+          }
+        }
+      }
+      if (journalVisible) {
+        entries.push({ path: "/journal", changefreq: "weekly", priority: "0.6" });
+        for (const post of posts) {
+          entries.push({
+            path: `/journal/${post.slug}`,
+            lastmod: (post.updatedAt ?? post.publishedAt ?? post.createdAt).toISOString().slice(0, 10),
+            changefreq: "monthly",
+            priority: "0.6"
+          });
+        }
+      }
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+` + entries.map((e) => {
+        const parts = [`    <loc>${origin}${e.path}</loc>`];
+        if (e.lastmod) parts.push(`    <lastmod>${e.lastmod}</lastmod>`);
+        if (e.changefreq) parts.push(`    <changefreq>${e.changefreq}</changefreq>`);
+        if (e.priority) parts.push(`    <priority>${e.priority}</priority>`);
+        return `  <url>
+${parts.join("\n")}
+  </url>`;
+      }).join("\n") + `
+</urlset>
+`;
+      res.set("Content-Type", "application/xml; charset=utf-8");
+      res.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
+      res.send(xml);
     } catch (err) {
       next(err);
     }
@@ -4394,6 +4820,79 @@ async function registerRoutes(app) {
       res.json(buildQuote(resolved, paymentMethod));
     } catch (err) {
       if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/booking-intent", async (req, res, next) => {
+    try {
+      const parsed = bookingIntentSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled yet (Stripe key not set)." });
+      }
+      const { propertyId, roomId, checkIn, checkOut, guest } = parsed.data;
+      const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
+      const quote = buildQuote(resolved, "STRIPE");
+      const reference = generateReference();
+      const dueNow = quote.dueNow.total;
+      const surcharge = quote.dueNow.surcharge;
+      const metadata = buildShortStayIntentMetadata({
+        entity: resolved.property.entity,
+        property: resolved.property,
+        room: resolved.room ?? null,
+        model: resolved.model,
+        checkIn: resolved.checkIn,
+        checkOut: resolved.checkOut,
+        reference,
+        quotedTotal: dueNow,
+        amount: dueNow - surcharge,
+        surcharge,
+        rateCadence: resolved.model === "COLIVING" ? "WEEKLY" : resolved.rateTier ?? null,
+        guest: guest ?? void 0
+      });
+      const paymentIntent = await createOneTimePaymentIntent({
+        amount: dueNow,
+        guestEmail: guest?.email ?? "",
+        reference,
+        metadata,
+        idempotencyKey: `intent:${reference}`
+      });
+      res.json({
+        reference,
+        clientSecret: paymentIntent.client_secret,
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY,
+        paymentIntentId: paymentIntent.id,
+        quote
+      });
+    } catch (err) {
+      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/booking-intent/:id/contact", async (req, res, next) => {
+    try {
+      const schema = z3.object({
+        name: z3.string().min(1, "Name required"),
+        email: z3.string().email("Valid email required"),
+        phone: z3.string().optional()
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid contact" });
+      }
+      if (!isStripeConfigured()) {
+        return res.status(503).json({ message: "Card payments aren't enabled yet." });
+      }
+      await updatePaymentIntentContact({
+        paymentIntentId: req.params.id,
+        name: parsed.data.name,
+        email: parsed.data.email,
+        phone: parsed.data.phone
+      });
+      res.json({ ok: true });
+    } catch (err) {
       next(err);
     }
   });
@@ -4558,6 +5057,34 @@ async function registerRoutes(app) {
         });
       }
       res.json(payResult);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/portal/:token/pay/:seq/manual", async (req, res, next) => {
+    try {
+      const seq = parseInt(req.params.seq, 10);
+      if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
+      const schema = z3.object({ method: z3.enum(["CASHAPP", "ZELLE"]) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: "method must be CASHAPP or ZELLE" });
+      const instructions = await electManualInstallment(req.params.token, seq, parsed.data.method);
+      const portalData = await getPortalView(req.params.token).catch(() => null);
+      const portalGuestEmail = portalData?.guest?.email;
+      if (portalGuestEmail) {
+        posthog.capture({
+          distinctId: portalGuestEmail,
+          event: "portal_installment_manual_elected",
+          properties: {
+            portal_token: req.params.token,
+            schedule_seq: seq,
+            method: parsed.data.method,
+            amount: instructions.amount
+          }
+        });
+      }
+      res.json(instructions);
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -4836,9 +5363,15 @@ async function registerRoutes(app) {
         return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid booking" });
       }
       const { propertyId, roomId, checkIn, checkOut, paymentMethod, guest } = parsed.data;
+      if (paymentMethod === "STRIPE") {
+        return res.status(400).json({
+          message: "Card payments use /api/booking-intent (payment-first)."
+        });
+      }
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
       const quote = buildQuote(resolved, paymentMethod);
       const reference = generateReference();
+      const dueNow = quote.dueNow.total;
       const guestRow = await storage.upsertGuestByEmail(guest);
       const booking = await storage.createBooking({
         propertyId: resolved.property.id,
@@ -4850,78 +5383,30 @@ async function registerRoutes(app) {
         status: "PENDING_PAYMENT",
         paymentMethod,
         reference,
-        quotedTotal: String(quote.dueNow.total)
+        quotedTotal: String(dueNow)
       });
-      const dueNow = quote.dueNow.total;
-      const surcharge = quote.dueNow.surcharge;
-      const paymentType = "ONE_TIME";
       const response = {
         reference,
         bookingId: booking.id,
         paymentMethod,
         quote
       };
-      if (paymentMethod === "STRIPE") {
-        if (!isStripeConfigured()) {
-          return res.status(503).json({
-            message: "Card payments aren't enabled yet (Stripe test key not set). Use CashApp or Zelle."
-          });
-        }
-        const payment = await storage.createPayment({
-          bookingId: booking.id,
-          type: paymentType,
-          method: "STRIPE",
-          amount: String(dueNow - surcharge),
-          surcharge: String(surcharge),
-          status: "PENDING",
-          stripeRef: null,
-          confirmedBy: null,
-          paidAt: null
-        });
-        const chargeMetadata = resolved.model === "COLIVING" ? buildRoomBookingChargeMetadata({
-          entity: resolved.property.entity,
-          property: resolved.property,
-          room: resolved.room,
-          paymentKind: "BOOKING_DEPOSIT",
-          // Short stays price off the weekly rent; label the basis WEEKLY.
-          rateCadence: "WEEKLY"
-        }) : buildStrChargeMetadata({
-          entity: resolved.property.entity,
-          property: resolved.property,
-          paymentKind: "BOOKING_DEPOSIT",
-          rateCadence: resolved.rateTier ?? null
-        });
-        const paymentIntent = await createOneTimePaymentIntent({
-          amount: dueNow,
-          guestEmail: guest.email,
-          reference,
-          metadata: chargeMetadata,
-          idempotencyKey: `booking:${reference}:one_time`
-        });
-        await storage.updatePayment(payment.id, { stripeRef: paymentIntent.id });
-        response.clientSecret = paymentIntent.client_secret ?? void 0;
-        response.publishableKey = process.env.VITE_STRIPE_PUBLIC_KEY;
-        response.paymentIntentId = paymentIntent.id;
-      } else {
-        await storage.createPayment({
-          bookingId: booking.id,
-          type: paymentType,
-          method: paymentMethod,
-          amount: String(dueNow),
-          surcharge: "0",
-          status: "PENDING",
-          stripeRef: null,
-          confirmedBy: null,
-          paidAt: null
-        });
-        const handle = paymentMethod === "CASHAPP" ? process.env.CASHAPP_TAG ?? "$BeNiceProperties" : process.env.ZELLE_HANDLE ?? "pay@beniceproperties.com";
-        response.manualInstructions = {
-          method: paymentMethod,
-          handle,
-          amount: dueNow,
-          memo: reference
-        };
-      }
+      await storage.createPayment({
+        bookingId: booking.id,
+        type: "ONE_TIME",
+        method: paymentMethod,
+        amount: String(dueNow),
+        surcharge: "0",
+        status: "PENDING",
+        stripeRef: null,
+        confirmedBy: null,
+        paidAt: null
+      });
+      response.manualInstructions = buildManualInstructions({
+        method: paymentMethod,
+        amount: dueNow,
+        memo: reference
+      });
       posthog.identify({
         distinctId: guest.email,
         properties: { name: guest.name, email: guest.email, phone: guest.phone ?? void 0 }
@@ -5096,6 +5581,26 @@ async function registerRoutes(app) {
       next(err);
     }
   });
+  app.post("/api/admin/bookings/:id/cancel", requireAdmin, async (req, res, next) => {
+    try {
+      const booking = await storage.getBooking(req.params.id);
+      if (!booking) return res.status(404).json({ message: "Booking not found" });
+      if (booking.status === "CANCELLED") {
+        return res.json({ ok: true, alreadyCancelled: true, reference: booking.reference });
+      }
+      await storage.updateBooking(booking.id, { status: "CANCELLED" });
+      if (booking.roomId) {
+        const room = await storage.getRoom(booking.roomId);
+        if (room && room.status === "OCCUPIED") {
+          await storage.updateRoom(booking.roomId, { status: "AVAILABLE" });
+        }
+      }
+      log(`booking ${booking.reference} (${booking.id}) CANCELLED by admin`, "admin");
+      res.json({ ok: true, reference: booking.reference });
+    } catch (err) {
+      next(err);
+    }
+  });
   app.get("/api/admin/reconciliation", requireAdmin, async (_req, res, next) => {
     try {
       const pending = await storage.getPendingManualPayments();
@@ -5244,6 +5749,101 @@ function subIdFromInvoice(invoice) {
   const lineSub = anyInv.lines?.data?.find((l) => l.parent?.subscription_item_details?.subscription)?.parent?.subscription_item_details?.subscription;
   return lineSub;
 }
+async function materializeShortStayBooking(pi) {
+  const m = pi.metadata ?? {};
+  const reference = m.reference;
+  if (!reference) {
+    log(`short-stay PI ${pi.id} has no reference \u2014 cannot materialize`, "stripe");
+    return;
+  }
+  const existing = await storage.getBookingByReference(reference);
+  if (existing) {
+    const payment = await storage.getPaymentByStripeRef(pi.id);
+    if (payment && payment.status !== "PAID") {
+      await storage.updatePayment(payment.id, { status: "PAID", paidAt: /* @__PURE__ */ new Date() });
+    }
+    log(`short-stay booking ${reference} already exists \u2014 idempotent no-op`, "stripe");
+    return;
+  }
+  const guestName = m.guest_name;
+  const guestEmail = m.guest_email;
+  if (!guestName || guestName === "null" || !guestEmail || guestEmail === "null") {
+    log(`short-stay PI ${pi.id} (${reference}) missing guest contact \u2014 NOT materializing`, "stripe");
+    posthog.capture({ distinctId: pi.id, event: "booking_intent_missing_contact", properties: { reference } });
+    return;
+  }
+  const propertyId = m.property_id;
+  const roomId = m.room_id && m.room_id !== "null" ? m.room_id : void 0;
+  const checkIn = m.check_in && m.check_in !== "null" ? m.check_in : void 0;
+  const checkOut = m.check_out && m.check_out !== "null" ? m.check_out : void 0;
+  try {
+    await resolveBooking({ propertyId, roomId, checkIn, checkOut });
+  } catch (err) {
+    if (err instanceof BookingError) {
+      log(
+        `short-stay ${reference} dates taken since intent \u2014 refunding PI ${pi.id}: ${err.message}`,
+        "stripe"
+      );
+      try {
+        await refundPaymentIntent({ paymentIntentId: pi.id, idempotencyKey: `refund:${pi.id}` });
+      } catch (refundErr) {
+        log(`REFUND FAILED for ${pi.id} (${reference}): ${refundErr.message}`, "stripe");
+      }
+      posthog.capture({
+        distinctId: guestEmail,
+        event: "booking_double_book_refunded",
+        properties: { reference, payment_intent_id: pi.id, reason: err.message }
+      });
+      return;
+    }
+    throw err;
+  }
+  const model = m.model === "COLIVING" ? "COLIVING" : "STR";
+  const guestRow = await storage.upsertGuestByEmail({
+    name: guestName,
+    email: guestEmail,
+    phone: m.guest_phone && m.guest_phone !== "null" ? m.guest_phone : void 0
+  });
+  const booking = await storage.createBooking({
+    propertyId,
+    roomId: roomId ?? null,
+    guestId: guestRow.id,
+    model,
+    checkIn,
+    checkOut: checkOut ?? null,
+    status: model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
+    paymentMethod: "STRIPE",
+    reference,
+    quotedTotal: m.quoted_total ?? "0"
+  });
+  if (roomId) await storage.updateRoom(roomId, { status: "OCCUPIED" });
+  await storage.createPayment({
+    bookingId: booking.id,
+    type: "ONE_TIME",
+    method: "STRIPE",
+    amount: m.amount ?? "0",
+    surcharge: m.surcharge ?? "0",
+    status: "PAID",
+    stripeRef: pi.id,
+    confirmedBy: null,
+    paidAt: /* @__PURE__ */ new Date()
+  });
+  posthog.capture({
+    distinctId: guestEmail,
+    event: "booking_confirmed",
+    properties: {
+      reference,
+      booking_id: booking.id,
+      property_id: propertyId,
+      property_type: model,
+      room_id: roomId ?? null,
+      check_in: checkIn,
+      check_out: checkOut,
+      payment_intent_id: pi.id
+    }
+  });
+  log(`short-stay booking ${reference} materialized + confirmed via ${pi.id}`, "stripe");
+}
 async function handleStripeEvent(event) {
   switch (event.type) {
     case "checkout.session.completed": {
@@ -5336,38 +5936,7 @@ async function handleStripeEvent(event) {
       const kind = pi.metadata?.payment_kind;
       const hasLease = pi.metadata?.lease_id && pi.metadata.lease_id !== "null";
       if (kind === "BOOKING_DEPOSIT" && !hasLease) {
-        const reference = pi.metadata?.reference;
-        const booking = reference ? await storage.getBookingByReference(reference) : null;
-        if (booking) {
-          const payment = await storage.getPaymentByStripeRef(pi.id);
-          if (payment && payment.status !== "PAID") {
-            await storage.updatePayment(payment.id, { status: "PAID", paidAt: /* @__PURE__ */ new Date() });
-          }
-          if (booking.status === "PENDING_PAYMENT") {
-            await storage.updateBooking(booking.id, {
-              status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"
-            });
-            if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
-            const confirmedGuest = await storage.getGuest(booking.guestId);
-            if (confirmedGuest) {
-              posthog.capture({
-                distinctId: confirmedGuest.email,
-                event: "booking_confirmed",
-                properties: {
-                  reference,
-                  booking_id: booking.id,
-                  property_id: booking.propertyId,
-                  property_type: booking.model,
-                  room_id: booking.roomId ?? null,
-                  check_in: booking.checkIn,
-                  check_out: booking.checkOut,
-                  payment_intent_id: pi.id
-                }
-              });
-            }
-          }
-          log(`booking ${reference} confirmed via payment_intent.succeeded`, "stripe");
-        }
+        await materializeShortStayBooking(pi);
       } else if (kind === "BOOKING_DEPOSIT" && hasLease) {
         await finalizeDepositPayment(pi.id);
         const depositedLease = await storage.getLease(pi.metadata.lease_id);
@@ -5388,6 +5957,18 @@ async function handleStripeEvent(event) {
         }
       } else if (kind === "FIRST_PAYMENT") {
         await finalizeFirstPayment(pi.id);
+      } else if (kind === "CLEANING_FEE") {
+        const leaseId = pi.metadata?.lease_id;
+        if (leaseId && leaseId !== "null") {
+          const feeLease = await storage.getLease(leaseId);
+          if (feeLease && feeLease.cleaningFeeStatus !== "PAID") {
+            await storage.updateLease(leaseId, {
+              cleaningFeeStatus: "PAID",
+              cleaningFeePaidAt: /* @__PURE__ */ new Date(),
+              cleaningFeeStripePaymentIntentId: pi.id
+            });
+          }
+        }
       } else if (kind === "SCHEDULED_RENT") {
         const leaseId = pi.metadata?.lease_id;
         const seq = parseInt(pi.metadata?.schedule_seq ?? "", 10);

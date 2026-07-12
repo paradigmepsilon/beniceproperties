@@ -1,0 +1,23 @@
+# Be Nice Properties
+
+> Be Nice Properties (BNP) is a family-run property company based in Douglasville, Georgia, west of Atlanta. We operate furnished co-living homes (private rooms in shared houses with all-inclusive rent and flexible terms up to 90 days), whole-home short-term rentals in the Atlanta area and Antigua, and long-term rental homes. Guests book directly with us at https://beniceproperties.vercel.app — no platform middleman.
+
+Key facts:
+- Co-living: private furnished rooms in shared homes west of Atlanta (Douglasville area). All-inclusive rent covers utilities, wifi, and furnishings. Lease terms are flexible, from about a week up to 90 days, with weekly, bi-weekly, or monthly payment schedules.
+- Short-term rentals: whole-home stays in the Atlanta area and Antigua, booked by the night, including The Retreat at Douglasville, a themed date-night property.
+- Long-term rentals: unfurnished and furnished homes for a year or more, inquiry-based.
+- Booking is direct on our own site: real payment schedules shown before you commit, e-signed leases, and the people answering messages are the people who run the homes.
+
+## Main pages
+
+- [Home — co-living rooms and how booking works](https://beniceproperties.vercel.app/)
+- [Short-term rentals](https://beniceproperties.vercel.app/str)
+- [Long-term rentals](https://beniceproperties.vercel.app/ltr)
+- [Community and house standards](https://beniceproperties.vercel.app/community)
+- [About the family behind BNP](https://beniceproperties.vercel.app/about)
+- [Partner with us — invest, manage, design, events](https://beniceproperties.vercel.app/partner)
+- [Journal — guides on co-living, short-term, vacation, and long-term renting](https://beniceproperties.vercel.app/journal)
+
+## Machine-readable
+
+- [Sitemap](https://beniceproperties.vercel.app/sitemap.xml)

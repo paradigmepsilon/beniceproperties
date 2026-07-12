@@ -52,7 +52,7 @@ function LtrGate() {
       subtitle="We're getting our long-term listings ready. Tell us what you're looking for and we'll follow up directly."
       accent={LTR_GRADIENT}
       path="/ltr"
-      seoTitle="Long-Term Rentals — Coming Soon | Be Nice Properties"
+      seoTitle="Long-Term Rentals, Coming Soon"
       seoDescription="Our long-term furnished home rentals are coming soon. Reach out and we'll help you directly in the meantime."
     />
   );
@@ -69,8 +69,8 @@ function JournalGate({ children }: { children: React.ReactNode }) {
       subtitle="We're writing the stories, guides, and neighborhood notes that will live here. Check back shortly."
       accent={JOURNAL_GRADIENT}
       path="/journal"
-      seoTitle="Journal — Coming Soon | Be Nice Properties"
-      seoDescription="The Be Nice Properties journal is coming soon — stories, guides, and neighborhood notes for our guests and residents."
+      seoTitle="Journal, Coming Soon"
+      seoDescription="The Be Nice Properties journal is coming soon: stories, guides, and neighborhood notes for our guests and residents."
     />
   );
 }

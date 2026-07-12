@@ -7,19 +7,33 @@ import { useQuery } from "@tanstack/react-query";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { JournalCard } from "@/components/journal-card";
 import type { JournalPost } from "@/content/journal";
-import { useSeo } from "@/lib/seo";
+import { useSeo, SITE_URL, SITE_NAME } from "@/lib/seo";
 
 export default function Journal() {
+  // The API already returns published posts newest-first.
+  const { data: posts = [], isLoading } = useQuery<JournalPost[]>({
+    queryKey: ["/api/journal"],
+  });
+
   useSeo({
     title: "Journal",
     description:
       "Notes from the homes: booking direct, what's included, and making the most of a stay, straight from the people who run the places.",
     path: "/journal",
-  });
-
-  // The API already returns published posts newest-first.
-  const { data: posts = [], isLoading } = useQuery<JournalPost[]>({
-    queryKey: ["/api/journal"],
+    // Blog node listing the published posts so crawlers see the whole index
+    // without visiting each article first.
+    jsonLd: {
+      "@context": "https://schema.org",
+      "@type": "Blog",
+      name: `${SITE_NAME} Journal`,
+      url: `${SITE_URL}/journal`,
+      blogPost: posts.map((p) => ({
+        "@type": "BlogPosting",
+        headline: p.title,
+        url: `${SITE_URL}/journal/${p.slug}`,
+        datePublished: p.date,
+      })),
+    },
   });
 
   return (

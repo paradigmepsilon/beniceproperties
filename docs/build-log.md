@@ -2328,3 +2328,79 @@ The pre-existing uncommitted `client/src/pages/partner.tsx` change (form swap fr
 an earlier session) is unrelated to this work.
 
 CLIENT-POSTHOG: COMPLETE — tests green
+
+## 2026-07-12 — SEO-AEO-CONTENT: crawler visibility overhaul + 35-post journal drop
+
+**What.** Made the site actually readable by Google, AI answer engines
+(GPTBot/ClaudeBot/PerplexityBot), and social scrapers, and shipped a 35-post
+journal content library (co-living primary; STR, vacation, and long-term
+renting; Atlanta / Southeast / worldwide) written for answer-engine extraction.
+
+**The core finding.** Production had been serving the EMPTY SPA shell on every
+route: the build-time prerender silently skipped on Vercel because the build
+image has no Chrome (`findChrome()` → none → exit 0). Non-JS crawlers saw a
+blank `<div id="root">` with homepage meta sitewide. Everything else hung off
+fixing that.
+
+**How.**
+- `scripts/prerender.mjs` — rewritten: (1) falls back to `@sparticuz/chromium`
+  (new devDependency, Lambda/Vercel-compatible) when no system Chrome, so
+  prerendering now runs on Vercel builds; (2) the local static server now
+  proxies `/api/*` to the live API (`PRERENDER_API_ORIGIN`, default prod) so
+  data-driven pages bake with real content; (3) prerenders every published
+  journal article (slugs fetched from `/api/journal`) alongside the 7 static
+  routes → 42 routes baked; (4) blocks PostHog inside the headless browser so
+  deploys don't pollute analytics; (5) per-route try/catch.
+- `server/routes.ts` — new `GET /sitemap.xml`: DB-driven (static routes +
+  ACTIVE properties + their rooms + published journal posts w/ lastmod),
+  honors the UO `page_ltr_visible` / `page_journal_visible` flags, 1h cache.
+  `vercel.json` rewrites `/sitemap.xml` → the API function; the stale static
+  `client/public/sitemap.xml` is deleted.
+- `client/public/robots.txt` — explicit welcome sections for GPTBot,
+  ChatGPT-User, ClaudeBot, anthropic-ai, PerplexityBot, Google-Extended,
+  Bingbot (same private-route disallows); points at llms.txt + sitemap.
+- `client/public/llms.txt` — new AI-crawler site summary (what BNP is, key
+  facts, main pages, sitemap link).
+- JSON-LD: `seo.ts` LodgingBusiness enriched (@id, Douglasville address,
+  areaServed, knowsAbout, logo); `/journal` now emits a `Blog` node listing
+  all published posts; articles add `mainEntityOfPage` + cover `image`, and
+  the post cover now feeds og:image / twitter:image.
+- Coming-soon SEO titles fixed (doubled site name + em dash).
+- Content: 35 posts seeded via new `scripts/seed-journal-posts.mjs` reading
+  `scripts/data/journal_posts_2026_07.json` (committed). Idempotent
+  (ON CONFLICT (slug) DO NOTHING), validates before insert (2000-2500 chars
+  of block text, no em/en dashes, first block = paragraph), publish dates
+  staggered every 2 days from 2026-07-11 back to 2026-05-04 so the journal
+  reads as an ongoing publication. Answer-first structure per post (40-60
+  word direct answer, natural-language H2s, no invented statistics).
+- Flipped `page_journal_visible` → `true` (was false; posts were invisible).
+  LTR stays hidden. Reversible any time from UO Site Settings.
+
+**Files touched.** scripts/prerender.mjs, scripts/seed-journal-posts.mjs (new),
+scripts/data/journal_posts_2026_07.json (new), server/routes.ts, vercel.json,
+client/public/{robots.txt, llms.txt (new), sitemap.xml (deleted)},
+client/src/lib/seo.ts, client/src/pages/{journal.tsx, journal-article.tsx},
+client/src/App.tsx, package.json (+@sparticuz/chromium dev), api/*.js (rebuilt).
+
+**Tests run + results.** `npm run check` (tsc) clean. `npx vitest run` — 305/305
+green (25 files). Seed dry-run validation: 35/35 posts pass (2000-2236 chars,
+zero em/en dashes). Full local `vite build && npm run prerender` — 42/42 routes
+baked; verified `/journal/travel-nurse-housing-atlanta/index.html` contains the
+real <title>, article text, and BlogPosting JSON-LD, and `/journal/index.html`
+contains the 35-card listing. Dev-server `/sitemap.xml` returns property/room +
+36 journal URLs, correctly omitting hidden /ltr. Prod `/api/journal` returns 35.
+
+**Decisions.** Seeded straight to published (request was to make BNP visible;
+UO can unpublish/edit any post, slug-keyed inserts never overwrite UO edits).
+Journal visibility flag flipped on as part of the drop. Publish dates
+backdated/staggered for publication-cadence realism — flag to Alex.
+
+**Deferred.** (1) First Vercel deploy after this commit needs its build log
+checked: confirm `[prerender] done — 42/42` (i.e. @sparticuz/chromium launched)
+and curl a journal article for real HTML. (2) A custom domain would materially
+help rankings vs. *.vercel.app; canonical/OG/sitemap all key off
+PUBLIC_BASE_URL / seo.ts SITE_URL when that lands. (3) FAQ sections with
+FAQPage schema on /str + home are the next AEO lever. (4) Cover images for the
+35 posts (currently branded gradient fallback) via UO when convenient.
+
+SEO-AEO-CONTENT: COMPLETE — tests green

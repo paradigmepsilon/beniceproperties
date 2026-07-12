@@ -321,6 +321,81 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // =========================================================================
+  // PUBLIC — /sitemap.xml (vercel.json rewrites it here; the old static file
+  // is gone). DB-driven so new journal posts, properties, and rooms surface to
+  // crawlers without a redeploy. Respects the UO page-visibility flags the
+  // same way the client does (unset → visible).
+  // =========================================================================
+  app.get("/sitemap.xml", async (_req, res, next) => {
+    try {
+      const origin = process.env.PUBLIC_BASE_URL || "https://beniceproperties.vercel.app";
+      const [ltrFlag, journalFlag, properties, posts] = await Promise.all([
+        storage.getSetting("page_ltr_visible"),
+        storage.getSetting("page_journal_visible"),
+        storage.getProperties({ activeOnly: true }),
+        storage.getPublishedJournalPosts(),
+      ]);
+      const ltrVisible = ltrFlag?.value !== "false";
+      const journalVisible = journalFlag?.value !== "false";
+
+      type SitemapEntry = { path: string; lastmod?: string; changefreq?: string; priority?: string };
+      const entries: SitemapEntry[] = [
+        { path: "/", changefreq: "weekly", priority: "1.0" },
+        { path: "/str", changefreq: "weekly", priority: "0.9" },
+        ...(ltrVisible ? [{ path: "/ltr", changefreq: "weekly", priority: "0.9" }] : []),
+        { path: "/community", changefreq: "monthly", priority: "0.7" },
+        { path: "/about", changefreq: "monthly", priority: "0.6" },
+        { path: "/partner", changefreq: "monthly", priority: "0.7" },
+      ];
+
+      for (const p of properties) {
+        if (p.type === "LTR" && !ltrVisible) continue;
+        entries.push({ path: `/property/${p.id}`, changefreq: "weekly", priority: "0.8" });
+        if (p.type === "COLIVING") {
+          const rooms = await storage.getRoomsByProperty(p.id);
+          for (const r of rooms) {
+            entries.push({ path: `/room/${r.id}`, changefreq: "weekly", priority: "0.7" });
+          }
+        }
+      }
+
+      if (journalVisible) {
+        entries.push({ path: "/journal", changefreq: "weekly", priority: "0.6" });
+        for (const post of posts) {
+          entries.push({
+            path: `/journal/${post.slug}`,
+            lastmod: (post.updatedAt ?? post.publishedAt ?? post.createdAt)
+              .toISOString()
+              .slice(0, 10),
+            changefreq: "monthly",
+            priority: "0.6",
+          });
+        }
+      }
+
+      const xml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
+        entries
+          .map((e) => {
+            const parts = [`    <loc>${origin}${e.path}</loc>`];
+            if (e.lastmod) parts.push(`    <lastmod>${e.lastmod}</lastmod>`);
+            if (e.changefreq) parts.push(`    <changefreq>${e.changefreq}</changefreq>`);
+            if (e.priority) parts.push(`    <priority>${e.priority}</priority>`);
+            return `  <url>\n${parts.join("\n")}\n  </url>`;
+          })
+          .join("\n") +
+        `\n</urlset>\n`;
+
+      res.set("Content-Type", "application/xml; charset=utf-8");
+      res.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
+      res.send(xml);
+    } catch (err) {
+      next(err);
+    }
+  });
+
   app.get("/api/properties", async (req, res, next) => {
     try {
       const today = new Date().toISOString().slice(0, 10);

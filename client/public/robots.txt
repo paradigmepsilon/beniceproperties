@@ -1,12 +1,77 @@
+# Be Nice Properties — beniceproperties.vercel.app
+# Everyone is welcome to crawl the public pages. Transactional and private
+# routes carry no SEO value and should not be crawled.
+
 User-agent: *
 Allow: /
-
-# Transactional and private routes carry no SEO value and should not be crawled.
 Disallow: /checkout
 Disallow: /lease
 Disallow: /portal/
 Disallow: /confirmation/
 Disallow: /lookup
 Disallow: /admin
+
+# AI search and answer-engine crawlers are explicitly welcome — being readable
+# by these is how the site gets cited in AI answers. Same private-route rules.
+
+User-agent: GPTBot
+Allow: /
+Disallow: /checkout
+Disallow: /lease
+Disallow: /portal/
+Disallow: /confirmation/
+Disallow: /lookup
+Disallow: /admin
+
+User-agent: ChatGPT-User
+Allow: /
+Disallow: /checkout
+Disallow: /lease
+Disallow: /portal/
+Disallow: /confirmation/
+Disallow: /lookup
+Disallow: /admin
+
+User-agent: ClaudeBot
+Allow: /
+Disallow: /checkout
+Disallow: /lease
+Disallow: /portal/
+Disallow: /confirmation/
+Disallow: /lookup
+Disallow: /admin
+
+User-agent: anthropic-ai
+Allow: /
+Disallow: /checkout
+Disallow: /lease
+Disallow: /portal/
+Disallow: /confirmation/
+Disallow: /lookup
+Disallow: /admin
+
+User-agent: PerplexityBot
+Allow: /
+Disallow: /checkout
+Disallow: /lease
+Disallow: /portal/
+Disallow: /confirmation/
+Disallow: /lookup
+Disallow: /admin
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+Disallow: /checkout
+Disallow: /lease
+Disallow: /portal/
+Disallow: /confirmation/
+Disallow: /lookup
+Disallow: /admin
+
+# LLM-readable site summary
+# https://beniceproperties.vercel.app/llms.txt
 
 Sitemap: https://beniceproperties.vercel.app/sitemap.xml
