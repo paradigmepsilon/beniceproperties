@@ -3082,7 +3082,7 @@ async function billAccruedLateFees(args) {
   return { billed: true, amount: total, paymentIntentId: pi.id };
 }
 function publicBaseUrl() {
-  return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
+  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
 }
 
 // server/lib/lifecycle.ts
@@ -3225,7 +3225,7 @@ async function onDepositReceived(args) {
   });
 }
 function publicBaseUrl2() {
-  return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
+  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
 }
 
 // server/lib/leasePayments.ts
@@ -3840,7 +3840,7 @@ async function deleteObject(key) {
 
 // server/lib/verification.ts
 function publicBaseUrl3() {
-  return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
+  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
 }
 var EXT_BY_TYPE = {
   "image/jpeg": "jpg",
@@ -4626,7 +4626,7 @@ async function registerRoutes(app) {
   });
   app.get("/sitemap.xml", async (_req, res, next) => {
     try {
-      const origin = process.env.PUBLIC_BASE_URL || "https://beniceproperties.vercel.app";
+      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
       const [ltrFlag, journalFlag, properties2, posts] = await Promise.all([
         storage.getSetting("page_ltr_visible"),
         storage.getSetting("page_journal_visible"),

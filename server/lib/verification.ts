@@ -34,7 +34,7 @@ import { log } from "../server-log";
 function publicBaseUrl(): string {
   return (
     process.env.PUBLIC_BASE_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app")
+    "https://www.beniceproperties.com"
   );
 }
 

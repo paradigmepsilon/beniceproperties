@@ -1,6 +1,6 @@
 # Be Nice Properties
 
-> Be Nice Properties (BNP) is a family-run property company based in Douglasville, Georgia, west of Atlanta. We operate furnished co-living homes (private rooms in shared houses with all-inclusive rent and flexible terms up to 90 days), whole-home short-term rentals in the Atlanta area and Antigua, and long-term rental homes. Guests book directly with us at https://beniceproperties.vercel.app — no platform middleman.
+> Be Nice Properties (BNP) is a family-run property company based in Douglasville, Georgia, west of Atlanta. We operate furnished co-living homes (private rooms in shared houses with all-inclusive rent and flexible terms up to 90 days), whole-home short-term rentals in the Atlanta area and Antigua, and long-term rental homes. Guests book directly with us at https://www.beniceproperties.com — no platform middleman.
 
 Key facts:
 - Co-living: private furnished rooms in shared homes west of Atlanta (Douglasville area). All-inclusive rent covers utilities, wifi, and furnishings. Lease terms are flexible, from about a week up to 90 days, with weekly, bi-weekly, or monthly payment schedules.
@@ -10,14 +10,14 @@ Key facts:
 
 ## Main pages
 
-- [Home — co-living rooms and how booking works](https://beniceproperties.vercel.app/)
-- [Short-term rentals](https://beniceproperties.vercel.app/str)
-- [Long-term rentals](https://beniceproperties.vercel.app/ltr)
-- [Community and house standards](https://beniceproperties.vercel.app/community)
-- [About the family behind BNP](https://beniceproperties.vercel.app/about)
-- [Partner with us — invest, manage, design, events](https://beniceproperties.vercel.app/partner)
-- [Journal — guides on co-living, short-term, vacation, and long-term renting](https://beniceproperties.vercel.app/journal)
+- [Home — co-living rooms and how booking works](https://www.beniceproperties.com/)
+- [Short-term rentals](https://www.beniceproperties.com/str)
+- [Long-term rentals](https://www.beniceproperties.com/ltr)
+- [Community and house standards](https://www.beniceproperties.com/community)
+- [About the family behind BNP](https://www.beniceproperties.com/about)
+- [Partner with us — invest, manage, design, events](https://www.beniceproperties.com/partner)
+- [Journal — guides on co-living, short-term, vacation, and long-term renting](https://www.beniceproperties.com/journal)
 
 ## Machine-readable
 
-- [Sitemap](https://beniceproperties.vercel.app/sitemap.xml)
+- [Sitemap](https://www.beniceproperties.com/sitemap.xml)

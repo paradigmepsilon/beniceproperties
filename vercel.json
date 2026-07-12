@@ -13,6 +13,14 @@
       "schedule": "17 * * * *"
     }
   ],
+  "redirects": [
+    {
+      "source": "/((?!api/).*)",
+      "has": [{ "type": "host", "value": "beniceproperties.vercel.app" }],
+      "destination": "https://www.beniceproperties.com/$1",
+      "permanent": true
+    }
+  ],
   "rewrites": [
     { "source": "/api/cron/(.*)", "destination": "/api/cron/$1" },
     { "source": "/api/(.*)", "destination": "/api/index" },

@@ -1,4 +1,4 @@
-# Be Nice Properties — beniceproperties.vercel.app
+# Be Nice Properties — www.beniceproperties.com
 # Everyone is welcome to crawl the public pages. Transactional and private
 # routes carry no SEO value and should not be crawled.
 
@@ -72,6 +72,6 @@ Disallow: /lookup
 Disallow: /admin
 
 # LLM-readable site summary
-# https://beniceproperties.vercel.app/llms.txt
+# https://www.beniceproperties.com/llms.txt
 
-Sitemap: https://beniceproperties.vercel.app/sitemap.xml
+Sitemap: https://www.beniceproperties.com/sitemap.xml

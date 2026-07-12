@@ -2158,7 +2158,7 @@ async function billAccruedLateFees(args) {
   return { billed: true, amount: total, paymentIntentId: pi.id };
 }
 function publicBaseUrl() {
-  return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
+  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
 }
 
 // server/lib/lifecycle.ts
@@ -2258,7 +2258,7 @@ async function runLeaseEndingNotices(today = ymd2(/* @__PURE__ */ new Date())) {
   return sent;
 }
 function publicBaseUrl2() {
-  return process.env.PUBLIC_BASE_URL || (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://beniceproperties.vercel.app");
+  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
 }
 
 // server/lib/leasePayments.ts

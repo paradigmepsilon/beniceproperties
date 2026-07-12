@@ -45,7 +45,7 @@ const PORT = 4178; // arbitrary, local-only
 // Live API origin used two ways: (a) the local static server proxies /api/* to
 // it so data-driven pages (hero images, journal, site-config) render for real;
 // (b) the published journal slugs are fetched from it to build the route list.
-const API_ORIGIN = (process.env.PRERENDER_API_ORIGIN || "https://beniceproperties.vercel.app").replace(/\/$/, "");
+const API_ORIGIN = (process.env.PRERENDER_API_ORIGIN || "https://www.beniceproperties.com").replace(/\/$/, "");
 
 // The static marketing routes to prerender. Keep in sync with the sitemap.
 const ROUTES = ["/", "/str", "/ltr", "/community", "/about", "/partner", "/journal"];

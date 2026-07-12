@@ -329,7 +329,7 @@ export async function registerRoutes(app: Express): Promise<void> {
   // =========================================================================
   app.get("/sitemap.xml", async (_req, res, next) => {
     try {
-      const origin = process.env.PUBLIC_BASE_URL || "https://beniceproperties.vercel.app";
+      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
       const [ltrFlag, journalFlag, properties, posts] = await Promise.all([
         storage.getSetting("page_ltr_visible"),
         storage.getSetting("page_journal_visible"),

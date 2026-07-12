@@ -9,7 +9,7 @@ import { useEffect } from "react";
 
 // Canonical production origin. Used to build absolute canonical + og:url values.
 // No trailing slash.
-export const SITE_URL = "https://beniceproperties.vercel.app";
+export const SITE_URL = "https://www.beniceproperties.com";
 export const SITE_NAME = "Be Nice Properties";
 
 // Default social share image (absolute URL). Falls back to the brand mark; swap
