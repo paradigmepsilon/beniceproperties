@@ -115,14 +115,6 @@ export default function Partner() {
       />
 
       <main className="flex-1">
-        {/* Form up top — the single conversion surface. Every service row's CTA
-            scrolls back here and pre-selects the matching interest. */}
-        <section id="partner-form" className="border-b bg-card">
-          <div className="mx-auto w-full max-w-2xl px-6 py-10">
-            <PartnerInquiryForm />
-          </div>
-        </section>
-
         {/* Intro to the services — centered. Bottom padding gives the header room
             above the first divider below it. */}
         <section className="mx-auto w-full max-w-6xl px-6 pb-10 pt-10 text-center">
@@ -170,24 +162,11 @@ export default function Partner() {
           </div>
         ))}
 
-        {/* Closing nudge back to the form for anyone who scrolled the whole page. */}
-        <section className="border-t bg-card">
-          <div className="mx-auto w-full max-w-3xl px-6 py-10 text-center">
-            <h2 className="font-display text-3xl font-semibold tracking-tight">
-              Not sure which fits?
-            </h2>
-            <p className="mx-auto mt-3 max-w-xl text-muted-foreground">
-              That's alright. Tell us what you have in mind and we'll figure out the right
-              way to work together.
-            </p>
-            <Button
-              className="mt-6 bg-[#2f5d50] text-white hover:bg-[#264c41]"
-              size="lg"
-              onClick={() => goToForm()}
-              data-testid="button-partner-bottom-cta"
-            >
-              Start a conversation
-            </Button>
+        {/* The conversion surface, now at the foot of the page. Every service
+            row's CTA scrolls down here and pre-selects the matching interest. */}
+        <section id="partner-form" className="border-t bg-card">
+          <div className="mx-auto w-full max-w-2xl px-6 py-10">
+            <PartnerInquiryForm />
           </div>
         </section>
       </main>
