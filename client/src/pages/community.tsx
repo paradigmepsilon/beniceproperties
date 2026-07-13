@@ -11,8 +11,10 @@ import { PageHero } from "@/components/page-hero";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { Testimonials } from "@/components/testimonials";
 import { EditorialRow } from "@/components/editorial-row";
+import { FaqSection } from "@/components/faq-section";
+import { COLIVING_FAQS } from "@/content/faqs";
 import { cn } from "@/lib/utils";
-import { useSeo } from "@/lib/seo";
+import { useSeo, buildFaqJsonLd, SITE_URL } from "@/lib/seo";
 
 // Co-living teal accent — matches the home/co-living identity (this is the
 // co-living community). Tints the shared hero image / is the no-image fallback.
@@ -55,6 +57,7 @@ export default function Community() {
     description:
       "We run homes, not listings. Meet the hosts behind Be Nice Properties, see how our co-living community works, and read what guests say.",
     path: "/community",
+    jsonLd: buildFaqJsonLd(COLIVING_FAQS, `${SITE_URL}/community`),
   });
 
   return (
@@ -161,6 +164,16 @@ export default function Community() {
             className="mx-auto w-full max-w-6xl px-6 py-14"
             subhead="Real words from people who've stayed with us."
             layout="scroll"
+          />
+        </section>
+
+        {/* Co-living FAQ — visible accordion + FAQPage schema (see useSeo above). */}
+        <section className="border-t">
+          <FaqSection
+            faqs={COLIVING_FAQS}
+            heading="Common questions"
+            subhead="What people ask before joining one of our homes."
+            className="mx-auto w-full max-w-3xl px-6 py-14"
           />
         </section>
       </main>

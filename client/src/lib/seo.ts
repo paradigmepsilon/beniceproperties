@@ -137,3 +137,77 @@ export const ORGANIZATION_JSON_LD = {
     "long-term rentals",
   ],
 };
+
+// Reusable Organization publisher node. Referenced by page-level schema (About,
+// Partner) so every page points back to the same entity via @id.
+export const ORGANIZATION_REF = {
+  "@type": "Organization",
+  "@id": `${SITE_URL}/#organization`,
+  name: SITE_NAME,
+  url: SITE_URL,
+  logo: DEFAULT_OG_IMAGE,
+};
+
+// /str — whole-home short-term rentals. A LodgingBusiness scoped to the STR
+// product, distinct @id from the sitewide node so it describes this page's offer.
+export const STR_JSON_LD = {
+  "@context": "https://schema.org",
+  "@type": "LodgingBusiness",
+  "@id": `${SITE_URL}/str#lodging`,
+  name: `${SITE_NAME} — Whole-Home Short-Term Rentals`,
+  description:
+    "Whole-home short-term rentals in the Atlanta area and Antigua. Themed, beautifully designed homes booked by the night, direct with no platform markup.",
+  url: `${SITE_URL}/str`,
+  image: DEFAULT_OG_IMAGE,
+  address: {
+    "@type": "PostalAddress",
+    addressLocality: "Douglasville",
+    addressRegion: "GA",
+    addressCountry: "US",
+  },
+  areaServed: ["Atlanta, GA", "St. John's, Antigua"],
+  priceRange: "$$",
+  parentOrganization: ORGANIZATION_REF,
+};
+
+// /about — an AboutPage that describes the organization behind the site.
+export const ABOUT_JSON_LD = {
+  "@context": "https://schema.org",
+  "@type": "AboutPage",
+  "@id": `${SITE_URL}/about#webpage`,
+  url: `${SITE_URL}/about`,
+  name: `About ${SITE_NAME}`,
+  description:
+    "The people and story behind Be Nice Properties. We own and manage every home ourselves, from co-living rooms to whole-home getaways in Atlanta and Antigua.",
+  mainEntity: ORGANIZATION_REF,
+};
+
+// /partner — a WebPage for the B2B partner offering, tied to the organization.
+export const PARTNER_JSON_LD = {
+  "@context": "https://schema.org",
+  "@type": "WebPage",
+  "@id": `${SITE_URL}/partner#webpage`,
+  url: `${SITE_URL}/partner`,
+  name: `Partner With ${SITE_NAME}`,
+  description:
+    "Invest, hand us a property to manage, have us design and furnish it, curate events, or build community. Start a conversation with Be Nice Properties.",
+  about: ORGANIZATION_REF,
+};
+
+// Build a FAQPage node from a list of Q&As. The answers are rendered verbatim on
+// the page too (Google requires visible parity), so the same array feeds both.
+export function buildFaqJsonLd(
+  faqs: { q: string; a: string }[],
+  pageUrl: string,
+): object {
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    "@id": `${pageUrl}#faq`,
+    mainEntity: faqs.map(({ q, a }) => ({
+      "@type": "Question",
+      name: q,
+      acceptedAnswer: { "@type": "Answer", text: a },
+    })),
+  };
+}

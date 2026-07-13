@@ -20,7 +20,7 @@ import {
   PartnerInquiryForm,
   preselectPartnerInterest,
 } from "@/components/partner-inquiry-form";
-import { useSeo } from "@/lib/seo";
+import { useSeo, PARTNER_JSON_LD } from "@/lib/seo";
 
 const PARTNER_GRADIENT = "linear-gradient(135deg, #2f5d50, #1c3a33)";
 // Eyebrow accent for the editorial rows — the emerald end of the hero gradient.
@@ -98,6 +98,7 @@ export default function Partner() {
     description:
       "Invest, hand us a property to manage, have us design and furnish it, curate events, or build community. Start a conversation with Be Nice Properties.",
     path: "/partner",
+    jsonLd: PARTNER_JSON_LD,
   });
 
   return (

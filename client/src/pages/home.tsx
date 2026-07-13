@@ -11,7 +11,9 @@ import { PageHero } from "@/components/page-hero";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { ListingsSection } from "@/components/listings-section";
 import { Testimonials } from "@/components/testimonials";
-import { useSeo, ORGANIZATION_JSON_LD } from "@/lib/seo";
+import { FaqSection } from "@/components/faq-section";
+import { COLIVING_FAQS } from "@/content/faqs";
+import { useSeo, ORGANIZATION_JSON_LD, buildFaqJsonLd, SITE_URL } from "@/lib/seo";
 
 // Co-living teal accent — the home's lead product. Tints the shared hero image
 // (and is the no-image fallback), matching /community and the co-living identity.
@@ -52,7 +54,7 @@ export default function Home() {
       "Private furnished co-living rooms, whole-home short-term rentals, and long-term homes in Atlanta and Antigua. Book direct with the people who run the place.",
     path: "/",
     appendSiteName: false,
-    jsonLd: ORGANIZATION_JSON_LD,
+    jsonLd: [ORGANIZATION_JSON_LD, buildFaqJsonLd(COLIVING_FAQS, `${SITE_URL}/`)],
   });
 
   // Honor a #hash once the page mounts (the SPA renders after the native anchor
@@ -169,6 +171,18 @@ export default function Home() {
             ))}
           </div>
         </div>
+      </section>
+
+      {/* Co-living FAQ — visible accordion + FAQPage schema (see useSeo above).
+          Placed last before the footer: answers the remaining objections and
+          feeds AI answer engines. */}
+      <section className="border-t">
+        <FaqSection
+          faqs={COLIVING_FAQS}
+          heading="Common questions"
+          subhead="The things people ask before they book a room with us."
+          className="mx-auto w-full max-w-3xl px-6 py-14"
+        />
       </section>
 
       <SiteFooter />

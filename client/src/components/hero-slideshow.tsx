@@ -11,6 +11,10 @@
 //   A single interval cross-fades. Honors prefers-reduced-motion (no auto-cycle).
 // - Graceful fallback: if there are zero active images, renders nothing and the
 //   hero keeps its existing gradient background (AC#5).
+// - SEO/a11y: each image carries its UO-managed alt (falling back to a brand
+//   default when blank). These are photos of real homes, so the layer is NOT
+//   aria-hidden — crawlers and screen readers get the descriptive alt. The
+//   PageHero scrim/accent divs above stay decorative (aria-hidden).
 
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -53,12 +57,12 @@ export function HeroSlideshow() {
   if (images.length === 0) return null;
 
   return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
+    <div className="pointer-events-none absolute inset-0 overflow-hidden">
       {images.map((img, i) => (
         <img
           key={img.id}
           src={img.url}
-          alt=""
+          alt={img.alt?.trim() || "Be Nice Properties co-living home"}
           loading={i === 0 ? "eager" : "lazy"}
           // React 18.3 passes `fetchPriority` through unlowercased and warns; the
           // DOM attribute is lowercase `fetchpriority`. Spread it as a raw attr to

@@ -8,7 +8,7 @@ import { CalendarCheck, Home, Sparkles } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PageHero } from "@/components/page-hero";
 import { ListingsSection } from "@/components/listings-section";
-import { useSeo } from "@/lib/seo";
+import { useSeo, STR_JSON_LD } from "@/lib/seo";
 
 // STR coral accent — tints the shared hero image (and is the no-image fallback).
 const STR_GRADIENT = "linear-gradient(135deg, #e87a5f, #9a3524)";
@@ -25,6 +25,7 @@ export default function Str() {
     description:
       "Book a whole-home short-term rental in Atlanta and beyond. Themed, beautifully designed homes for a weekend away or a special occasion. Book direct, no platform markup.",
     path: "/str",
+    jsonLd: STR_JSON_LD,
   });
 
   return (

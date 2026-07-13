@@ -2479,3 +2479,71 @@ for now, could convert to WebP later. (4) FAQPage schema on /str + home is still
 the next AEO lever.
 
 JOURNAL-V2-LONGFORM + CANONICAL-DOMAIN: COMPLETE — tests green
+
+---
+
+## 2026-07-12 — SEO/AEO round 2: FAQ schema, interior JSON-LD, hero alt text
+
+Three tickets off the SEO/AEO audit (BNP Build Tracker), all specced with
+GIVEN/WHEN/THEN and owner-confirmed before build. Branch
+`feat/seo-aeo-schema-alt-faq`.
+
+**What.**
+- **BT (FAQ + FAQPage schema)** — the biggest remaining AEO lever (called out as
+  "next" in the prior entry). Added a reusable `FaqSection` (native
+  `<details>/<summary>` accordion — accessible, zero-JS, answer text always in the
+  DOM for crawlers) and a single co-living FAQ source of truth
+  (`content/faqs.ts`, 8 Q&As). Rendered as a visible accordion before the footer
+  on Home and after testimonials on /community, with a matching `FAQPage` JSON-LD
+  built from the same array via `buildFaqJsonLd()` so visible copy and structured
+  data stay in lockstep (Google's visible-parity requirement).
+- **BT (interior JSON-LD)** — /str now emits `LodgingBusiness` (STR-scoped, own
+  @id, parentOrganization → sitewide org), /about emits `AboutPage`, /partner
+  emits `WebPage`; each up from zero structured data.
+- **BT (hero alt text)** — `HeroSlideshow` was rendering `alt=""` and wrapping the
+  layer in `aria-hidden`, discarding the descriptive alt already managed in UO
+  (`HeroImageDto.alt`). Now uses `img.alt` with a brand-default fallback, and the
+  layer is exposed to AT/crawlers. (Audit's raw "14 missing alt" was mostly false
+  positives — decorative background/hover images correctly keep empty alt; the
+  real gap was these 5 hero images.)
+
+**FAQ factual discipline.** Every answer asserts only confirmed facts:
+inclusions from `content/inclusions.ts`; terms ≤ 90 days + weekly/bi-weekly/
+monthly cadence + first-payment-on-booking + e-signed leases from the platform
+spec; 7-night minimum from `COLIVING_MIN_DAYS`; deposit-at-booking, basic
+screening, and "working professionals" audience explicitly owner-confirmed
+(2026-07-12). No invented dollar amounts or screening criteria.
+
+**How / files touched.**
+- New: `client/src/components/faq-section.tsx`, `client/src/content/faqs.ts`.
+- `client/src/lib/seo.ts` — added `ORGANIZATION_REF`, `STR_JSON_LD`,
+  `ABOUT_JSON_LD`, `PARTNER_JSON_LD`, and `buildFaqJsonLd()`.
+- `client/src/pages/home.tsx` — FAQ section + FAQPage schema (array-passed
+  alongside the existing Organization node).
+- `client/src/pages/community.tsx` — FAQ section + FAQPage schema.
+- `client/src/pages/{str,about,partner}.tsx` — pass their JSON-LD to useSeo.
+- `client/src/components/hero-slideshow.tsx` — real alt + drop aria-hidden.
+
+**Tests run + results.** `npm run check` (tsc) clean. `npx vitest run` 305/305
+green (25 files). Local `vite build && npm run prerender` baked 42/42 routes;
+verified in the generated static HTML: home carries `LodgingBusiness` +
+`FAQPage` (8 Questions, each with valid `acceptedAnswer.text`, all 8 answers
+present verbatim in the visible DOM — parity confirmed); /community carries
+`FAQPage` + visible section; /str→`LodgingBusiness`, /about→`AboutPage`,
+/partner→`WebPage`; 5/5 hero images carry non-empty alt (0 missing), slideshow
+container no longer aria-hidden.
+
+**Decisions.** Used native `<details>/<summary>` instead of adding the shadcn
+Radix accordion primitive — lighter, accessible by default, and keeps answer
+text in the static HTML (what AI answer engines need). One shared `COLIVING_FAQS`
+array feeds both pages and both schema blocks. STR schema given its own @id
+(distinct from the sitewide LodgingBusiness node) so it describes the STR offer
+specifically while still pointing back to the org.
+
+**Deferred.** (1) OG social card (1200×630) — audit item skipped by owner for now
+(the round brand mark stays as DEFAULT_OG_IMAGE until a real card asset exists).
+(2) Confirm on the live deploy that www serves the FAQ schema + accordion and
+that Rich Results Test validates the FAQPage. (3) BreadcrumbList schema on
+journal/property pages remains a smaller future lever.
+
+SEO-AEO-ROUND-2 (FAQ + INTERIOR-JSONLD + HERO-ALT): COMPLETE — tests green

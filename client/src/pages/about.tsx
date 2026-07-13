@@ -9,7 +9,7 @@ import { Testimonials } from "@/components/testimonials";
 import { FollowStrip } from "@/components/follow-strip";
 import { RichText } from "@/components/rich-text";
 import { COMPANY } from "@/content/company";
-import { useSeo } from "@/lib/seo";
+import { useSeo, ABOUT_JSON_LD } from "@/lib/seo";
 
 export default function About() {
   useSeo({
@@ -17,6 +17,7 @@ export default function About() {
     description:
       "The people and story behind Be Nice Properties. We own and manage every home ourselves, from co-living rooms to whole-home getaways in Atlanta and Antigua.",
     path: "/about",
+    jsonLd: ABOUT_JSON_LD,
   });
 
   return (
