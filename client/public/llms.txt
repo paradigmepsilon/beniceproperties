@@ -21,3 +21,4 @@ Key facts:
 ## Machine-readable
 
 - [Sitemap](https://www.beniceproperties.com/sitemap.xml)
+- [Journal RSS feed](https://www.beniceproperties.com/feed.xml)

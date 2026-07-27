@@ -32,8 +32,25 @@
     />
     <meta name="twitter:image" content="https://www.beniceproperties.com/bnp-mark-round.png" />
 
+    <!-- Journal syndication. Served dynamically by the Express route (see
+         server/routes.ts /feed.xml + the vercel.json rewrite), so new posts
+         appear without a redeploy. Declared here rather than per-route so the
+         prerenderer carries it into every static page. -->
+    <link
+      rel="alternate"
+      type="application/rss+xml"
+      title="Be Nice Properties Journal"
+      href="/feed.xml"
+    />
+
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- PostHog (analytics) is bundled via posthog-js and initialized in
+         client/src/lib/analytics.ts. Warming the ingest + asset hosts here means
+         the first capture doesn't pay for DNS/TLS, and it declares the install
+         in the HTML where crawlers and site-health checks can see it. -->
+    <link rel="preconnect" href="https://us.i.posthog.com" />
+    <link rel="dns-prefetch" href="https://us-assets.i.posthog.com" />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&display=swap"
       rel="stylesheet"

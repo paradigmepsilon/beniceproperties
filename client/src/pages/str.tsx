@@ -39,6 +39,7 @@ export default function Str() {
         subtitle="Whole-home getaways for a weekend away, a family trip, or a night worth remembering. Pick your dates and book direct, with no platform markup."
         accent={STR_GRADIENT}
         image="/heroes/str.jpg"
+        imageAlt="Whole-home short-term rental living space set up for a weekend getaway"
       />
 
       {/* Highlights strip */}

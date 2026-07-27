@@ -32,6 +32,7 @@ import {
   COLIVING_MIN_DAYS,
   type PropertyListItem,
   type RoomWithAvailability,
+  type JournalBlock,
 } from "@shared/schema";
 import {
   resolveBooking,
@@ -115,6 +116,26 @@ const upload = multer({
 function toUploadedFile(f: Express.Multer.File | undefined): UploadedFile | undefined {
   if (!f) return undefined;
   return { buffer: f.buffer, mimetype: f.mimetype, size: f.size };
+}
+
+/**
+ * Escape a string for XML text/attribute content. The sitemap route can skip
+ * this because it only ever emits slugs and dates; /feed.xml emits author-written
+ * titles and prose, where a single "&" or apostrophe produces a feed that every
+ * reader rejects. Ampersand must be replaced first or it double-escapes the
+ * entities introduced by the later replacements.
+ *
+ * Also strips control characters that are illegal in XML 1.0 at any escape level
+ * (tab/LF/CR are the only ones permitted below 0x20).
+ */
+function xmlEscape(value: string): string {
+  return value
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
 }
 
 // Shared reconciliation handler (Phase 9). Module-level so both the UO and admin
@@ -387,6 +408,97 @@ export async function registerRoutes(app: Express): Promise<void> {
           })
           .join("\n") +
         `\n</urlset>\n`;
+
+      res.set("Content-Type", "application/xml; charset=utf-8");
+      res.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
+      res.send(xml);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // =========================================================================
+  // PUBLIC — /feed.xml (RSS 2.0 for the Journal). Same model as /sitemap.xml:
+  // DB-driven and served per request, so a UO content batch appears in the feed
+  // without a redeploy, and vercel.json rewrites the path here (the SPA
+  // catch-all excludes anything containing a dot, so the rewrite is required).
+  // Honors page_journal_visible exactly as the sitemap does — hiding the Journal
+  // in UO must not leave a syndicated back door open.
+  // =========================================================================
+  app.get("/feed.xml", async (_req, res, next) => {
+    try {
+      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
+      const [journalFlag, posts] = await Promise.all([
+        storage.getSetting("page_journal_visible"),
+        storage.getPublishedJournalPosts(),
+      ]);
+      // Unset → visible, matching the sitemap and the client.
+      const journalVisible = journalFlag?.value !== "false";
+      // Already ordered newest-first by the storage layer.
+      const items = journalVisible ? posts : [];
+
+      // blocks[] is the article body — a typed union, never HTML or markdown, so
+      // every text node is escaped on the way out and the markup here is the only
+      // markup in the payload.
+      const blocksToHtml = (blocks: JournalBlock[]): string =>
+        blocks
+          .map((b) => {
+            if (b.type === "heading") return `<h2>${xmlEscape(b.text)}</h2>`;
+            if (b.type === "paragraph") return `<p>${xmlEscape(b.text)}</p>`;
+            if (b.type === "image" && b.src)
+              return `<p><img src="${xmlEscape(b.src)}" alt="${xmlEscape(b.alt)}" /></p>`;
+            return "";
+          })
+          .filter(Boolean)
+          .join("\n");
+
+      const feedUrl = `${origin}/feed.xml`;
+      // RFC-822 (via RFC-1123) is what RSS 2.0 wants; toUTCString() emits it.
+      // Note this uses the full timestamp, not the API's date-only slice.
+      const lastBuild = (
+        items[0]?.updatedAt ??
+        items[0]?.publishedAt ??
+        items[0]?.createdAt ??
+        new Date()
+      ).toUTCString();
+
+      const xml =
+        `<?xml version="1.0" encoding="UTF-8"?>\n` +
+        `<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom">\n` +
+        `  <channel>\n` +
+        `    <title>Be Nice Properties Journal</title>\n` +
+        `    <link>${origin}/journal</link>\n` +
+        `    <description>Notes from the homes: booking direct, what's included, and making the most of a stay, straight from the people who run the places.</description>\n` +
+        `    <language>en-us</language>\n` +
+        `    <lastBuildDate>${lastBuild}</lastBuildDate>\n` +
+        `    <atom:link href="${feedUrl}" rel="self" type="application/rss+xml" />\n` +
+        items
+          .map((post) => {
+            const url = `${origin}/journal/${post.slug}`;
+            const pubDate = (post.publishedAt ?? post.createdAt).toUTCString();
+            // The cover leads the body rather than riding in an <enclosure>: we
+            // don't know the byte length RSS requires there, and a fabricated
+            // one trips feed validators. Readers pick up the first <img> anyway.
+            const cover = post.coverUrl
+              ? `<p><img src="${xmlEscape(post.coverUrl)}" alt="${xmlEscape(post.title)}" /></p>\n`
+              : "";
+            const body = cover + blocksToHtml(post.blocks);
+            return (
+              `    <item>\n` +
+              `      <title>${xmlEscape(post.title)}</title>\n` +
+              `      <link>${url}</link>\n` +
+              `      <guid isPermaLink="true">${url}</guid>\n` +
+              `      <description>${xmlEscape(post.excerpt)}</description>\n` +
+              `      <pubDate>${pubDate}</pubDate>\n` +
+              // No author column exists on journal_posts, so the org is the
+              // author — same choice journal-article.tsx makes for BlogPosting.
+              `      <dc:creator>Be Nice Properties</dc:creator>\n` +
+              `      <content:encoded>${xmlEscape(body)}</content:encoded>\n` +
+              `    </item>`
+            );
+          })
+          .join("\n") +
+        `\n  </channel>\n</rss>\n`;
 
       res.set("Content-Type", "application/xml; charset=utf-8");
       res.set("Cache-Control", "public, max-age=3600, s-maxage=3600");

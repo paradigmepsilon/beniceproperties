@@ -113,6 +113,7 @@ export default function Partner() {
         subtitle="Invest alongside us, hand us the keys to run it, or let us design and fill it with life. Tell us what you have in mind and we'll take it from there."
         accent={PARTNER_GRADIENT}
         image="/heroes/partner.jpg"
+        imageAlt="Exterior of a Be Nice managed property, the kind of home owners hand over to us to run"
       />
 
       <main className="flex-1">

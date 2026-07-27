@@ -8,7 +8,8 @@
 // `enableDateSearch` is set, a SearchBar rides on the hero and dates flow into
 // the grid (re-priced/re-filtered by /api/properties) and onto card links so the
 // booking flow prefills. LTR has no availability, so it renders without a search
-// bar and dates never apply.
+// bar and dates never apply. `searchPlacement` puts whichever bar is enabled
+// above the heading (default) or below the grid.
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -37,6 +38,12 @@ interface Props {
    * enableDateSearch — a section lists one product, so it needs one bar.
    */
   enableColivingSearch?: boolean;
+  /**
+   * Where the search band sits relative to the heading + grid. "top" (default)
+   * is the classic search-then-browse order; "bottom" leads with the inventory
+   * and puts the refine controls under it. Applies to whichever bar is enabled.
+   */
+  searchPlacement?: "top" | "bottom";
   /** DOM id for #hash scroll targets (e.g. "stays"). */
   id?: string;
   className?: string;
@@ -48,6 +55,7 @@ export function ListingsSection({
   subhead,
   enableDateSearch = false,
   enableColivingSearch = false,
+  searchPlacement = "top",
   id,
   className,
 }: Props) {
@@ -112,46 +120,48 @@ export function ListingsSection({
     if (id) document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
   }
 
+  // Full-bleed band: breaks out of the page's max-w container so the bar spans
+  // the full viewport width, with a hairline band behind it. Rendered above the
+  // heading or below the grid depending on `searchPlacement`.
+  const searchBand = (enableDateSearch || enableColivingSearch) && (
+    <div
+      className={cn(
+        "relative left-1/2 right-1/2 -mx-[50vw] w-screen border-y bg-card py-6",
+        searchPlacement === "bottom" ? "mt-14" : "mb-8",
+      )}
+    >
+      <div className="mx-auto w-full max-w-6xl px-6">
+        {enableDateSearch ? (
+          <SearchBar
+            cities={cities}
+            value={{ city, checkIn, checkOut }}
+            onChange={(v) => {
+              setCity(v.city);
+              setCheckIn(v.checkIn);
+              setCheckOut(v.checkOut);
+            }}
+            onSearch={scrollToStays}
+          />
+        ) : (
+          <ColivingSearchBar
+            cities={cities}
+            budgets={budgets}
+            value={{ city, moveIn, budget }}
+            onChange={(v) => {
+              setCity(v.city);
+              setMoveIn(v.moveIn);
+              setBudget(v.budget);
+            }}
+            onSearch={scrollToStays}
+          />
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <section id={id} className={cn("scroll-mt-24", className)}>
-      {enableDateSearch && (
-        // Full-bleed: break out of the page's max-w container so the search bar
-        // spans the full viewport width (mirrors the co-living home search band).
-        <div className="relative left-1/2 right-1/2 -mx-[50vw] mb-8 w-screen border-y bg-card py-6">
-          <div className="mx-auto w-full max-w-6xl px-6">
-            <SearchBar
-              cities={cities}
-              value={{ city, checkIn, checkOut }}
-              onChange={(v) => {
-                setCity(v.city);
-                setCheckIn(v.checkIn);
-                setCheckOut(v.checkOut);
-              }}
-              onSearch={scrollToStays}
-            />
-          </div>
-        </div>
-      )}
-
-      {enableColivingSearch && (
-        // Full-bleed: break out of the page's max-w container so the search bar
-        // spans the full viewport width, with a hairline band behind it.
-        <div className="relative left-1/2 right-1/2 -mx-[50vw] mb-8 w-screen border-y bg-card py-6">
-          <div className="mx-auto w-full max-w-6xl px-6">
-            <ColivingSearchBar
-              cities={cities}
-              budgets={budgets}
-              value={{ city, moveIn, budget }}
-              onChange={(v) => {
-                setCity(v.city);
-                setMoveIn(v.moveIn);
-                setBudget(v.budget);
-              }}
-              onSearch={scrollToStays}
-            />
-          </div>
-        </div>
-      )}
+      {searchPlacement === "top" && searchBand}
 
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -204,6 +214,8 @@ export function ListingsSection({
           ))}
         </div>
       </div>
+
+      {searchPlacement === "bottom" && searchBand}
     </section>
   );
 }

@@ -75,3 +75,6 @@ Disallow: /admin
 # https://www.beniceproperties.com/llms.txt
 
 Sitemap: https://www.beniceproperties.com/sitemap.xml
+
+# Journal RSS feed
+# https://www.beniceproperties.com/feed.xml

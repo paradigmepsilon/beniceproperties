@@ -2547,3 +2547,86 @@ that Rich Results Test validates the FAQPage. (3) BreadcrumbList schema on
 journal/property pages remains a smaller future lever.
 
 SEO-AEO-ROUND-2 (FAQ + INTERIOR-JSONLD + HERO-ALT): COMPLETE — tests green
+
+---
+
+## SEO/AEO ROUND 3 — Web Health: alt text, RSS feed, analytics visibility (2026-07-27)
+
+**Why.** Unified Ops' Site Health audit graded beniceproperties.com 93/100
+(SEO 97 · AEO 100 · AMP 83) with three non-passing checks: image alt text
+(10/19, WARN), no RSS/Atom feed (WARN), and "no analytics detected" (FAIL).
+The grader is `Unified-Ops/src/lib/web-health.ts` — it fetches the homepage over
+plain HTTP with **no JS execution** and regexes the raw HTML, so a fix only
+counts if it lands in the prerendered static output.
+
+**Key finding — the analytics FAIL was a false negative.** PostHog was already
+fully installed here (client `lib/analytics.ts` + server `lib/posthog.ts`) and
+the BNP project key was verified inlined in the *live* production bundle. The
+check failed because `posthog` appears zero times in the homepage HTML: the SDK
+is bundled, so that regex could never match it. Nothing was broken on the site.
+Confirmed the same false negative was hitting BNA.
+
+**How / files touched.**
+- `client/src/content/inclusions.ts` — added required `imageAlt` to the
+  `Inclusion` interface + a description for all 8 entries.
+- `client/src/components/inclusions-grid.tsx` — render tile `imageAlt` and drop
+  `aria-hidden` from the photo (the scrim div keeps it); added an `imageAlt`
+  prop for the banner. Tile fields aliased (`image: tileImage`) so they can't
+  shadow the banner props of the same name.
+- `client/src/pages/home.tsx` — described the reassurance-band photo.
+- `client/src/components/page-hero.tsx` — added `imageAlt`; was hardcoding
+  `alt="" aria-hidden` for every interior hero.
+- `client/src/pages/{str,ltr,partner,community}.tsx` — pass hero `imageAlt`;
+  `/community` also passes its own `InclusionsGrid` banner alt (it uses a
+  different image than home).
+- `server/routes.ts` — new `GET /feed.xml` (RSS 2.0) after the sitemap route,
+  plus a module-level `xmlEscape()`. DB-driven, honors `page_journal_visible`
+  exactly as the sitemap does, RFC-822 `pubDate` from the full timestamp,
+  `content:encoded` mapped from the typed `blocks[]` union.
+- `vercel.json` — `/feed.xml` → `/api/index` rewrite, placed before the SPA
+  catch-all (which excludes any path containing a dot).
+- `client/index.html` — `<link rel="alternate" type="application/rss+xml">`
+  and PostHog `preconnect`/`dns-prefetch`; prerender carries both to all 42 routes.
+- `client/public/{robots.txt,llms.txt}` — advertise the feed.
+- `server/app.ts` — added PostHog to CSP `scriptSrc`/`connectSrc`. Inert on
+  Vercel (helmet only fronts `/api/*`) but unblocks self-hosted `npm start`.
+- `client/src/lib/analytics.ts` — scope corrected to the owner's decision:
+  `autocapture: true`, `disable_session_recording: true`. It previously shipped
+  the inverse (autocapture off, replay requested).
+- `Unified-Ops/src/lib/web-health.ts` — extracted `detectAnalytics()`: matches
+  vendor names *and* ingest/asset hosts in the HTML, then falls back to fetching
+  the entry module script and scanning that. Detail string now names which
+  surface matched.
+
+**Tests run + results.** `npm run check` (tsc) clean; `npm test` 305/305 green
+(25 files). `npx tsc --noEmit` clean in Unified-Ops. Full build baked 42/42
+routes. Verified in `dist/public/index.html`: **19/19 images carry non-empty alt**
+(was 10/19), 1 RSS link, `posthog` present 3×; 0 empty-alt images on
+/str, /ltr, /community, /partner. `npm run build:api` re-run and `api/index.js`
+re-bundled (local `npm run build` does NOT do this — it only emits `dist/index.js`).
+Dev server: `/feed.xml` → HTTP 200, `application/xml; charset=utf-8`, 35 items,
+`xmllint` well-formed, apostrophes/ampersands escaped in titles, zero raw angle
+brackets inside `content:encoded`; `/sitemap.xml` still 200 with 50 `<loc>`
+entries and well-formed. Ran the patched auditor against the *live* (pre-deploy)
+sites: BNP analytics now PASS via "Detected in JS bundle (posthog)" — 93 → 97
+from the detector fix alone — and BNA 94 → 98.
+
+**Decisions.** (1) The 9 `alt=""` images were technically WCAG-correct as
+decorative, but 8 are real photos of real homes — described rather than hidden,
+so they earn image-search entries. (2) Cover images lead `content:encoded`
+instead of using `<enclosure>`: RSS requires a byte length there and a fabricated
+one trips validators. (3) Feed is dynamic like the sitemap, not a build artifact,
+so UO content batches syndicate without a redeploy. (4) Fixed the UO detector
+rather than only the site — the HTML-only regex structurally cannot see a bundled
+SDK and was misreporting multiple portfolio sites.
+
+**Deferred.** (1) Two hero slides still have blank `hero_images.alt_text` in the
+DB — they fall back to a generic string, so they don't fail the check; fill via
+the UO hero-images admin (data only, no deploy). (2) `page_journal_visible=false`
+path verified by inspection only — exercising it would have hidden the live
+Journal, so it was not toggled. (3) BNP's PostHog project is set to UTC while
+TRAD/DHB use America/New_York; align in the PostHog console. (4) `check:api` is
+referenced in `scripts/build-api.mjs` but not defined in package.json, so nothing
+guards against a stale committed `api/index.js`.
+
+SEO-AEO-ROUND-3 (ALT-TEXT + RSS-FEED + ANALYTICS-VISIBILITY): COMPLETE — tests green

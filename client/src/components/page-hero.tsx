@@ -28,11 +28,18 @@ interface Props {
    * own their own art. The home leaves this unset and keeps the slideshow.
    */
   image?: string;
+  /**
+   * Alt text for `image`. Required whenever `image` is set — the hero is the
+   * largest, most descriptive photo on the page, so leaving it undescribed
+   * costs both screen-reader users and image search. Ignored when the
+   * slideshow renders instead (it carries its own per-slide alt from the DB).
+   */
+  imageAlt?: string;
   /** Extra hero content (e.g. a search bar) rendered under the subtitle. */
   children?: React.ReactNode;
 }
 
-export function PageHero({ eyebrow, title, subtitle, accent, image, children }: Props) {
+export function PageHero({ eyebrow, title, subtitle, accent, image, imageAlt, children }: Props) {
   return (
     <header
       className="relative flex min-h-[380px] items-center overflow-hidden text-white sm:min-h-[440px]"
@@ -44,8 +51,7 @@ export function PageHero({ eyebrow, title, subtitle, accent, image, children }: 
       {image ? (
         <img
           src={image}
-          alt=""
-          aria-hidden
+          alt={imageAlt ?? ""}
           className="pointer-events-none absolute inset-0 h-full w-full object-cover"
         />
       ) : (

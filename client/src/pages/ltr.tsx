@@ -40,6 +40,7 @@ export default function Ltr() {
         subtitle="Full furnished homes for extended stays. These are handled personally, not booked online. Tell us what you're looking for and we'll take it from there."
         accent={LTR_GRADIENT}
         image="/heroes/ltr.jpg"
+        imageAlt="Furnished living room of a Be Nice long-term rental home set up for an extended stay"
       />
 
       {/* Highlights strip */}

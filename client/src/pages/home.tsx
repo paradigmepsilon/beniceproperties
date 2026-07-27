@@ -1,6 +1,6 @@
 // client/src/pages/home.tsx
-// Co-living-focused home: hero (search + two doors to /str and /ltr) → trust band
-// → what's-included → co-living listings grid → testimonials → reassurance band.
+// Co-living-focused home: hero → trust band → co-living search + listings grid
+// → what's-included → testimonials → reassurance band → FAQ.
 // Co-living is the whole page, so the grid shows COLIVING only; the two doors are
 // the wayfinding to the other products (short-term getaways, long-term homes).
 
@@ -76,8 +76,9 @@ export default function Home() {
         accent={COLIVING_GRADIENT}
       />
 
-      {/* Trust band */}
-      <section className="border-y bg-card">
+      {/* Trust band — a thin credibility strip riding directly under the hero,
+          before the search bar and listings. */}
+      <section className="border-b bg-card">
         <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-6 py-6 sm:grid-cols-3">
           {TRUST_ITEMS.map(({ icon: Icon, title, sub }) => (
             <div key={title} className="flex items-center gap-3">
@@ -93,6 +94,21 @@ export default function Home() {
         </div>
       </section>
 
+      {/* Co-living listings (the home's lead product) sit high on the page, right
+          after the trust band and above the first editorial image. Rooms lead;
+          the search band rides underneath them as the refine step. The section
+          owns id="stays" so "Search rooms" scrolls back up to the results. */}
+      <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-14">
+        <ListingsSection
+          type="COLIVING"
+          id="stays"
+          heading="Available rooms"
+          subhead="Private rooms open right now across Atlanta and Antigua."
+          enableColivingSearch
+          searchPlacement="bottom"
+        />
+      </main>
+
       {/* What's included — the biggest co-living objection (hidden costs),
           answered right after the trust band and before the listings. Leads with
           a warm candid of housemates so the section opens on people, not a grid. */}
@@ -100,18 +116,6 @@ export default function Home() {
         image="/editorial/everything-included.jpg"
         className="mx-auto w-full max-w-6xl px-6 py-14"
       />
-
-      {/* Co-living listings (the home's lead product). The section owns id="stays"
-          so the search bar's "Search rooms" button can scroll to it. */}
-      <main className="mx-auto w-full max-w-6xl flex-1 border-t px-6 py-14">
-        <ListingsSection
-          type="COLIVING"
-          id="stays"
-          heading="Available rooms"
-          subhead="Private rooms open right now across Atlanta and Antigua."
-          enableColivingSearch
-        />
-      </main>
 
       {/* Social proof — real guests, before the closing reassurance band. */}
       <section className="border-t bg-card">
@@ -132,11 +136,12 @@ export default function Home() {
         className="relative isolate scroll-mt-24 overflow-hidden py-16 text-white"
         style={{ background: "#2c6e8f" }}
       >
-        {/* Backmost photo. */}
+        {/* Backmost photo. Described rather than aria-hidden — it's a real Be
+            Nice home, so it earns an image-search entry. The scrim and tint
+            layers below it are the decorative ones. */}
         <img
           src="/editorial/coliving-home-band.jpg"
-          alt=""
-          aria-hidden
+          alt="Housemates sharing a bright, well-kept common area in a Be Nice co-living home"
           className="pointer-events-none absolute inset-0 -z-10 h-full w-full object-cover"
         />
         {/* Legibility scrim + teal accent wash. */}

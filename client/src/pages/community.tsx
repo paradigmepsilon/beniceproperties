@@ -71,6 +71,7 @@ export default function Community() {
         subtitle="We run homes, not listings. That means real hosts, well-kept houses, and a standard we stand behind whether you're here for a weekend or a season."
         accent={COLIVING_GRADIENT}
         image="/heroes/community.jpg"
+        imageAlt="Housemates gathered around a shared table in a Be Nice co-living home"
       />
 
       <main className="flex-1">
@@ -123,6 +124,7 @@ export default function Community() {
         <section className="border-t bg-card">
           <InclusionsGrid
             image="/editorial/everything-included-community.jpg"
+            imageAlt="Housemates sharing a meal in the common area of a fully furnished Be Nice co-living home"
             className="mx-auto w-full max-w-6xl px-6 py-14"
           />
         </section>

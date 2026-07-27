@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 export function InclusionsGrid({
   variant = "full",
   image,
+  imageAlt = "Housemates relaxing and cooking together in a bright, fully furnished Be Nice co-living home",
   className,
 }: {
   variant?: "full" | "compact";
@@ -21,6 +22,12 @@ export function InclusionsGrid({
    * image-free so it reads as a tight essentials list.
    */
   image?: string;
+  /**
+   * Alt text for `image`. Defaults to the home-page banner's description;
+   * callers passing a different banner should pass a matching alt rather than
+   * inheriting a description of a photo they aren't showing.
+   */
+  imageAlt?: string;
   className?: string;
 }) {
   if (INCLUSIONS.length === 0) return null;
@@ -55,7 +62,7 @@ export function InclusionsGrid({
         <div className="mb-9 overflow-hidden rounded-3xl">
           <img
             src={image}
-            alt="Housemates relaxing and cooking together in a bright, fully furnished Be Nice co-living home"
+            alt={imageAlt}
             className="aspect-[16/9] w-full object-cover sm:aspect-[21/9]"
             loading="lazy"
           />
@@ -68,16 +75,19 @@ export function InclusionsGrid({
         One simple rate covers it all. No surprise bills, no add-ons at checkout.
       </p>
       <ul className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {INCLUSIONS.map(({ icon: Icon, label, note, image }) => (
+        {INCLUSIONS.map(({ icon: Icon, label, note, image: tileImage, imageAlt: tileImageAlt }) => (
           <li key={label} className="group relative overflow-hidden bnp-card p-5">
             {/* Rollover image + dark scrim: a photo of this inclusion fades and
                 zooms in on hover. Sits at z-0 (above the card's opaque bg-card),
                 with the card content lifted to z-10 above it so text stays
-                readable over the scrim. */}
+                readable over the scrim.
+                Aliased off `image`/`imageAlt` so it can't shadow the banner
+                props of the same name above. Described, not aria-hidden: these
+                are real photos of the homes and belong in image search. Only
+                the scrim below is genuinely decorative. */}
             <img
-              src={image}
-              alt=""
-              aria-hidden
+              src={tileImage}
+              alt={tileImageAlt}
               loading="lazy"
               className="pointer-events-none absolute inset-0 z-0 h-full w-full scale-105 object-cover opacity-0 transition-all duration-500 ease-out group-hover:scale-100 group-hover:opacity-100"
             />

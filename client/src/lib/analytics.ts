@@ -1,15 +1,18 @@
 // client/src/lib/analytics.ts
 // Client-side PostHog (posthog-js) for the BNP public site. Server-side capture
 // already runs via server/lib/posthog.ts; this covers the frontend half:
-// pageviews, anonymous sessions, session replay, and named conversion events.
+// pageviews, anonymous sessions, autocaptured interactions, and named
+// conversion events.
 //
 // Same phc_ project key as the server (VITE_POSTHOG_KEY), so client + server
 // events land in the SAME PostHog project. If the key is unset, every function
 // here no-ops silently — dev/preview builds without the var never error.
 //
-// Session replay is REQUESTED here with input masking, but PostHog only records
-// once "Session Replay" is toggled ON in the project's settings (a dashboard
-// step). Until then the client just captures events/pageviews.
+// Scope decision (2026-07-27): pageviews + autocapture, NO session replay. The
+// site carries lease and payment forms, so recording real visitor screens is a
+// privacy-policy question, not a default. Replay is disabled here explicitly
+// rather than left to the project-level toggle — the client shouldn't be asking
+// for it at all.
 
 import posthog from "posthog-js";
 
@@ -43,14 +46,13 @@ export function initAnalytics(): void {
     // loads to hook), so turn off the SDK's automatic one to avoid duplicates.
     capture_pageview: false,
     capture_pageleave: true,
-    // Session replay: request it with all inputs masked so no typed PII (names,
-    // emails, card fields) is ever recorded. Actual recording still depends on
-    // the project-level toggle in PostHog settings.
-    disable_session_recording: false,
-    session_recording: {
-      maskAllInputs: true,
-    },
-    autocapture: false,
+    // No session replay — see the scope note at the top of this file. Kept off
+    // client-side so it can't start recording if the project toggle is ever
+    // flipped on for another reason.
+    disable_session_recording: true,
+    // Autocapture: clicks on links/buttons, so we can see which CTAs actually
+    // move people into a booking without hand-instrumenting every element.
+    autocapture: true,
   });
 }
 

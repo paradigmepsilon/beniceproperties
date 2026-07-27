@@ -4480,6 +4480,9 @@ function toUploadedFile(f) {
   if (!f) return void 0;
   return { buffer: f.buffer, mimetype: f.mimetype, size: f.size };
 }
+function xmlEscape(value) {
+  return value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&apos;");
+}
 async function reconciliationHandler(req, res, next) {
   try {
     const schema = z3.object({
@@ -4676,6 +4679,59 @@ ${parts.join("\n")}
   </url>`;
       }).join("\n") + `
 </urlset>
+`;
+      res.set("Content-Type", "application/xml; charset=utf-8");
+      res.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
+      res.send(xml);
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/feed.xml", async (_req, res, next) => {
+    try {
+      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
+      const [journalFlag, posts] = await Promise.all([
+        storage.getSetting("page_journal_visible"),
+        storage.getPublishedJournalPosts()
+      ]);
+      const journalVisible = journalFlag?.value !== "false";
+      const items = journalVisible ? posts : [];
+      const blocksToHtml = (blocks) => blocks.map((b) => {
+        if (b.type === "heading") return `<h2>${xmlEscape(b.text)}</h2>`;
+        if (b.type === "paragraph") return `<p>${xmlEscape(b.text)}</p>`;
+        if (b.type === "image" && b.src)
+          return `<p><img src="${xmlEscape(b.src)}" alt="${xmlEscape(b.alt)}" /></p>`;
+        return "";
+      }).filter(Boolean).join("\n");
+      const feedUrl = `${origin}/feed.xml`;
+      const lastBuild = (items[0]?.updatedAt ?? items[0]?.publishedAt ?? items[0]?.createdAt ?? /* @__PURE__ */ new Date()).toUTCString();
+      const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:atom="http://www.w3.org/2005/Atom">
+  <channel>
+    <title>Be Nice Properties Journal</title>
+    <link>${origin}/journal</link>
+    <description>Notes from the homes: booking direct, what's included, and making the most of a stay, straight from the people who run the places.</description>
+    <language>en-us</language>
+    <lastBuildDate>${lastBuild}</lastBuildDate>
+    <atom:link href="${feedUrl}" rel="self" type="application/rss+xml" />
+` + items.map((post) => {
+        const url = `${origin}/journal/${post.slug}`;
+        const pubDate = (post.publishedAt ?? post.createdAt).toUTCString();
+        const cover = post.coverUrl ? `<p><img src="${xmlEscape(post.coverUrl)}" alt="${xmlEscape(post.title)}" /></p>
+` : "";
+        const body = cover + blocksToHtml(post.blocks);
+        return `    <item>
+      <title>${xmlEscape(post.title)}</title>
+      <link>${url}</link>
+      <guid isPermaLink="true">${url}</guid>
+      <description>${xmlEscape(post.excerpt)}</description>
+      <pubDate>${pubDate}</pubDate>
+      <dc:creator>Be Nice Properties</dc:creator>
+      <content:encoded>${xmlEscape(body)}</content:encoded>
+    </item>`;
+      }).join("\n") + `
+  </channel>
+</rss>
 `;
       res.set("Content-Type", "application/xml; charset=utf-8");
       res.set("Cache-Control", "public, max-age=3600, s-maxage=3600");
@@ -6064,11 +6120,21 @@ function applyBaseMiddleware(app) {
       contentSecurityPolicy: isDev ? false : {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'", "'unsafe-inline'", "https://js.stripe.com"],
+          scriptSrc: [
+            "'self'",
+            "'unsafe-inline'",
+            "https://js.stripe.com",
+            "https://us-assets.i.posthog.com"
+          ],
           styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
           fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
           imgSrc: ["'self'", "data:", "blob:", "https:"],
-          connectSrc: ["'self'", "https://api.stripe.com", "https://*.stripe.com"],
+          connectSrc: [
+            "'self'",
+            "https://api.stripe.com",
+            "https://*.stripe.com",
+            "https://*.i.posthog.com"
+          ],
           frameSrc: ["'self'", "https://js.stripe.com", "https://hooks.stripe.com"],
           objectSrc: ["'none'"],
           baseUri: ["'self'"],

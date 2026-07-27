@@ -22,7 +22,12 @@ export function applyBaseMiddleware(app: Express): void {
   app.use(compression());
 
   // Security headers. CSP allows Stripe (js + frames + api) since checkout/elements
-  // load from js.stripe.com. Disabled in dev for easier local network access.
+  // load from js.stripe.com, and PostHog (analytics) since posthog-js lazy-loads
+  // its recorder bundle from us-assets and beacons to us.i.posthog.com. On Vercel
+  // this middleware only fronts /api/*, so the CDN-served HTML never sees these
+  // headers — but `npm start` self-hosted serves the client through here too, and
+  // without the PostHog entries analytics would be silently blocked there.
+  // Disabled in dev for easier local network access.
   app.use(
     helmet({
       contentSecurityPolicy: isDev
@@ -30,11 +35,21 @@ export function applyBaseMiddleware(app: Express): void {
         : {
             directives: {
               defaultSrc: ["'self'"],
-              scriptSrc: ["'self'", "'unsafe-inline'", "https://js.stripe.com"],
+              scriptSrc: [
+                "'self'",
+                "'unsafe-inline'",
+                "https://js.stripe.com",
+                "https://us-assets.i.posthog.com",
+              ],
               styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
               fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
               imgSrc: ["'self'", "data:", "blob:", "https:"],
-              connectSrc: ["'self'", "https://api.stripe.com", "https://*.stripe.com"],
+              connectSrc: [
+                "'self'",
+                "https://api.stripe.com",
+                "https://*.stripe.com",
+                "https://*.i.posthog.com",
+              ],
               frameSrc: ["'self'", "https://js.stripe.com", "https://hooks.stripe.com"],
               objectSrc: ["'none'"],
               baseUri: ["'self'"],
