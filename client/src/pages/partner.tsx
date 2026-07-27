@@ -13,7 +13,7 @@
 // deliberately unlike the co-living teal / STR coral / LTR amber segment colors.
 
 import { SiteHeader, SiteFooter } from "@/components/site-header";
-import { PageHero } from "@/components/page-hero";
+import { PageHero, HeroCta } from "@/components/page-hero";
 import { EditorialRow } from "@/components/editorial-row";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,8 +23,13 @@ import {
 import { useSeo, PARTNER_JSON_LD } from "@/lib/seo";
 
 const PARTNER_GRADIENT = "linear-gradient(135deg, #2f5d50, #1c3a33)";
-// Eyebrow accent for the editorial rows — the emerald end of the hero gradient.
-const PARTNER_ACCENT = "text-[#2f5d50]";
+
+// One label for one action. All five offers post to the same form and differ
+// only by the interest chip they pre-select, but the page shipped five distinct
+// CTA labels ("Talk about investing", "Hand us the keys", …) and then the form
+// renamed all five again in its own chips. The `cta` field on SERVICES is now
+// unused for rendering and kept only as editorial reference copy.
+const PARTNER_CTA = "Start a conversation";
 
 // The five ways to partner, as editorial rows. `interest` maps to a
 // PartnerInquiryForm chip value so a row's CTA can pre-select it. `imageRight`
@@ -110,7 +115,8 @@ export default function Partner() {
       <PageHero
         eyebrow="Partner with us"
         title="Own the property. We'll handle the rest."
-        subtitle="Invest alongside us, hand us the keys to run it, or let us design and fill it with life. Tell us what you have in mind and we'll take it from there."
+        subtitle="Invest alongside us, hand us the keys, or let us design and fill it with life."
+        cta={<HeroCta href="#partner-form">Start a conversation</HeroCta>}
         accent={PARTNER_GRADIENT}
         image="/heroes/partner.jpg"
         imageAlt="Exterior of a Be Nice managed property, the kind of home owners hand over to us to run"
@@ -119,12 +125,12 @@ export default function Partner() {
       <main className="flex-1">
         {/* Intro to the services — centered. Bottom padding gives the header room
             above the first divider below it. */}
-        <section className="mx-auto w-full max-w-6xl px-6 pb-10 pt-10 text-center">
-          <div className="mx-auto max-w-2xl">
-            <p className={`text-sm font-bold uppercase tracking-widest ${PARTNER_ACCENT}`}>
-              Ways to partner
-            </p>
-            <h2 className="mt-2 font-display text-3xl font-semibold tracking-tight sm:text-4xl">
+        {/* Left-aligned, matching every other section header on the site. The
+            centered variant here and on /about were the only two, and they read
+            as imports from a different page. */}
+        <section className="mx-auto w-full max-w-6xl px-6 pb-10 pt-10">
+          <div className="max-w-2xl">
+            <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">
               Five ways to work with us
             </h2>
             <p className="mt-3 text-muted-foreground">
@@ -135,34 +141,63 @@ export default function Partner() {
           </div>
         </section>
 
-        {/* The five services as alternating image/text rows. A divider sits
-            before every row — including the first, to separate the rows from the
-            intro header above. */}
-        {SERVICES.map((s, i) => (
+        {/* First two offers as full editorial rows. The page previously ran all
+            five through `imageRight={i % 2 === 0}`, producing five consecutive
+            alternating image/text splits — the cap is two, and by row three a
+            scanning reader has learned the pattern and stops reading. The
+            remaining three move to a grid below, which also drops three of the
+            page's seven eyebrows and all five ghost numerals. */}
+        {SERVICES.slice(0, 2).map((s, i) => (
           <div key={s.interest}>
             <hr className="mx-auto w-full max-w-6xl border-t border-border" />
             <EditorialRow
               image={s.image}
               imageAlt={s.imageAlt}
-              eyebrow={s.eyebrow}
               heading={s.heading}
-              imageRight={i % 2 === 0}
-              accentClassName={PARTNER_ACCENT}
+              imageRight={i === 0}
               sectionClassName="px-6 py-10"
-              badge={String(i + 1).padStart(2, "0")}
-              badgeClassName="text-[#2f5d50]/[0.09]"
             >
               <p>{s.body}</p>
               <Button
                 onClick={() => goToForm(s.interest)}
-                className="bg-[#2f5d50] text-white hover:bg-[#264c41]"
                 data-testid={`button-service-${s.interest.toLowerCase()}`}
               >
-                {s.cta}
+                {PARTNER_CTA}
               </Button>
             </EditorialRow>
           </div>
         ))}
+
+        {/* The other three offers as a card grid — a different layout family, so
+            the page stops repeating itself. */}
+        <hr className="mx-auto w-full max-w-6xl border-t border-border" />
+        <section className="mx-auto w-full max-w-6xl px-6 py-12">
+          <div className="grid gap-6 md:grid-cols-3">
+            {SERVICES.slice(2).map((s) => (
+              <div key={s.interest} className="bnp-card flex flex-col overflow-hidden">
+                <img
+                  src={s.image}
+                  alt={s.imageAlt}
+                  loading="lazy"
+                  width={640}
+                  height={420}
+                  className="h-44 w-full object-cover"
+                />
+                <div className="flex flex-1 flex-col p-6">
+                  <h3 className="font-display text-xl font-semibold tracking-tight">{s.heading}</h3>
+                  <p className="mt-2 flex-1 text-sm leading-relaxed text-muted-foreground">{s.body}</p>
+                  <Button
+                    className="mt-5 self-start"
+                    onClick={() => goToForm(s.interest)}
+                    data-testid={`button-service-${s.interest.toLowerCase()}`}
+                  >
+                    {PARTNER_CTA}
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
 
         {/* The conversion surface, now at the foot of the page. Every service
             row's CTA scrolls down here and pre-selects the matching interest. */}

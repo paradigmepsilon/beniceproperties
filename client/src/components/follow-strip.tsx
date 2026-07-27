@@ -37,7 +37,7 @@ export function FollowStrip({
             href={href}
             target="_blank"
             rel="noopener noreferrer"
-            className="bnp-pill gap-2 border-primary bg-accent font-semibold text-primary hover:bg-primary hover:text-primary-foreground"
+            className="bnp-pill gap-2 border-primary bg-accent font-semibold text-accent-foreground hover:bg-primary hover:text-primary-foreground"
             data-testid={`link-social-${key}`}
           >
             <Icon className="h-4 w-4" /> {label}

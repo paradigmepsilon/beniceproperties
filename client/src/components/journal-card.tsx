@@ -29,11 +29,14 @@ export function JournalCard({ post }: { post: JournalPost }) {
         <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
           {shortDate(post.date)}
         </span>
-        <h3 className="mt-1.5 font-display text-lg font-semibold leading-snug tracking-tight">
+        {/* h2, not h3: the journal index goes h1 "Notes from the homes" straight
+            into these cards with no intervening section heading, so h3 skipped a
+            level. JournalCard is only rendered here, so h2 is correct. */}
+        <h2 className="mt-1.5 font-display text-lg font-semibold leading-snug tracking-tight">
           {post.title}
-        </h3>
+        </h2>
         <p className="mt-2 flex-1 text-sm leading-snug text-muted-foreground">{post.excerpt}</p>
-        <span className="mt-4 text-sm font-semibold text-primary">Read more →</span>
+        <span className="mt-4 text-sm font-semibold text-accent-foreground">Read more →</span>
       </div>
     </Link>
   );

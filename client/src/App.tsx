@@ -30,6 +30,7 @@ import AdminLogin from "@/pages/admin/login";
 import AdminDashboard from "@/pages/admin/dashboard";
 import NotFound from "@/pages/not-found";
 import { ComingSoon } from "@/pages/coming-soon";
+import { LtrInquiryForm } from "@/components/ltr-inquiry-form";
 import { useSiteConfig } from "@/lib/useSiteConfig";
 
 // LTR segment (amber) and Journal accent gradients, reused for their Coming-soon
@@ -54,6 +55,10 @@ function LtrGate() {
       path="/ltr"
       seoTitle="Long-Term Rentals, Coming Soon"
       seoDescription="Our long-term furnished home rentals are coming soon. Reach out and we'll help you directly in the meantime."
+      // The placeholder invites an inquiry, so it has to accept one. Without
+      // this, a lead who searched for a long-term home hit a page that asked
+      // them to get in touch and gave them nowhere to do it.
+      capture={<LtrInquiryForm />}
     />
   );
 }

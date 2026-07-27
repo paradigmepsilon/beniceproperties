@@ -4,7 +4,7 @@
 // sees the stay total before continuing — short stays (7–28 nights) pay in full
 // at /checkout; longer stays are set up as a lease (full schedule on /lease).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useLocation, useSearch, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { differenceInCalendarDays, parseISO } from "date-fns";
@@ -108,6 +108,16 @@ export default function RoomDetail() {
     seededOut > seededIn;
   const [startDate, setStartDate] = useState(seedValid ? seededIn : "");
   const [endDate, setEndDate] = useState(seedValid ? seededOut : "");
+
+  // Mobile reserve bar: appears once the gallery has scrolled away, so the rate
+  // and the CTA stay reachable without scrolling to the card at ~64% page depth.
+  const [pastGallery, setPastGallery] = useState(false);
+  useEffect(() => {
+    const onScroll = () => setPastGallery(window.scrollY > 420);
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   // Co-living disables the lease's end date too (a lease occupies it), so every
   // availability call here is inclusive: halfOpen=false.
@@ -224,7 +234,7 @@ export default function RoomDetail() {
       <SiteHeader />
       <main className="mx-auto w-full max-w-5xl flex-1 px-6 py-8">
         {property && (
-          <Link href={`/property/${property.id}`} className="bnp-pill mb-5 gap-1.5 border-primary bg-accent font-semibold text-primary hover:bg-primary hover:text-primary-foreground">
+          <Link href={`/property/${property.id}`} className="bnp-pill mb-5 gap-1.5 border-primary bg-accent font-semibold text-accent-foreground hover:bg-primary hover:text-primary-foreground">
             <ArrowLeft className="h-4 w-4" /> {property.name}
           </Link>
         )}
@@ -242,6 +252,19 @@ export default function RoomDetail() {
             <span className={`mt-3 inline-block rounded-full px-3 py-1 text-xs font-bold ${room.status === "AVAILABLE" ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
               {room.status === "AVAILABLE" ? "Available" : room.status === "HOLD" ? "On hold" : "Occupied"}
             </span>
+
+            {/* Mobile price anchor. On desktop the reserve card is sticky and the
+                rate is always in view; in the single-column mobile stack that
+                card falls to ~64% of page height, so the rate has to be stated
+                up here or a phone visitor never sees a number before bouncing. */}
+            <p className="mt-4 text-base lg:hidden">
+              <span className="font-semibold">{money(room.weeklyRent)}</span>
+              <span className="text-muted-foreground"> / week</span>
+              <span className="text-muted-foreground">
+                {" · "}
+                {COLIVING_MIN_DAYS}-night minimum
+              </span>
+            </p>
             {/* Editorial listing story (hook, essentials, getting-around, who-for)
                 when structured content exists; falls back to plain prose. */}
             <ListingStory
@@ -256,7 +279,7 @@ export default function RoomDetail() {
             {property && <NeighborhoodBlock city={cityOf(property.location)} className="mt-8" />}
           </div>
 
-          <aside>
+          <aside id="reserve" className="scroll-mt-24">
             <div className="bnp-card sticky top-24 overflow-hidden p-6">
               <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
               <h2 className="font-display text-lg font-semibold">Reserve this room</h2>
@@ -386,6 +409,38 @@ export default function RoomDetail() {
           </aside>
         </div>
       </main>
+
+      {/* Mobile reserve bar. The desktop card is `sticky top-24`, which does
+          nothing in a single-column mobile stack — the card lands at ~64% of
+          page height, so a phone visitor scrolled three viewports of amenity
+          copy before seeing a price. This keeps rate + CTA in the thumb zone.
+          Tapping scrolls to the real card, where the date picker lives. */}
+      {pastGallery && (
+        <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-card/95 px-5 py-3 backdrop-blur-md lg:hidden">
+          <div className="mx-auto flex max-w-5xl items-center justify-between gap-4">
+            <div className="leading-tight">
+              <p className="text-base font-semibold">
+                {money(room.weeklyRent)}
+                <span className="text-sm font-normal text-muted-foreground"> / wk</span>
+              </p>
+              <p className="text-xs text-muted-foreground">
+                {room.status === "AVAILABLE" ? `${COLIVING_MIN_DAYS}-night minimum` : "Not available"}
+              </p>
+            </div>
+            <Button
+              className="shrink-0"
+              onClick={() => document.getElementById("reserve")?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              disabled={notAvailable}
+              data-testid="button-reserve-mobile"
+            >
+              {notAvailable ? "Not available" : "Reserve"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Bottom-bar clearance so the footer's last row is never covered. */}
+      {pastGallery && <div aria-hidden className="h-20 lg:hidden" />}
       <SiteFooter />
     </div>
   );

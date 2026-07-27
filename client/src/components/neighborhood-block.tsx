@@ -41,7 +41,7 @@ export function NeighborhoodBlock({ city, className }: { city: string; className
           href={n.mapsUrl}
           target="_blank"
           rel="noopener noreferrer"
-          className="bnp-pill mt-5 gap-1.5 border-primary bg-accent font-semibold text-primary hover:bg-primary hover:text-primary-foreground"
+          className="bnp-pill mt-5 gap-1.5 border-primary bg-accent font-semibold text-accent-foreground hover:bg-primary hover:text-primary-foreground"
           data-testid="link-neighborhood-map"
         >
           <MapPin className="h-4 w-4" /> View on the map

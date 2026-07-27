@@ -82,7 +82,7 @@ export default function JournalArticle() {
       <main className="mx-auto w-full max-w-3xl flex-1 px-6 py-8">
         <Link
           href="/journal"
-          className="bnp-pill mb-5 gap-1.5 border-primary bg-accent font-semibold text-primary hover:bg-primary hover:text-primary-foreground"
+          className="bnp-pill mb-5 gap-1.5 border-primary bg-accent font-semibold text-accent-foreground hover:bg-primary hover:text-primary-foreground"
           data-testid="link-back-journal"
         >
           <ArrowLeft className="h-4 w-4" /> Journal

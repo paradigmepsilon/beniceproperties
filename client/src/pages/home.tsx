@@ -7,7 +7,7 @@
 import { useEffect } from "react";
 import { CalendarCheck, Handshake, Star } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
-import { PageHero } from "@/components/page-hero";
+import { PageHero, HeroCta } from "@/components/page-hero";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { ListingsSection } from "@/components/listings-section";
 import { Testimonials } from "@/components/testimonials";
@@ -17,7 +17,7 @@ import { useSeo, ORGANIZATION_JSON_LD, buildFaqJsonLd, SITE_URL } from "@/lib/se
 
 // Co-living teal accent — the home's lead product. Tints the shared hero image
 // (and is the no-image fallback), matching /community and the co-living identity.
-const COLIVING_GRADIENT = "linear-gradient(135deg, #3E92BC, #1C4A61)";
+const COLIVING_GRADIENT = "linear-gradient(135deg, #2C6E8F, #1C4A61)";
 
 // -----------------------------------------------------------------------------
 // Placeholder marketing copy — shipped verbatim from the design template by
@@ -70,9 +70,10 @@ export default function Home() {
 
       {/* Shared hero — image slideshow at the common height, teal (co-living) accent. */}
       <PageHero
-        eyebrow="Co-living in Atlanta · The Southeast US · and growing"
+        eyebrow="Co-living in Atlanta and beyond"
         title="A furnished room that already feels like home."
-        subtitle="Private, furnished rooms in beautifully run co-living homes across Atlanta. Book direct in a few minutes, and skip the platform fees."
+        subtitle="Private, furnished rooms in beautifully run co-living homes across Atlanta. Book direct, skip the platform fees."
+        cta={<HeroCta href="/#stays">See available rooms</HeroCta>}
         accent={COLIVING_GRADIENT}
       />
 
@@ -158,7 +159,7 @@ export default function Home() {
           <h2 className="max-w-[20ch] font-display text-3xl font-semibold tracking-tight sm:text-4xl">
             A room in a home, not a room in a listing.
           </h2>
-          <p className="mt-3 max-w-[52ch] text-white/90">
+          <p className="mt-3 max-w-[52ch] text-white">
             You're not gambling on some stranger's spare room. We own or manage every Be
             Nice home ourselves, so every room meets the same standard. Someone real
             is always a message away.
@@ -167,11 +168,16 @@ export default function Home() {
             {STEPS.map((s) => (
               <div
                 key={s.n}
-                className="rounded-2xl border border-white/15 bg-white/10 p-6 backdrop-blur-sm"
+                // bg-black/30 rather than bg-white/10: the white-tinted card
+                // lightened the band to a measured #417d9a, where the step label
+                // (white/70) computed 3.09:1 and the body (white/85) 3.79:1.
+                // Darkening the card ground puts solid white back over AA
+                // regardless of which slideshow photo is behind it.
+                className="rounded-2xl border border-white/15 bg-black/30 p-6 backdrop-blur-sm"
               >
-                <div className="font-display text-sm font-bold text-white/70">{s.n}</div>
+                <div className="font-display text-sm font-bold text-white">{s.n}</div>
                 <h3 className="mt-2.5 font-display text-lg font-semibold text-white">{s.title}</h3>
-                <p className="mt-1.5 text-sm text-white/85">{s.sub}</p>
+                <p className="mt-1.5 text-sm text-white/95">{s.sub}</p>
               </div>
             ))}
           </div>

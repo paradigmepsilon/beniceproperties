@@ -6,7 +6,7 @@
 
 import { CalendarCheck, Home, Sparkles } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
-import { PageHero } from "@/components/page-hero";
+import { PageHero, HeroCta } from "@/components/page-hero";
 import { ListingsSection } from "@/components/listings-section";
 import { useSeo, STR_JSON_LD } from "@/lib/seo";
 
@@ -36,7 +36,8 @@ export default function Str() {
       <PageHero
         eyebrow="Short-term rentals"
         title="Have the whole place to yourselves."
-        subtitle="Whole-home getaways for a weekend away, a family trip, or a night worth remembering. Pick your dates and book direct, with no platform markup."
+        subtitle="Whole-home getaways for a weekend, a family trip, or a night worth remembering. Book direct, no markup."
+        cta={<HeroCta href="#stays">See available stays</HeroCta>}
         accent={STR_GRADIENT}
         image="/heroes/str.jpg"
         imageAlt="Whole-home short-term rental living space set up for a weekend getaway"

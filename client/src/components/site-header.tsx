@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { ChevronDown, Instagram, Facebook } from "lucide-react";
+import { ChevronDown, Instagram, Facebook, Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { NewsletterSignup } from "@/components/newsletter-signup";
 import { COMPANY } from "@/content/company";
@@ -15,6 +15,7 @@ const NAV_LINK_ACTIVE = "text-foreground after:scale-x-100";
 
 export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [location] = useLocation();
   // UO-controlled page visibility. Hidden pages drop out of the nav (they still
   // resolve to a "Coming soon" placeholder if reached by direct URL).
@@ -27,23 +28,37 @@ export function SiteHeader() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
+  // Close the mobile menu on navigation, so tapping a destination doesn't leave
+  // the panel covering the page it just loaded.
+  useEffect(() => setMenuOpen(false), [location]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setMenuOpen(false);
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
+
   return (
     <header className="sticky top-0 z-40 border-b bg-[#FBFAF7]/85 backdrop-blur-md">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
-        <Link href="/" className="flex items-center">
+      {/* gap-4 guarantees the logo and nav can never collide: at 390px the mark
+          previously ended at x=114 and the nav began at x=114 with zero gap. */}
+      <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-3.5">
+        <Link href="/" className="flex shrink-0 items-center">
           <img
             src={scrolled ? "/bnp-mark-round.png" : "/bnp-logo.png"}
             alt="Be Nice Properties"
-            className={
-              scrolled
-                ? "h-[3.125rem] w-[3.125rem] transition-all duration-300"
-                : "h-[3.125rem] w-auto transition-all duration-300"
-            }
+            className={cn(
+              "transition-all duration-300",
+              // Capped at 36px on mobile; the full 50px mark only from md up.
+              scrolled ? "h-9 w-9 md:h-[3.125rem] md:w-[3.125rem]" : "h-9 w-auto md:h-[3.125rem]",
+            )}
           />
         </Link>
-        {/* BT-23 mobile: min-h-11 on each link so nav items are 44px tap targets.
-            The three product links lead; content links demote below sm. */}
-        <nav className="flex items-center gap-4 text-sm font-medium text-muted-foreground sm:gap-6">
+
+        {/* Desktop nav. Every destination is visible from md up; below that the
+            hamburger owns navigation, so nothing is unreachable on a phone. */}
+        <nav className="hidden items-center gap-6 text-sm font-medium text-muted-foreground md:flex">
           {/* Co-living is the home page; a real /#stays navigation scrolls to the
               rooms grid (wouter Link doesn't scroll to hashes). Active on "/". */}
           <a
@@ -52,28 +67,23 @@ export function SiteHeader() {
           >
             Co-living
           </a>
-          {/* Secondary content items hidden on the smallest screens to keep the
-              mobile header uncrowded. */}
           <Link
             href="/community"
-            className={cn(NAV_LINK_BASE, "hidden sm:inline-flex", location === "/community" && NAV_LINK_ACTIVE)}
+            className={cn(NAV_LINK_BASE, location === "/community" && NAV_LINK_ACTIVE)}
           >
             Community
           </Link>
           {config.pages.journal && (
             <Link
               href="/journal"
-              className={cn(NAV_LINK_BASE, "hidden md:inline-flex", location.startsWith("/journal") && NAV_LINK_ACTIVE)}
+              className={cn(NAV_LINK_BASE, location.startsWith("/journal") && NAV_LINK_ACTIVE)}
             >
               Journal
             </Link>
           )}
-          {/* Partner: B2B page. Demoted below md like Journal to keep the mobile
-              header uncrowded; on small screens it's reachable from the footer
-              Company group (this header has no separate mobile menu). */}
           <Link
             href="/partner"
-            className={cn(NAV_LINK_BASE, "hidden md:inline-flex", location === "/partner" && NAV_LINK_ACTIVE)}
+            className={cn(NAV_LINK_BASE, location === "/partner" && NAV_LINK_ACTIVE)}
           >
             Partner
           </Link>
@@ -85,13 +95,78 @@ export function SiteHeader() {
           />
           <Link
             href="/lookup"
-            className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 font-semibold text-primary-foreground transition-colors hover:bg-accent-foreground"
+            className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 font-semibold text-primary-foreground transition-colors hover:bg-[#b23a28]"
           >
             My booking
           </Link>
         </nav>
+
+        {/* Mobile: one-word CTA (the old "My booking" wrapped to two lines at
+            390px) plus the menu toggle. */}
+        <div className="flex items-center gap-2 md:hidden">
+          <Link
+            href="/lookup"
+            className="inline-flex min-h-11 shrink-0 items-center rounded-full bg-primary px-4 text-sm font-semibold text-primary-foreground"
+          >
+            Book
+          </Link>
+          <button
+            type="button"
+            onClick={() => setMenuOpen((v) => !v)}
+            aria-expanded={menuOpen}
+            aria-controls="mobile-nav"
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border text-foreground transition-colors hover:bg-secondary"
+          >
+            {menuOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
+          </button>
+        </div>
       </div>
+
+      {/* Mobile panel. Carries every destination the desktop nav has — the
+          previous header hid Community, Journal, Partner and About below md with
+          no menu at all, making four pages unreachable from a phone. */}
+      {menuOpen && (
+        <nav
+          id="mobile-nav"
+          className="border-t bg-[#FBFAF7] px-6 py-2 text-sm font-medium md:hidden"
+        >
+          <MobileNavLink href="/#stays" plain>Co-living rooms</MobileNavLink>
+          <MobileNavLink href="/str">Short-term rentals</MobileNavLink>
+          {config.pages.ltr && <MobileNavLink href="/ltr">Long-term rentals</MobileNavLink>}
+          <MobileNavLink href="/community">Community</MobileNavLink>
+          {config.pages.journal && <MobileNavLink href="/journal">Journal</MobileNavLink>}
+          <MobileNavLink href="/partner">Partner with us</MobileNavLink>
+          <MobileNavLink href="/about">About us</MobileNavLink>
+          <MobileNavLink href="/lookup">My booking</MobileNavLink>
+        </nav>
+      )}
     </header>
+  );
+}
+
+// One row of the mobile menu. 48px tall so every target clears the 44px floor
+// with room to spare. `plain` uses a real anchor for the /#stays hash, which
+// wouter's Link does not scroll to.
+function MobileNavLink({
+  href,
+  children,
+  plain = false,
+}: {
+  href: string;
+  children: React.ReactNode;
+  plain?: boolean;
+}) {
+  const cls =
+    "flex min-h-12 items-center border-b border-border/60 text-foreground last:border-b-0";
+  return plain ? (
+    <a href={href} className={cls}>
+      {children}
+    </a>
+  ) : (
+    <Link href={href} className={cls}>
+      {children}
+    </Link>
   );
 }
 
@@ -200,7 +275,14 @@ export function SiteFooter() {
               beyond. Book direct, Be Nice.
             </p>
           </div>
-          <div className="flex flex-wrap items-start gap-x-14 gap-y-8 md:flex-nowrap">
+          {/* Grid, not flex. The previous `flex-wrap ... md:flex-nowrap` turned
+              wrapping OFF at exactly the width where it was needed: four
+              min-w-[140px] columns plus gap-x-14 forced an 896px content floor,
+              so from 768px to ~896px the Affiliates column rendered outside the
+              viewport. Because `body` sets `overflow-x: hidden`, it was clipped
+              rather than scrollable — those links were unreachable on iPad
+              portrait and small laptop windows. A grid reflows instead. */}
+          <div className="grid grid-cols-2 gap-x-8 gap-y-8 sm:grid-cols-4 md:gap-x-12">
             <FooterCol title="Stays">
               {/* Each product now has its own page. Plain anchors so a real
                   navigation lands (and /#stays scrolls to the co-living grid). */}
@@ -248,8 +330,10 @@ export function SiteFooter() {
 function FooterCol({ title, children }: { title: string; children: React.ReactNode }) {
   // BT-23 mobile: each footer link is a 44px-tall tap target (flex + min-h-11).
   return (
-    <div className="flex min-w-[140px] flex-col text-sm [&>a:hover]:text-white [&>a]:flex [&>a]:min-h-11 [&>a]:items-center [&>a]:text-white/70">
-      <h4 className="text-xs font-bold uppercase tracking-wider text-white/90">{title}</h4>
+    <div className="flex flex-col text-sm [&>a:hover]:text-white [&>a]:flex [&>a]:min-h-11 [&>a]:items-center [&>a]:text-white/70">
+      {/* h3, not h4: the newsletter block above the footer is an h2, so h4 here
+          skipped a level on every page. */}
+      <h3 className="text-xs font-bold uppercase tracking-wider text-white/90">{title}</h3>
       {children}
     </div>
   );

@@ -102,7 +102,7 @@ export function NewsletterSignup({ centered = false }: { centered?: boolean } = 
     return (
       <div className="mx-auto flex max-w-xl flex-col items-center gap-4 text-center" data-testid="newsletter-signup">
         <div>
-          <h4 className="font-display text-xl font-semibold text-background">Stay in the loop</h4>
+          <h2 className="font-display text-xl font-semibold text-background">Stay in the loop</h2>
           <p className="mt-1.5 text-sm text-white/60">
             New homes, openings, and the occasional note. No spam.
           </p>
@@ -120,7 +120,7 @@ export function NewsletterSignup({ centered = false }: { centered?: boolean } = 
       data-testid="newsletter-signup"
     >
       <div className="md:max-w-sm">
-        <h4 className="font-display text-lg font-semibold text-background">Stay in the loop</h4>
+        <h2 className="font-display text-lg font-semibold text-background">Stay in the loop</h2>
         <p className="mt-1 text-sm text-white/60">
           New homes, openings, and the occasional note. No spam.
         </p>

@@ -7,7 +7,7 @@
 
 import { CalendarHeart, MessagesSquare, KeyRound } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
-import { PageHero } from "@/components/page-hero";
+import { PageHero, HeroCta } from "@/components/page-hero";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { Testimonials } from "@/components/testimonials";
 import { EditorialRow } from "@/components/editorial-row";
@@ -18,7 +18,7 @@ import { useSeo, buildFaqJsonLd, SITE_URL } from "@/lib/seo";
 
 // Co-living teal accent — matches the home/co-living identity (this is the
 // co-living community). Tints the shared hero image / is the no-image fallback.
-const COLIVING_GRADIENT = "linear-gradient(135deg, #3E92BC, #1C4A61)";
+const COLIVING_GRADIENT = "linear-gradient(135deg, #2C6E8F, #1C4A61)";
 
 const HOW = [
   {
@@ -68,7 +68,8 @@ export default function Community() {
       <PageHero
         eyebrow="Our co-living community"
         title="More than a place to stay."
-        subtitle="We run homes, not listings. That means real hosts, well-kept houses, and a standard we stand behind whether you're here for a weekend or a season."
+        subtitle="We run homes, not listings. Real hosts, well-kept houses, and a standard we stand behind."
+        cta={<HeroCta href="/#stays">See available rooms</HeroCta>}
         accent={COLIVING_GRADIENT}
         image="/heroes/community.jpg"
         imageAlt="Housemates gathered around a shared table in a Be Nice co-living home"

@@ -18,8 +18,13 @@
     --popover: #ffffff;
     --popover-foreground: #1c1917;
 
-    /* Brand: warm coral. Friendly, premium-hospitality, distinct. */
-    --primary: #e0533d;
+    /* Brand: warm coral. Friendly, premium-hospitality, distinct.
+       Darkened from #e0533d to clear WCAG AA as both a fill (white label on
+       coral) and as text on our two light grounds. Measured:
+       4.85:1 on #ffffff, 4.65:1 on the #fbfaf7 paper. The old value was
+       3.84:1 in every one of those roles — every primary CTA on the site
+       failed AA, so this token is the single fix for all of them. */
+    --primary: #c9432e;
     --primary-foreground: #ffffff;
 
     --secondary: #f5f3f1; /* warm off-white */
@@ -29,25 +34,41 @@
     --muted-foreground: #78716c; /* warm gray */
 
     --accent: #fef2ef; /* faint coral wash */
-    --accent-foreground: #b8412e;
+    /* Coral text sitting ON the wash needs to be darker than --primary:
+       --primary on --accent is only 4.43:1. This is 5.77:1. Anything drawing
+       coral text on the wash (pills, kickers) must use this, never --primary. */
+    --accent-foreground: #a93a28;
 
     --destructive: #dc2626;
     --destructive-foreground: #ffffff;
 
     --border: #ebe7e3;
     --input: #ebe7e3;
-    --ring: #e0533d;
+    --ring: #c9432e;
+
+    /* Disabled interactive fill. Never dim a CTA with opacity: the old
+       `disabled:opacity-50` on coral computed to 1.93:1, which read as a
+       broken button rather than a gated one. Neutral fill, 6.08:1 label. */
+    --disabled: #e7e5e4;
+    --disabled-foreground: #57534e;
 
     /* Product-segment colors: the three offerings each get an accent that reads
        as its stay-length feeling, so cards/doors/pages never blur together.
        whole-property (STR) = brand coral (warm getaway); by-the-room (COLIVING)
        = teal (rooted, communal); long-term (LTR) = warm amber/ochre (a settled,
        year-long home). Amber is warm enough to sit in the same paper palette as
-       coral, yet clearly distinct from both coral and teal. */
-    --segment-whole: #e0533d;
-    --segment-room: #2c6e8f;
+       coral, yet clearly distinct from both coral and teal.
+
+       SEGMENT COLORS ARE NON-INTERACTIVE. They tint segment badges, borders,
+       and section grounds so the three offerings never blur together. They must
+       never appear on a button, a link, or an eyebrow — the site has exactly one
+       interactive accent (--primary), and mixing segment color into interactive
+       affordances is what produced four competing accents across the site. */
+    --segment-whole: #c9432e;
+    --segment-room: #2c6e8f; /* 5.62:1 on white — safe as text */
     --segment-room-tint: #eaf2f6;
-    --segment-ltr: #b8843f;
+    /* Darkened from #b8843f (3.28:1 — failed AA as text) to 5.18:1. */
+    --segment-ltr: #8f6524;
     --segment-ltr-tint: #f6efe2;
 
     /* Positive-status tint (Available / Paid pills) — green stays reserved for
@@ -55,7 +76,14 @@
     --good: #1d7a3f;
     --good-bg: #e7f3ea;
 
-    --radius: 0.875rem; /* roomy, modern rounding */
+    /* SHAPE SCALE — one documented rule, applied everywhere. The site was
+       shipping rounded-full, rounded-xl and rounded-md on primary buttons
+       simultaneously; pick one per role and do not deviate:
+         buttons + pills + chips  -> rounded-full
+         cards + media + panels   -> rounded-2xl (--radius)
+         inputs + selects         -> rounded-lg
+    */
+    --radius: 0.875rem; /* roomy, modern rounding — the card/panel radius */
 
     /* Layered soft shadows for the photo-card aesthetic. */
     --shadow-card: 0 1px 2px rgba(28, 25, 23, 0.04), 0 4px 16px rgba(28, 25, 23, 0.06);

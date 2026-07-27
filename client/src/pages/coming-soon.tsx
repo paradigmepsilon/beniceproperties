@@ -25,9 +25,17 @@ interface Props {
   /** SEO title/description while the page is hidden. */
   seoTitle: string;
   seoDescription: string;
+  /**
+   * Optional lead-capture form. When the placeholder's copy invites the visitor
+   * to get in touch, it must actually give them somewhere to type: the LTR
+   * placeholder previously said "tell us what you're looking for" and offered
+   * only two navigation links, so a visitor who arrived with real intent had no
+   * way to act on it and left. Pages with nothing to capture (Journal) omit it.
+   */
+  capture?: React.ReactNode;
 }
 
-export function ComingSoon({ eyebrow, title, subtitle, accent, path, seoTitle, seoDescription }: Props) {
+export function ComingSoon({ eyebrow, title, subtitle, accent, path, seoTitle, seoDescription, capture }: Props) {
   useSeo({ title: seoTitle, description: seoDescription, path });
 
   return (
@@ -37,26 +45,35 @@ export function ComingSoon({ eyebrow, title, subtitle, accent, path, seoTitle, s
       <PageHero eyebrow={eyebrow} title={title} subtitle={subtitle} accent={accent} />
 
       <main className="flex-1">
-        <section className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
-          <p className="text-lg text-muted-foreground">
-            We&apos;re putting this section together right now. Check back soon, or reach out and
-            we&apos;ll help you directly in the meantime.
-          </p>
-          <div className="mt-8 flex flex-wrap justify-center gap-3">
-            <Link
-              href="/"
-              className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-accent-foreground"
-            >
-              Back home
-            </Link>
-            <Link
-              href="/lookup"
-              className="rounded-full border border-border px-5 py-2.5 text-sm font-semibold text-foreground transition-colors hover:bg-secondary"
-            >
-              My booking
-            </Link>
-          </div>
-        </section>
+        {capture ? (
+          <section className="mx-auto w-full max-w-2xl px-6 py-16">
+            <p className="text-center text-lg text-muted-foreground">
+              We&apos;re putting this section together right now. Tell us what you need and
+              we&apos;ll follow up directly.
+            </p>
+            <div className="mt-10">{capture}</div>
+          </section>
+        ) : (
+          <section className="mx-auto w-full max-w-2xl px-6 py-20 text-center">
+            <p className="text-lg text-muted-foreground">
+              We&apos;re putting this section together right now. Check back soon.
+            </p>
+            <div className="mt-8 flex flex-wrap justify-center gap-3">
+              <Link
+                href="/"
+                className="inline-flex min-h-11 items-center rounded-full bg-primary px-5 text-sm font-semibold text-primary-foreground transition-colors hover:bg-[#b23a28]"
+              >
+                Back home
+              </Link>
+              <Link
+                href="/lookup"
+                className="inline-flex min-h-11 items-center rounded-full border border-border px-5 text-sm font-semibold text-foreground transition-colors hover:bg-secondary"
+              >
+                My booking
+              </Link>
+            </div>
+          </section>
+        )}
       </main>
 
       <SiteFooter />

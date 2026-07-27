@@ -85,15 +85,29 @@ export function InclusionsGrid({
                 props of the same name above. Described, not aria-hidden: these
                 are real photos of the homes and belong in image search. Only
                 the scrim below is genuinely decorative. */}
-            <img
-              src={tileImage}
-              alt={tileImageAlt}
-              loading="lazy"
-              className="pointer-events-none absolute inset-0 z-0 h-full w-full scale-105 object-cover opacity-0 transition-all duration-500 ease-out group-hover:scale-100 group-hover:opacity-100"
-            />
+            {/* WebP first, JPEG fallback. These were 2048x1536 JPEGs (5.4MB for
+                the set) rendering into a ~300px grid cell; they are now 900px
+                wide, and the WebP set totals 248KB.
+
+                `opacity-25` at rest rather than `opacity-0`: the photos were
+                hover-only, so on every touch device this section was eight
+                identical white-on-cream text boxes forever — while still
+                downloading all eight images. Now the photo is visible on a
+                phone and the hover simply brings it fully forward. */}
+            <picture>
+              <source srcSet={tileImage.replace(/\.jpg$/, ".webp")} type="image/webp" />
+              <img
+                src={tileImage}
+                alt={tileImageAlt}
+                loading="lazy"
+                width={900}
+                height={675}
+                className="pointer-events-none absolute inset-0 z-0 h-full w-full scale-105 object-cover opacity-25 transition-all duration-500 ease-out group-hover:scale-100 group-hover:opacity-100"
+              />
+            </picture>
             <div
               aria-hidden
-              className="pointer-events-none absolute inset-0 z-0 bg-foreground/70 opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+              className="pointer-events-none absolute inset-0 z-0 bg-card/80 transition-colors duration-500 group-hover:bg-foreground/70"
             />
             <div className="relative z-10 grid h-10 w-10 place-items-center rounded-xl bg-accent text-primary transition-colors duration-300 group-hover:bg-white/15 group-hover:text-white">
               <Icon className="h-5 w-5" aria-hidden />

@@ -135,8 +135,12 @@ function Card({
       aria-hidden={ariaHidden || undefined}
       data-testid={`testimonial-${t.id}`}
     >
+      {/* role="img" is required for aria-label to be allowed on the star row: a
+          bare div has a generic role, on which aria-label is prohibited
+          (Lighthouse aria-prohibited-attr, 10 nodes). Markup only — the
+          testimonial content itself is unchanged. */}
       {typeof t.rating === "number" && (
-        <div className="flex gap-0.5" aria-label={`${t.rating} out of 5 stars`}>
+        <div className="flex gap-0.5" role="img" aria-label={`${t.rating} out of 5 stars`}>
           {Array.from({ length: t.rating }).map((_, i) => (
             <Star key={i} className="h-4 w-4 fill-primary text-primary" aria-hidden />
           ))}

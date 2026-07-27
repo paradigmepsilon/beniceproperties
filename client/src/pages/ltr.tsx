@@ -7,7 +7,7 @@
 
 import { KeyRound, CalendarClock, MessageSquare } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
-import { PageHero } from "@/components/page-hero";
+import { PageHero, HeroCta } from "@/components/page-hero";
 import { ListingsSection } from "@/components/listings-section";
 import { LtrInquiryForm } from "@/components/ltr-inquiry-form";
 import { useSeo } from "@/lib/seo";
