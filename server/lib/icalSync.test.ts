@@ -122,17 +122,25 @@ function stubFetchByUrl(bodies: Record<string, string | { fail: true }>) {
 // Fixture dates always far in the future relative to the real clock, so the
 // suite never rots as wall-clock time passes (see "4 pre-existing failures"
 // diagnosis in the build log / task report — the previous fixtures used
-// fixed 2026-08 dates that fell into the past).
+// fixed 2026-08 dates that fell into the past). Formatted in the SAME
+// hotel-local (America/New_York) convention parseICalData's default "today"
+// now uses (@shared/dates.todayIso), so these stay aligned with production
+// "today" semantics rather than the test process's own local timezone.
 const BASE_DAYS_AHEAD = 400;
 function offsetDate(daysAhead: number): Date {
   return new Date(Date.now() + daysAhead * 86_400_000);
 }
-function yyyymmdd(d: Date): string {
-  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, "0")}${String(d.getDate()).padStart(2, "0")}`;
-}
+/** ISO (YYYY-MM-DD), hotel-local (America/New_York) — matches todayIso(). */
 function isoDate(d: Date): string {
-  const s = yyyymmdd(d);
-  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}`;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+function yyyymmdd(d: Date): string {
+  return isoDate(d).replace(/-/g, "");
 }
 /** yyyymmdd string for an event date `daysAhead` from now. */
 function fd(daysAhead: number): string {
@@ -487,10 +495,16 @@ describe("checkCalendarSyncHealth", () => {
   it("does not notify when raiseEscalationOnce dedupes (an OPEN escalation already exists)", async () => {
     store.settings = {};
     store.escalationResult = null;
-    const health = await checkCalendarSyncHealth(new Date());
+    // 2026-09-03T02:30:00Z is still 2026-09-02 22:30 in New York — the
+    // dedupe key (scheduleSeq) must use the HOTEL-LOCAL day, not the
+    // process-local (UTC on Vercel) day, or this would key off 20260903.
+    const now = new Date("2026-09-03T02:30:00Z");
+    const health = await checkCalendarSyncHealth(now);
     expect(health.stale).toBe(true);
     expect(health.alerted).toBe(false);
-    expect(storage.raiseEscalationOnce).toHaveBeenCalled();
+    expect(storage.raiseEscalationOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ scheduleSeq: 20260902 }),
+    );
     expect(notifyAdmin).not.toHaveBeenCalled();
   });
 });

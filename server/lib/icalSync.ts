@@ -27,6 +27,7 @@ import type { VEvent } from "node-ical";
 import { storage } from "../storage";
 import { notifyAdmin } from "./notifications";
 import { log } from "../server-log";
+import { todayIso } from "@shared/dates";
 
 /** A bookable listing with an Airbnb iCal feed URL to sync. */
 export interface IcalListing {
@@ -171,13 +172,14 @@ function fmtDate(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Today's date (YYYY-MM-DD) in local time. Extracted for test injection. */
-function todayIso(): string {
-  return fmtDate(new Date());
-}
-
 export interface ParseICalOpts {
-  /** Override "today" for the past-event cutoff. Defaults to the real date — test injection point. */
+  /**
+   * Override "today" for the past-event cutoff. Defaults to the hotel-local
+   * (America/New_York) date via @shared/dates.todayIso() — test injection
+   * point. `fmtDate` above is a separate concern: it formats iCal `Date`
+   * objects (which node-ical resolves in the process's local time), not
+   * "today" itself.
+   */
   today?: string;
   /**
    * When true, Airbnb "Not available" host-blocks are kept (normalized to
@@ -562,7 +564,7 @@ export async function checkCalendarSyncHealth(now: Date = new Date()): Promise<C
     const escalation = await storage.raiseEscalationOnce({
       leaseId: null,
       bookingId: null,
-      scheduleSeq: Number(fmtDate(now).replace(/-/g, "")),
+      scheduleSeq: Number(todayIso(now).replace(/-/g, "")),
       kind: "CALENDAR_SYNC_FAILED",
       severity: "MEDIUM",
       detail,
