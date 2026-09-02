@@ -62,7 +62,7 @@ export interface QuoteResponse {
 export interface BusyRange {
   start: string; // YYYY-MM-DD
   end: string; // YYYY-MM-DD (exclusive — first free day)
-  source: "direct" | "external";
+  source: "direct" | "external" | "manual";
 }
 
 export interface AvailabilityResponse {

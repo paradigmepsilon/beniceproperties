@@ -971,11 +971,8 @@ class Storage implements IStorage {
   async raiseEscalationOnce(data: InsertUoEscalation): Promise<UoEscalation | null> {
     // Dedupe: don't open a second escalation of the same kind for the same
     // installment while one is still OPEN.
-    const conds = [
-      eq(uoEscalations.leaseId, data.leaseId),
-      eq(uoEscalations.kind, data.kind),
-      eq(uoEscalations.status, "OPEN"),
-    ];
+    const conds = [eq(uoEscalations.kind, data.kind), eq(uoEscalations.status, "OPEN")];
+    if (data.leaseId) conds.push(eq(uoEscalations.leaseId, data.leaseId));
     const open = await db
       .select()
       .from(uoEscalations)

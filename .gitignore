@@ -12,3 +12,6 @@ migrations/meta/_journal.json.lock
 .claude/
 .agents/
 .playwright-mcp/
+
+# Table exports taken before destructive migrations (may hold guest PII)
+docs/migration-backups/

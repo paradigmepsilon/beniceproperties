@@ -49,6 +49,9 @@ export const BOOKING_STATUSES = [
   "ACTIVE",
   "COMPLETED",
   "CANCELLED",
+  // Paid, but the dates were taken (race / OTA block / constraint). Does NOT block
+  // dates and never auto-notifies the guest. Admin resolves: confirm or cancel+refund.
+  "CONFLICT",
 ] as const;
 export const PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"] as const;
 export const PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"] as const;
@@ -199,6 +202,8 @@ export const ESCALATION_KINDS = [
   "PAYMENT_OVERDUE",
   "LEASE_DEFAULTED",
   "VERIFICATION_PENDING", // a tenant uploaded a license awaiting admin review
+  "BOOKING_CONFLICT", // a paid booking landed on dates that were taken
+  "CALENDAR_SYNC_FAILED", // iCal sync couldn't refresh a listing's external calendar
 ] as const;
 export const ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"] as const;
 export const ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"] as const;
@@ -1060,7 +1065,8 @@ export const uoEscalations = pgTable(
   "uo_escalations",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    leaseId: varchar("lease_id").notNull(),
+    leaseId: varchar("lease_id"),
+    bookingId: varchar("booking_id"),
     scheduleSeq: integer("schedule_seq"),
     // One of ESCALATION_KINDS.
     kind: text("kind").notNull(),
@@ -1076,6 +1082,7 @@ export const uoEscalations = pgTable(
   },
   (table) => ({
     leaseIdx: index("uo_escalations_lease_idx").on(table.leaseId),
+    bookingIdx: index("uo_escalations_booking_idx").on(table.bookingId),
     statusIdx: index("uo_escalations_status_idx").on(table.status),
     // Dedupe open escalations of the same kind for the same installment.
     openKindIdx: index("uo_escalations_open_kind_idx").on(
@@ -1111,7 +1118,8 @@ export const guestMessages = pgTable(
   "guest_messages",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    leaseId: varchar("lease_id").notNull(),
+    leaseId: varchar("lease_id"),
+    bookingId: varchar("booking_id"),
     guestId: varchar("guest_id").notNull(),
     // The root message id of this thread (a root row points to itself).
     threadId: varchar("thread_id").notNull(),
@@ -1128,6 +1136,7 @@ export const guestMessages = pgTable(
   },
   (table) => ({
     leaseIdx: index("guest_messages_lease_idx").on(table.leaseId),
+    bookingIdx: index("guest_messages_booking_idx").on(table.bookingId),
     threadIdx: index("guest_messages_thread_idx").on(table.threadId),
     statusIdx: index("guest_messages_status_idx").on(table.status),
   }),
@@ -1156,6 +1165,8 @@ export const LIFECYCLE_EVENT_TYPES = [
   "COLIVING_ADMIN_NEW_LEASE", // on activation (admin)
   "PAYMENT_RECEIPT", // per successful rent charge (uses schedule_seq)
   "LEASE_ENDING_SOON", // ~14 days before end_date
+  "BOOKING_CONFIRMED", // short-stay booking materialized (guest)
+  "ADMIN_NEW_BOOKING", // short-stay booking materialized (admin)
 ] as const;
 
 export const LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"] as const;
@@ -1167,7 +1178,8 @@ export const lifecycleEvents = pgTable(
   "lifecycle_events",
   {
     id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-    leaseId: varchar("lease_id").notNull(),
+    leaseId: varchar("lease_id"),
+    bookingId: varchar("booking_id"),
     // One of LIFECYCLE_EVENT_TYPES.
     eventType: text("event_type").notNull(),
     // For per-installment events (PAYMENT_RECEIPT); null otherwise.
@@ -1180,6 +1192,7 @@ export const lifecycleEvents = pgTable(
   },
   (table) => ({
     leaseIdx: index("lifecycle_events_lease_idx").on(table.leaseId),
+    bookingIdx: index("lifecycle_events_booking_idx").on(table.bookingId),
     dedupeIdx: index("lifecycle_events_dedupe_idx").on(
       table.leaseId,
       table.eventType,
@@ -1335,3 +1348,88 @@ export const insertExternalBookingSchema = createInsertSchema(externalBookings).
 
 export type ExternalBooking = typeof externalBookings.$inferSelect;
 export type InsertExternalBooking = z.infer<typeof insertExternalBookingSchema>;
+
+// =============================================================================
+// manual_blocks — owner/UO-entered unavailability: off-platform bookings,
+// maintenance, owner use. end_date is EXCLUSIVE (first free day), like
+// external_bookings and BusyRange. room_id null = whole STR property.
+// =============================================================================
+export const MANUAL_BLOCK_KINDS = ["OFF_PLATFORM_BOOKING", "MAINTENANCE", "OWNER_USE", "OTHER"] as const;
+export const MANUAL_BLOCK_SOURCES = ["ADMIN", "UO"] as const;
+
+export const manualBlocks = pgTable(
+  "manual_blocks",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    propertyId: varchar("property_id").notNull().references(() => properties.id),
+    roomId: varchar("room_id").references(() => rooms.id),
+    startDate: date("start_date").notNull(),
+    endDate: date("end_date").notNull(),
+    kind: text("kind").notNull().default("OTHER"),
+    note: text("note"),
+    guestName: text("guest_name"),
+    source: text("source").notNull().default("ADMIN"),
+    createdBy: text("created_by"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    propertyRangeIdx: index("manual_blocks_property_range_idx").on(table.propertyId, table.startDate, table.endDate),
+    roomRangeIdx: index("manual_blocks_room_range_idx").on(table.roomId, table.startDate, table.endDate),
+  }),
+);
+export const insertManualBlockSchema = createInsertSchema(manualBlocks, {
+  kind: z.enum(MANUAL_BLOCK_KINDS).optional(),
+  source: z.enum(MANUAL_BLOCK_SOURCES).optional(),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+export type ManualBlock = typeof manualBlocks.$inferSelect;
+export type InsertManualBlock = z.infer<typeof insertManualBlockSchema>;
+
+// =============================================================================
+// message_log — the single audit trail of every message the platform sends or
+// receives (guest + admin, every channel). Written by the send layer itself so
+// nothing can send without leaving a row. No card data; bodies may hold guest
+// names/addresses — treat as PII.
+// =============================================================================
+export const MESSAGE_DIRECTIONS = ["OUTBOUND", "INBOUND"] as const;
+export const MESSAGE_AUDIENCES = ["GUEST", "ADMIN"] as const;
+export const MESSAGE_CHANNELS = ["EMAIL", "SMS", "TELEGRAM", "PORTAL"] as const;
+export const MESSAGE_LOG_STATUSES = ["SENT", "FAILED", "DRY_RUN", "SKIPPED"] as const;
+
+export const messageLog = pgTable(
+  "message_log",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    bookingId: varchar("booking_id"),
+    leaseId: varchar("lease_id"),
+    guestId: varchar("guest_id"),
+    direction: text("direction").notNull().default("OUTBOUND"),
+    audience: text("audience").notNull().default("GUEST"),
+    channel: text("channel").notNull(),
+    // Template key (e.g. BOOKING_CONFIRMED) or MANUAL for staff-composed.
+    kind: text("kind").notNull().default("MANUAL"),
+    toAddress: text("to_address"),
+    subject: text("subject"),
+    body: text("body").notNull(),
+    status: text("status").notNull(),
+    providerRef: text("provider_ref"),
+    error: text("error"),
+    // "system" | admin email | "uo:<actor>"
+    sentBy: text("sent_by").notNull().default("system"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    bookingIdx: index("message_log_booking_idx").on(table.bookingId),
+    leaseIdx: index("message_log_lease_idx").on(table.leaseId),
+    guestIdx: index("message_log_guest_idx").on(table.guestId),
+    createdIdx: index("message_log_created_idx").on(table.createdAt),
+  }),
+);
+export const insertMessageLogSchema = createInsertSchema(messageLog, {
+  direction: z.enum(MESSAGE_DIRECTIONS).optional(),
+  audience: z.enum(MESSAGE_AUDIENCES).optional(),
+  channel: z.enum(MESSAGE_CHANNELS),
+  status: z.enum(MESSAGE_LOG_STATUSES),
+}).omit({ id: true, createdAt: true });
+export type MessageLogRow = typeof messageLog.$inferSelect;
+export type InsertMessageLog = z.infer<typeof insertMessageLogSchema>;
