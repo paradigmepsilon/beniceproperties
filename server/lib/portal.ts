@@ -21,6 +21,7 @@ import { storage } from "../storage";
 import { chargeSavedCard } from "./stripe";
 import { buildLeaseChargeMetadata } from "./paymentMetadata";
 import { billAccruedLateFees } from "./dunning";
+import { notifyAdmin } from "./notifications";
 import { calculateBreakdown } from "@shared/pricing";
 import { LeaseError } from "./lease";
 import { buildManualInstructions, type ManualMethod, type ManualInstructions } from "./manualPayment";
@@ -238,6 +239,42 @@ export async function submitMessage(
     body: input.body,
     status: "OPEN",
   });
+
+  // Every inbound guest message is both logged to the audit trail (this is the
+  // guest→admin leg; message_log otherwise only records our outbound sends) and
+  // surfaced to an admin immediately — a guest question shouldn't wait for
+  // someone to happen to check the inbox.
+  await storage.createMessageLog({
+    leaseId: lease.id,
+    guestId: lease.guestId,
+    direction: "INBOUND",
+    audience: "ADMIN",
+    channel: "PORTAL",
+    kind: "GUEST_MESSAGE",
+    subject: input.subject ?? null,
+    body: input.body,
+    status: "SENT",
+    sentBy: "guest",
+  });
+
+  const [guest, property] = await Promise.all([
+    storage.getGuest(lease.guestId),
+    storage.getProperty(lease.propertyId),
+  ]);
+  const guestName = guest?.name ?? "A guest";
+  const propertyName = property?.name ?? "a BNP property";
+  const snippet = input.body.length > 300 ? `${input.body.slice(0, 300)}…` : input.body;
+  const subjectLine = input.subject ? ` — "${input.subject}"` : "";
+
+  // PRIVACY: the email body may carry the guest's email (an admin replying by
+  // email needs it); telegramText MUST NOT — see notifyAdmin's contract.
+  await notifyAdmin({
+    subject: `Guest message — ${propertyName}`,
+    body: `${guestName} (${guest?.email ?? "no email on file"})${subjectLine}\n\n${snippet}`,
+    telegramText: `${guestName}${subjectLine}\n\n${snippet}`,
+    context: { leaseId: lease.id, guestId: lease.guestId, kind: "GUEST_MESSAGE" },
+  });
+
   return root;
 }
 

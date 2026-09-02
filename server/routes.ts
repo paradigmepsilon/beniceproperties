@@ -28,8 +28,10 @@ import {
   insertNewsletterSubscriberSchema,
   insertLtrInquirySchema,
   insertPartnerInquirySchema,
+  insertManualBlockSchema,
   US_STATE_CODES,
   COLIVING_MIN_DAYS,
+  LEASE_STATUSES,
   type PropertyListItem,
   type RoomWithAvailability,
   type JournalBlock,
@@ -84,6 +86,8 @@ import {
 } from "./lib/verification";
 import { requireServiceToken } from "./lib/serviceAuth";
 import * as uo from "./lib/uoApi";
+import * as adminMessages from "./lib/adminMessages";
+import { refreshExternalCalendars } from "./lib/icalSync";
 import { buildReconciliationReport } from "./lib/reconciliation";
 import {
   createDraftLeaseSchema,
@@ -1527,12 +1531,9 @@ export async function registerRoutes(app: Express): Promise<void> {
       res.json(await uo.listPaymentsWithMetadata({ leaseId }));
     } catch (e) { uoErr(e, res, next); }
   });
-  app.get("/api/uo/messages", requireServiceToken, async (req, res, next) => {
-    try {
-      const status = typeof req.query.status === "string" ? req.query.status : undefined;
-      res.json(await uo.listGuestMessageThreads(status));
-    } catch (e) { uoErr(e, res, next); }
-  });
+  // NOTE: GET /api/uo/messages is registered later (Task 6, mountMessagingRoutes)
+  // with the richer, shared listThreads view (guest/property/booking context) —
+  // it supersedes the old lease-only uo.listGuestMessageThreads.
   app.get("/api/uo/escalations", requireServiceToken, async (req, res, next) => {
     try {
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
@@ -1584,6 +1585,288 @@ export async function registerRoutes(app: Express): Promise<void> {
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       res.json(await uo.waiveLateFees({ leaseId: req.params.id, ...parsed.data }));
     } catch (e) { uoErr(e, res, next); }
+  });
+
+  // =========================================================================
+  // TASK 6 — staff messaging (guest_messages threads), manual blocks
+  // (off-platform/maintenance holds), the Airbnb iCal refresh trigger, the
+  // guest picker, and the guest-auto-notifications toggle. One set of handlers
+  // is shared between ADMIN (session auth, actor = the logged-in admin's
+  // email — reuses `adminActor` below) and UO (service-token auth, actor =
+  // a required `actor` field, prefixed "uo:" so message_log/manual_blocks
+  // always show who really acted). `source` on a manual block records which
+  // side created it.
+  // =========================================================================
+  function messagingErr(err: unknown, res: express.Response, next: express.NextFunction) {
+    if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+    if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+    next(err);
+  }
+
+  // UO has no session — every write it makes must self-identify. GET routes
+  // accept `?actor=` (service calls are rarely query-driven here, but reads
+  // don't strictly need one); writes read it from the body.
+  function uoActor(req: express.Request): string {
+    const raw =
+      typeof req.body?.actor === "string"
+        ? req.body.actor
+        : typeof req.query.actor === "string"
+          ? req.query.actor
+          : undefined;
+    if (!raw) throw new LeaseError("actor is required", 400);
+    return `uo:${raw}`;
+  }
+
+  const newThreadBodySchema = z.object({
+    bookingId: z.string().optional(),
+    leaseId: z.string().optional(),
+    subject: z.string().optional(),
+    body: z.string().min(1),
+    channels: z.array(z.enum(["EMAIL", "SMS"])),
+  });
+  const replyBodySchema = z.object({
+    body: z.string().min(1),
+    channels: z.array(z.enum(["EMAIL", "SMS"])),
+  });
+  const createBlockBodySchema = insertManualBlockSchema.omit({ source: true, createdBy: true });
+  const autoNotifyBodySchema = z.object({ enabled: z.boolean() });
+  const TERMINAL_LEASE_STATUSES = new Set<(typeof LEASE_STATUSES)[number]>([
+    "COMPLETED",
+    "TERMINATED",
+    "DEFAULTED",
+  ]);
+  const GUEST_AUTO_NOTIFY_KEY = "guest_auto_notifications_enabled";
+
+  function messageHandlers(source: "ADMIN" | "UO", actorFrom: (req: express.Request) => string) {
+    return {
+      listThreads: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const status = typeof req.query.status === "string" ? req.query.status : undefined;
+          res.json({ threads: await adminMessages.listThreads(status ? { status } : undefined) });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      getThreadDetail: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          res.json(await adminMessages.getThread(req.params.threadId));
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      createThread: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const parsed = newThreadBodySchema.safeParse(req.body);
+          if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+          const actor = actorFrom(req);
+          res.json(await adminMessages.sendStaffMessage({ ...parsed.data, actor }));
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      reply: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const parsed = replyBodySchema.safeParse(req.body);
+          if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+          const actor = actorFrom(req);
+          res.json(
+            await adminMessages.sendStaffMessage({ threadId: req.params.threadId, ...parsed.data, actor }),
+          );
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      messageLog: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const bookingId = typeof req.query.bookingId === "string" ? req.query.bookingId : undefined;
+          const leaseId = typeof req.query.leaseId === "string" ? req.query.leaseId : undefined;
+          let limit = 200;
+          if (typeof req.query.limit === "string") {
+            const n = parseInt(req.query.limit, 10);
+            if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), 1000);
+          }
+          res.json({ log: await storage.getMessageLog({ bookingId, leaseId, limit }) });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      listBlocks: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const propertyId = typeof req.query.propertyId === "string" ? req.query.propertyId : undefined;
+          res.json({ blocks: await storage.getManualBlocks({ propertyId }) });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      createBlock: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const parsed = createBlockBodySchema.safeParse(req.body);
+          if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+          if (parsed.data.endDate <= parsed.data.startDate) {
+            return res.status(400).json({ message: "endDate must be after startDate" });
+          }
+          const actor = actorFrom(req);
+          const block = await storage.createManualBlock({ ...parsed.data, source, createdBy: actor });
+          res.json(block);
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      deleteBlock: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          await storage.deleteManualBlock(req.params.id);
+          res.json({ ok: true });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      calendarRefresh: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          res.json(await refreshExternalCalendars());
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      calendarStatus: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const [lastSyncAtRow, lastResultRow] = await Promise.all([
+            storage.getSetting("ical_last_sync_at"),
+            storage.getSetting("ical_last_sync_result"),
+          ]);
+          let lastResult: unknown = null;
+          if (lastResultRow?.value) {
+            try {
+              lastResult = JSON.parse(lastResultRow.value);
+            } catch {
+              lastResult = null;
+            }
+          }
+          res.json({ lastSyncAt: lastSyncAtRow?.value ?? null, lastResult });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      // Guest picker: everyone currently reachable — active/upcoming bookings
+      // plus non-terminal leases — with enough context (property, reference)
+      // to start a new staff message thread against the right one.
+      guests: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const [bookingsWithGuest, leases] = await Promise.all([
+            storage.getBookingsWithGuest({ from: todayIso() }),
+            storage.getLeases(),
+          ]);
+          const activeLeases = leases.filter(
+            (l) => !TERMINAL_LEASE_STATUSES.has(l.status as (typeof LEASE_STATUSES)[number]),
+          );
+          const leaseRows = await Promise.all(
+            activeLeases.map(async (l) => {
+              const [guest, property] = await Promise.all([
+                storage.getGuest(l.guestId),
+                storage.getProperty(l.propertyId),
+              ]);
+              return {
+                leaseId: l.id,
+                guestId: l.guestId,
+                guestName: guest?.name ?? null,
+                guestEmail: guest?.email ?? null,
+                guestPhone: guest?.phone ?? null,
+                propertyId: l.propertyId,
+                propertyName: property?.name ?? null,
+                status: l.status,
+                startDate: l.startDate,
+                endDate: l.endDate,
+              };
+            }),
+          );
+          const bookingRows = bookingsWithGuest.map((b) => ({
+            bookingId: b.id,
+            guestId: b.guestId,
+            guestName: b.guest.name,
+            guestEmail: b.guest.email,
+            guestPhone: b.guest.phone,
+            propertyId: b.propertyId,
+            propertyName: b.property.name,
+            reference: b.reference,
+            status: b.status,
+            checkIn: b.checkIn,
+            checkOut: b.checkOut,
+          }));
+          res.json({ bookings: bookingRows, leases: leaseRows });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      getAutoNotify: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const row = await storage.getSetting(GUEST_AUTO_NOTIFY_KEY);
+          // Default ON: absent a setting, guests keep getting the automated
+          // lifecycle/dunning sends that already exist — this toggle is an
+          // opt-OUT switch, not an opt-in one.
+          res.json({ enabled: row ? row.value === "true" : true });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+      putAutoNotify: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+        try {
+          const parsed = autoNotifyBodySchema.safeParse(req.body);
+          if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+          await storage.setSetting(GUEST_AUTO_NOTIFY_KEY, parsed.data.enabled ? "true" : "false");
+          res.json({ enabled: parsed.data.enabled });
+        } catch (e) {
+          messagingErr(e, res, next);
+        }
+      },
+    };
+  }
+
+  function mountMessagingRoutes(
+    prefix: string,
+    authMiddleware: express.RequestHandler,
+    source: "ADMIN" | "UO",
+    actorFrom: (req: express.Request) => string,
+  ) {
+    const h = messageHandlers(source, actorFrom);
+    app.get(`${prefix}/messages`, authMiddleware, h.listThreads);
+    app.get(`${prefix}/messages/:threadId`, authMiddleware, h.getThreadDetail);
+    app.post(`${prefix}/messages`, authMiddleware, h.createThread);
+    app.post(`${prefix}/messages/:threadId/reply`, authMiddleware, h.reply);
+    app.get(`${prefix}/message-log`, authMiddleware, h.messageLog);
+    app.get(`${prefix}/blocks`, authMiddleware, h.listBlocks);
+    app.post(`${prefix}/blocks`, authMiddleware, h.createBlock);
+    app.delete(`${prefix}/blocks/:id`, authMiddleware, h.deleteBlock);
+    app.post(`${prefix}/calendar/refresh`, authMiddleware, h.calendarRefresh);
+    app.get(`${prefix}/calendar/status`, authMiddleware, h.calendarStatus);
+    app.get(`${prefix}/guests`, authMiddleware, h.guests);
+    app.get(`${prefix}/settings/guest-auto-notifications`, authMiddleware, h.getAutoNotify);
+    app.put(`${prefix}/settings/guest-auto-notifications`, authMiddleware, h.putAutoNotify);
+  }
+
+  // Admin variant mounted here; `adminActor` is declared further down (a
+  // hoisted function declaration, so it's already callable from this point).
+  mountMessagingRoutes("/api/admin", requireAdmin, "ADMIN", adminActor);
+  mountMessagingRoutes("/api/uo", requireServiceToken, "UO", uoActor);
+
+  // UO-only booking conflict resolution — the admin equivalents
+  // (POST /api/admin/bookings/:id/confirm|cancel) already exist below.
+  app.post("/api/uo/bookings/:id/confirm", requireServiceToken, async (req, res, next) => {
+    try {
+      const actor = uoActor(req);
+      const booking = await confirmConflictBooking(req.params.id, actor);
+      res.json({ ok: true, booking });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+  app.post("/api/uo/bookings/:id/cancel", requireServiceToken, async (req, res, next) => {
+    try {
+      const actor = uoActor(req);
+      const refund = req.body?.refund === true;
+      const result = await cancelBooking({ bookingId: req.params.id, actor, refund });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
   });
 
   // =========================================================================

@@ -16,6 +16,7 @@
 import { storage } from "../storage";
 import { buildLeaseChargeMetadata, buildStrChargeMetadata } from "./paymentMetadata";
 import { activateVerifiedLease } from "./leasePayments";
+import { sendStaffMessage } from "./adminMessages";
 import { log } from "../server-log";
 import { LeaseError } from "./lease";
 import type { Lease, Property, LeaseRoom } from "@shared/schema";
@@ -275,23 +276,19 @@ export async function approveLease(leaseId: string, actor: string) {
   return { status: lease.status, actor, noop: true };
 }
 
-/** Post a STAFF reply to a guest message thread; surfaces in the portal. */
+/**
+ * Post a STAFF reply to a guest message thread; surfaces in the portal.
+ * Delegates to sendStaffMessage (Task 6) so a UO-authored reply gets the same
+ * EMAIL+SMS delivery and message_log trail as an admin-authored one — the
+ * write-back is UO acting AS a staff member, not a separate, quieter path.
+ */
 export async function respondToMessage(args: { threadId: string; body: string; actor: string }) {
-  const messages = await storage.getMessagesByThread(args.threadId);
-  const root = messages.find((m) => m.id === args.threadId);
-  if (!root) throw new LeaseError("Thread not found", 404);
-  const reply = await storage.createMessage({
-    leaseId: root.leaseId,
-    guestId: root.guestId,
+  return sendStaffMessage({
     threadId: args.threadId,
-    authorRole: "STAFF",
-    category: root.category as "QUESTION" | "MAINTENANCE" | "OTHER",
     body: args.body,
-    status: "ANSWERED",
+    channels: ["EMAIL", "SMS"],
+    actor: `uo:${args.actor}`,
   });
-  // Mark the thread ANSWERED on the root.
-  await storage.updateMessage(root.id, { status: "ANSWERED" });
-  return { id: reply.id, threadStatus: "ANSWERED" };
 }
 
 /** Resolve (or acknowledge) an escalation. Idempotent. */

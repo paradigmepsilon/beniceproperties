@@ -17,12 +17,15 @@ const mockStorage = vi.hoisted(() => ({
   updateScheduleRow: vi.fn(),
   createMessage: vi.fn(),
   updateMessage: vi.fn(),
+  createMessageLog: vi.fn(),
 }));
 const mockStripe = vi.hoisted(() => ({ chargeSavedCard: vi.fn() }));
 const mockDunning = vi.hoisted(() => ({ billAccruedLateFees: vi.fn() }));
+const mockNotify = vi.hoisted(() => ({ notifyAdmin: vi.fn() }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./stripe", () => mockStripe);
 vi.mock("./dunning", () => mockDunning);
+vi.mock("./notifications", () => mockNotify);
 
 import {
   getPortalView,
@@ -178,7 +181,7 @@ describe("electManualInstallment", () => {
 });
 
 describe("messaging", () => {
-  it("submits a new thread root", async () => {
+  it("submits a new thread root, logs it INBOUND, and alerts an admin", async () => {
     mockStorage.getLeaseByPortalToken.mockResolvedValue(lease());
     mockStorage.createMessage.mockResolvedValue({ id: "msg-1", status: "OPEN" });
     const root = await submitMessage(TOKEN, { body: "Sink is leaking", category: "MAINTENANCE" });
@@ -186,6 +189,30 @@ describe("messaging", () => {
     const arg = mockStorage.createMessage.mock.calls[0][0];
     expect(arg.authorRole).toBe("GUEST");
     expect(arg.category).toBe("MAINTENANCE");
+
+    expect(mockStorage.createMessageLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        leaseId: "lease-1",
+        guestId: "g1",
+        direction: "INBOUND",
+        audience: "ADMIN",
+        channel: "PORTAL",
+        kind: "GUEST_MESSAGE",
+        body: "Sink is leaking",
+        status: "SENT",
+        sentBy: "guest",
+      }),
+    );
+
+    expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
+    const alert = mockNotify.notifyAdmin.mock.calls[0][0];
+    expect(alert.subject).toBe("Guest message — Old Bill Cook");
+    expect(alert.body).toContain("Jane");
+    expect(alert.body).toContain("jane@example.com");
+    expect(alert.body).toContain("Sink is leaking");
+    expect(alert.telegramText).not.toContain("jane@example.com");
+    expect(alert.telegramText).toContain("Jane");
+    expect(alert.context).toEqual({ leaseId: "lease-1", guestId: "g1", kind: "GUEST_MESSAGE" });
   });
 
   it("reply reopens an ANSWERED thread and rejects a foreign thread", async () => {

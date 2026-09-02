@@ -17,15 +17,15 @@ const mockStorage = vi.hoisted(() => ({
   updateScheduleRow: vi.fn(),
   updateEscalation: vi.fn(),
   updateLease: vi.fn(),
-  getMessagesByThread: vi.fn(),
-  createMessage: vi.fn(),
-  updateMessage: vi.fn(),
   updateLateFee: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
 const mockLeasePayments = vi.hoisted(() => ({ activateVerifiedLease: vi.fn() }));
 vi.mock("./leasePayments", () => mockLeasePayments);
+
+const mockAdminMessages = vi.hoisted(() => ({ sendStaffMessage: vi.fn() }));
+vi.mock("./adminMessages", () => mockAdminMessages);
 
 import {
   markPaid,
@@ -143,18 +143,23 @@ describe("approveLease", () => {
 });
 
 describe("respondToMessage", () => {
-  it("posts a STAFF reply and marks the thread ANSWERED", async () => {
-    mockStorage.getMessagesByThread.mockResolvedValue([
-      { id: "t1", threadId: "t1", leaseId: "lease-1", guestId: "g1", category: "QUESTION", status: "OPEN" },
-    ]);
-    mockStorage.createMessage.mockResolvedValue({ id: "reply-1" });
+  it("delegates to sendStaffMessage as a uo:-prefixed actor over EMAIL+SMS", async () => {
+    mockAdminMessages.sendStaffMessage.mockResolvedValue({
+      messageId: "reply-1",
+      threadId: "t1",
+      delivery: { email: { sent: true, channel: "email" }, sms: { sent: true, channel: "sms" } },
+    });
     const res = await respondToMessage({ threadId: "t1", body: "We're on it.", actor: "alex" });
-    expect(res.threadStatus).toBe("ANSWERED");
-    expect(mockStorage.createMessage.mock.calls[0][0].authorRole).toBe("STAFF");
-    expect(mockStorage.updateMessage).toHaveBeenCalledWith("t1", { status: "ANSWERED" });
+    expect(mockAdminMessages.sendStaffMessage).toHaveBeenCalledWith({
+      threadId: "t1",
+      body: "We're on it.",
+      channels: ["EMAIL", "SMS"],
+      actor: "uo:alex",
+    });
+    expect(res.messageId).toBe("reply-1");
   });
-  it("404s an unknown thread", async () => {
-    mockStorage.getMessagesByThread.mockResolvedValue([]);
+  it("propagates a 404 from sendStaffMessage for an unknown thread", async () => {
+    mockAdminMessages.sendStaffMessage.mockRejectedValue(new LeaseError("Thread not found", 404));
     await expect(respondToMessage({ threadId: "nope", body: "x", actor: "a" })).rejects.toBeInstanceOf(LeaseError);
   });
 });
