@@ -11,7 +11,7 @@ import { differenceInCalendarDays, parseISO } from "date-fns";
 import { ArrowLeft } from "lucide-react";
 import { todayIso } from "@shared/dates";
 import type { Property, Room } from "@shared/schema";
-import { COLIVING_MIN_DAYS, requiresLease, isDirectCoLivingStay } from "@shared/schema";
+import { COLIVING_MIN_DAYS, requiresLease, isDirectCoLivingStay, ROOM_UNBOOKABLE_STATUSES } from "@shared/schema";
 import type { QuoteResponse, LeaseQuoteResponse } from "@shared/api-types";
 import { apiRequest } from "@/lib/queryClient";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
@@ -218,7 +218,11 @@ export default function RoomDetail() {
 
   // The reserve CTA can only fire once the relevant total has loaded (mirrors
   // lease-booking's canProceed) so a click never runs ahead of a known price.
-  const notAvailable = room.status !== "AVAILABLE";
+  // Unbookable is driven by ROOM_UNBOOKABLE_STATUSES (HOLD/MAINTENANCE/INACTIVE),
+  // not `!== "AVAILABLE"` — an OCCUPIED room with a free future range must still
+  // be reservable; the calendar (busy/disabledDays) is what actually blocks a
+  // taken date, this only gates rooms pulled off the market entirely.
+  const notAvailable = (ROOM_UNBOOKABLE_STATUSES as readonly string[]).includes(room.status);
   const quoteReady = isShortStay ? !!shortQuote : isLeaseTerm ? !!leaseQuote : false;
   const ctaDisabled = notAvailable || !datesValid || isBelowMin || !quoteReady;
   const ctaLabel = notAvailable

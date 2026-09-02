@@ -42,7 +42,7 @@ import {
   BookingError,
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
-import { buildStrAvailability, buildRoomAvailability } from "./lib/availability";
+import { buildStrAvailability, buildRoomAvailability, isRoomBookableStatus, roomAvailableForDates } from "./lib/availability";
 import { todayIso } from "@shared/dates";
 import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./lib/nextOpening";
 import {
@@ -536,14 +536,16 @@ export async function registerRoutes(app: Express): Promise<void> {
       const withRent = await Promise.all(
         props.map(async (p) => {
           // Co-living cards price "from" the cheapest room a guest can actually
-          // book. Date-blind default: AVAILABLE rooms. Dated search: rooms that
-          // are AVAILABLE *and* free for [checkIn, checkOut) (leases ∪ Airbnb).
+          // book. Date-blind default: rooms not pulled off the market
+          // (ROOM_UNBOOKABLE_STATUSES: HOLD/MAINTENANCE/INACTIVE — OCCUPIED does
+          // NOT disqualify a room here). Dated search: those rooms AND free for
+          // [checkIn, checkOut) (leases ∪ Airbnb ∪ manual ∪ direct bookings).
           // null fromWeeklyRent → card shows "Fully booked" / unavailable.
           let fromWeeklyRent: string | null = null;
           let availableForDates = true;
           if (p.type === "COLIVING") {
             const rooms = await storage.getRoomsByProperty(p.id);
-            const openRooms = rooms.filter((r) => r.status === "AVAILABLE");
+            const openRooms = rooms.filter((r) => isRoomBookableStatus(r.status));
             // Pair each open room with whether it's free for the searched range
             // (date-blind default: all open rooms count as free). The pure
             // cheapestAvailableWeeklyRent picks the from-price + availability.
@@ -621,7 +623,8 @@ export async function registerRoutes(app: Express): Promise<void> {
       // Optional date-aware search (same validation as the grid handler). When a
       // valid forward, not-past range is supplied, each room reports whether it's
       // actually bookable for THOSE dates so the room cards can grey out an
-      // Airbnb/lease-blocked room even though its manual status is AVAILABLE.
+      // Airbnb/lease/manual-blocked room even when its status permits booking
+      // (e.g. OCCUPIED, which no longer blocks a future free range on its own).
       const today = todayIso();
       const ISO = /^\d{4}-\d{2}-\d{2}$/;
       const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
@@ -633,24 +636,17 @@ export async function registerRoutes(app: Express): Promise<void> {
 
       const baseRooms =
         property.type === "COLIVING" ? await storage.getRoomsByProperty(property.id) : [];
-      // Per-room availability for the searched range. No dates → every room is
-      // availableForDates:true (back-compat; the card falls back to room.status).
-      // Dated → AVAILABLE status AND free for [checkIn, checkOut) (leases ∪ Airbnb).
-      const rooms: RoomWithAvailability[] = dated
-        ? await Promise.all(
-            baseRooms.map(async (r) => ({
-              ...r,
-              availableForDates:
-                r.status === "AVAILABLE" &&
-                (await storage.isRoomAvailableForRange({
-                  roomId: r.id,
-                  startDate: dated.checkIn,
-                  endDate: dated.checkOut,
-                  endExclusive: true,
-                })),
-            })),
-          )
-        : baseRooms.map((r) => ({ ...r, availableForDates: true }));
+      // Per-room availability for the searched range — roomAvailableForDates is
+      // the single source of truth for this field (its status gate,
+      // isRoomBookableStatus, is the same one the grid handler above uses for
+      // openRooms): no dates → true regardless of status (back-compat; the card
+      // falls back to room.status); dated → not pulled off the market
+      // (ROOM_UNBOOKABLE_STATUSES) AND free for [checkIn, checkOut) (leases ∪
+      // Airbnb ∪ manual ∪ direct bookings). OCCUPIED does NOT disqualify a room —
+      // only a real date overlap does.
+      const rooms: RoomWithAvailability[] = await Promise.all(
+        baseRooms.map(async (r) => ({ ...r, availableForDates: await roomAvailableForDates(r, dated) })),
+      );
       res.json({ property, rooms });
     } catch (err) {
       next(err);

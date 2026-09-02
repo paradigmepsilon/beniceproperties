@@ -8,7 +8,7 @@ import { Link, useParams, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
 import { todayIso } from "@shared/dates";
-import type { Property, RoomWithAvailability } from "@shared/schema";
+import { ROOM_UNBOOKABLE_STATUSES, type Property, type RoomWithAvailability } from "@shared/schema";
 import type { QuoteResponse } from "@shared/api-types";
 import { apiRequest } from "@/lib/queryClient";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
@@ -248,13 +248,17 @@ export default function PropertyDetail() {
                     shrinking into one cramped row when a property has many rooms. */}
                 <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
                   {rooms.map((room) => {
-                    // Blocked for the SELECTED dates (Airbnb/lease) though its
-                    // manual status may be AVAILABLE — only meaningful when a
-                    // range is chosen (server returns availableForDates:true with
-                    // no dates). A card is unavailable if its status isn't
-                    // AVAILABLE OR it's blocked for the picked dates.
+                    // Blocked for the SELECTED dates (Airbnb/lease/manual/direct)
+                    // though its manual status may still allow booking — only
+                    // meaningful when a range is chosen (server returns
+                    // availableForDates:true with no dates). A card is unavailable
+                    // if the room is pulled off the market entirely
+                    // (ROOM_UNBOOKABLE_STATUSES: HOLD/MAINTENANCE/INACTIVE) OR
+                    // it's blocked for the picked dates — NOT merely OCCUPIED,
+                    // which no longer blocks a future, actually-free range.
                     const roomBlocked = datedSearch && room.availableForDates === false;
-                    const unavailable = room.status !== "AVAILABLE" || roomBlocked;
+                    const unavailable =
+                      (ROOM_UNBOOKABLE_STATUSES as readonly string[]).includes(room.status) || roomBlocked;
                     return (
                     <div key={room.id} className={`bnp-card bnp-card-interactive relative overflow-hidden ${roomBlocked ? "is-booked" : ""}`} data-testid={`card-room-${room.id}`}>
                       <span aria-hidden className="absolute inset-y-0 left-0 z-10 w-[5px] bg-segment-room" />

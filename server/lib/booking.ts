@@ -128,38 +128,29 @@ export async function strHasConflict(
   checkIn: string,
   checkOut: string,
 ): Promise<boolean> {
-  const inMs = parseISO(checkIn).getTime();
-  const outMs = parseISO(checkOut).getTime();
-  // Overlap if start < otherEnd && otherStart < end (half-open — checkout day
-  // is free to check in).
-  const overlaps = (bIn: string, bOut: string) =>
-    inMs < parseISO(bOut).getTime() && parseISO(bIn).getTime() < outMs;
+  // Every source below stores/receives a half-open range (checkout day is free
+  // to check in) — one overlap check for all three, via the shared helper.
+  const requestedRange = { start: checkIn, end: checkOut, endExclusive: true };
+  const hits = (blocks: { startDate: string; endDate: string }[]) =>
+    blocks.some((b) => overlapsRange(requestedRange, { start: b.startDate, end: b.endDate, endExclusive: true }));
 
   // (1) BNP direct bookings for this whole-property listing.
   const existing = await storage.getBookings();
-  const directHit = existing.some((b) => {
-    if (b.propertyId !== propertyId || b.model !== "STR") return false;
-    if (b.status === "CANCELLED") return false;
-    if (!b.checkOut) return false;
-    return overlaps(b.checkIn, b.checkOut);
-  });
-  if (directHit) return true;
+  const directBlocks = existing
+    .filter((b) => b.propertyId === propertyId && b.model === "STR" && b.status !== "CANCELLED" && b.checkOut)
+    .map((b) => ({ startDate: b.checkIn, endDate: b.checkOut as string }));
+  if (hits(directBlocks)) return true;
 
   // (2) External iCal blocks synced from the listing's Airbnb calendar
   //     (room_id IS NULL). Airbnb DTEND is exclusive, so the same half-open
   //     overlap is correct.
   const blocks = await storage.getExternalBlocksForProperty(propertyId);
-  if (blocks.some((b) => overlaps(b.startDate, b.endDate))) return true;
+  if (hits(blocks)) return true;
 
   // (3) Manual admin blocks (off-platform booking, maintenance, owner use) for
   //     this property. Stored half-open, like external blocks.
   const manualBlocks = await storage.getManualBlocksForProperty(propertyId);
-  return manualBlocks.some((b) =>
-    overlapsRange(
-      { start: checkIn, end: checkOut, endExclusive: true },
-      { start: b.startDate, end: b.endDate, endExclusive: true },
-    ),
-  );
+  return hits(manualBlocks);
 }
 
 export interface ResolvedBooking {

@@ -18,6 +18,7 @@ import { addDays, format, parseISO } from "date-fns";
 import { storage } from "../storage";
 import type { AvailabilityResponse, BusyRange } from "@shared/api-types";
 import { todayIso } from "@shared/dates";
+import { ROOM_UNBOOKABLE_STATUSES, type Room } from "@shared/schema";
 
 /** Inclusive end date → exclusive (first-free) end date. */
 function exclusiveEnd(inclusiveEnd: string): string {
@@ -26,6 +27,40 @@ function exclusiveEnd(inclusiveEnd: string): string {
 
 function sortByStart(ranges: BusyRange[]): BusyRange[] {
   return [...ranges].sort((a, b) => (a.start < b.start ? -1 : a.start > b.start ? 1 : 0));
+}
+
+/**
+ * Is this room's STATUS alone bookable (pulled-off-market gate only — date
+ * overlaps are a separate question)? Rejects only ROOM_UNBOOKABLE_STATUSES
+ * (HOLD/MAINTENANCE/INACTIVE). "OCCUPIED" is bookable here — occupancy for a
+ * FUTURE range is decided by date overlap, not this manual status flag.
+ */
+export function isRoomBookableStatus(status: string): boolean {
+  return !(ROOM_UNBOOKABLE_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Is this room actually reservable for an optional [checkIn, checkOut) range?
+ * Single source of truth for the `availableForDates` field the guest-facing
+ * property/room cards render (GET /api/properties, GET /api/properties/:id).
+ *   - no range → true regardless of status (back-compat: the card falls back
+ *     to the room's own status badge when no dates are picked),
+ *   - a range → the room's status must be bookable (isRoomBookableStatus) AND
+ *     the range must be free (storage.isRoomAvailableForRange — leases ∪
+ *     direct co-living bookings ∪ external ∪ manual blocks).
+ */
+export async function roomAvailableForDates(
+  room: Pick<Room, "id" | "status">,
+  range: { checkIn: string; checkOut: string } | null,
+): Promise<boolean> {
+  if (!range) return true;
+  if (!isRoomBookableStatus(room.status)) return false;
+  return storage.isRoomAvailableForRange({
+    roomId: room.id,
+    startDate: range.checkIn,
+    endDate: range.checkOut,
+    endExclusive: true,
+  });
 }
 
 /**

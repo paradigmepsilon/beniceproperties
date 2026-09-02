@@ -20,10 +20,11 @@ const mockStorage = vi.hoisted(() => ({
   getExternalBlocksForRoom: vi.fn(),
   getManualBlocksForRoom: vi.fn(),
   getManualBlocksForProperty: vi.fn(),
+  isRoomAvailableForRange: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
-import { buildStrAvailability, buildRoomAvailability } from "./availability";
+import { buildStrAvailability, buildRoomAvailability, isRoomBookableStatus, roomAvailableForDates } from "./availability";
 
 beforeEach(() => {
   store.strBookings = [];
@@ -116,5 +117,55 @@ describe("buildRoomAvailability", () => {
     mockStorage.getManualBlocksForRoom.mockResolvedValue([{ startDate: "2000-01-01", endDate: "2000-01-03" }]);
     const res = await buildRoomAvailability("room-1");
     expect(res.busy).toHaveLength(0);
+  });
+});
+
+describe("isRoomBookableStatus — pure status gate (ROOM_UNBOOKABLE_STATUSES)", () => {
+  it("AVAILABLE and OCCUPIED are bookable-by-status", () => {
+    expect(isRoomBookableStatus("AVAILABLE")).toBe(true);
+    expect(isRoomBookableStatus("OCCUPIED")).toBe(true);
+  });
+
+  it("HOLD, MAINTENANCE, INACTIVE are not bookable-by-status", () => {
+    expect(isRoomBookableStatus("HOLD")).toBe(false);
+    expect(isRoomBookableStatus("MAINTENANCE")).toBe(false);
+    expect(isRoomBookableStatus("INACTIVE")).toBe(false);
+  });
+});
+
+describe("roomAvailableForDates — the /api/properties* availableForDates field", () => {
+  beforeEach(() => {
+    mockStorage.isRoomAvailableForRange.mockReset();
+  });
+
+  it("no range → true regardless of status (back-compat: card falls back to room.status)", async () => {
+    await expect(roomAvailableForDates({ id: "r1", status: "HOLD" }, null)).resolves.toBe(true);
+    await expect(roomAvailableForDates({ id: "r1", status: "MAINTENANCE" }, null)).resolves.toBe(true);
+  });
+
+  it("an OCCUPIED room with a free range is availableForDates: true (the exact regression this closes)", async () => {
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+    const range = { checkIn: "2026-07-01", checkOut: "2026-07-08" };
+    await expect(roomAvailableForDates({ id: "r1", status: "OCCUPIED" }, range)).resolves.toBe(true);
+    expect(mockStorage.isRoomAvailableForRange).toHaveBeenCalledWith({
+      roomId: "r1",
+      startDate: "2026-07-01",
+      endDate: "2026-07-08",
+      endExclusive: true,
+    });
+  });
+
+  it("a HOLD room is availableForDates: false even for a range that would otherwise be free", async () => {
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(true); // range itself is free
+    const range = { checkIn: "2026-07-01", checkOut: "2026-07-08" };
+    await expect(roomAvailableForDates({ id: "r1", status: "HOLD" }, range)).resolves.toBe(false);
+    // Status gate short-circuits — never even asks storage about the range.
+    expect(mockStorage.isRoomAvailableForRange).not.toHaveBeenCalled();
+  });
+
+  it("an AVAILABLE room with a conflicting range is availableForDates: false", async () => {
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(false);
+    const range = { checkIn: "2026-07-01", checkOut: "2026-07-08" };
+    await expect(roomAvailableForDates({ id: "r1", status: "AVAILABLE" }, range)).resolves.toBe(false);
   });
 });
