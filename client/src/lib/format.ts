@@ -27,6 +27,18 @@ export function cityOf(location: string): string {
 // "2026-08-14" → "Aug 14". For short inline dates like "Next opening · Aug 14".
 export const shortDate = (iso: string) => format(parseISO(iso), "MMM d");
 
+// "2026-08-14" → "Aug 14, 2026". For records that can span a year boundary
+// (leases, manual blocks, bookings) where the bare month/day of shortDate
+// would be ambiguous. parseISO (not `new Date(iso)`) keeps this stable
+// regardless of the viewer's timezone offset.
+export const fullDate = (iso: string) => format(parseISO(iso), "MMM d, yyyy");
+
+// "2026-08-14T09:15:00.000Z" → "Aug 14, 2026, 9:15 AM" (rendered in the
+// viewer's local time). Safe with parseISO because this is a real timestamp,
+// not a bare date — unlike shortDate/fullDate it carries a time component so
+// there's no local-midnight ambiguity to guard against.
+export const dateTime = (iso: string) => format(parseISO(iso), "MMM d, yyyy, h:mm a");
+
 // Lowest effective nightly across an STR property's configured rate tiers —
 // the "from" price shown on cards and the booking panel. Longer stays
 // auto-apply weekly/monthly tiers at checkout. `multiTier` drives whether the

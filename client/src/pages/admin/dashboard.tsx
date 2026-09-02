@@ -14,9 +14,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
 import { ROOM_STATUSES } from "@shared/schema";
+import { amountMatches, refundEligibility } from "@/lib/adminRefund";
+import MessagesTab from "./messages-tab";
+import BlocksPanel from "./blocks-panel";
+import CalendarSyncPanel from "./calendar-sync-panel";
 
 interface Dashboard {
   aggregates: {
@@ -175,6 +180,7 @@ export default function AdminDashboard() {
             Verifications
             {verifications.data?.verifications.length ? ` (${verifications.data.verifications.length})` : ""}
           </TabsTrigger>
+          <TabsTrigger value="messages" data-testid="tab-messages">Messages</TabsTrigger>
         </TabsList>
 
         {/* Overview */}
@@ -192,17 +198,36 @@ export default function AdminDashboard() {
             </CardHeader>
             <CardContent>
               <div className="divide-y text-sm">
-                {dashboard.data?.recentBookings.map((b) => (
-                  <div key={b.id} className="flex items-center justify-between py-2">
-                    <span className="font-mono">{b.reference}</span>
-                    <span className="text-muted-foreground">
-                      {b.model} · {b.paymentMethod}
-                    </span>
-                    <Badge variant={b.status === "CONFIRMED" || b.status === "ACTIVE" ? "default" : "secondary"}>
-                      {b.status}
-                    </Badge>
-                  </div>
-                ))}
+                {dashboard.data?.recentBookings.map((b) => {
+                  const paymentRow = paymentsView.data?.find((r) => r.booking.id === b.id);
+                  return (
+                    <div key={b.id} className="py-2">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono">{b.reference}</span>
+                        <span className="text-muted-foreground">
+                          {b.model} · {b.paymentMethod}
+                        </span>
+                        <Badge
+                          variant={
+                            b.status === "CONFLICT"
+                              ? "destructive"
+                              : b.status === "CONFIRMED" || b.status === "ACTIVE"
+                                ? "default"
+                                : "secondary"
+                          }
+                          data-testid={`badge-status-${b.id}`}
+                        >
+                          {b.status}
+                        </Badge>
+                      </div>
+                      {b.status === "CONFLICT" && (
+                        <div className="mt-2">
+                          <ConflictBookingActions booking={b} payments={paymentRow?.payments ?? []} />
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
                 {!dashboard.data?.recentBookings.length && (
                   <p className="py-4 text-muted-foreground">No bookings yet.</p>
                 )}
@@ -248,6 +273,8 @@ export default function AdminDashboard() {
 
         {/* Inventory */}
         <TabsContent value="inventory" className="mt-6">
+          <CalendarSyncPanel />
+          <BlocksPanel properties={properties.data ?? []} />
           <InventoryManager properties={properties.data ?? []} />
         </TabsContent>
 
@@ -356,6 +383,11 @@ export default function AdminDashboard() {
               </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Messages */}
+        <TabsContent value="messages" className="mt-6">
+          <MessagesTab />
         </TabsContent>
       </Tabs>
     </main>
@@ -708,6 +740,110 @@ function AddRoomForm({ propertyId }: { propertyId: string }) {
       <Button className="mt-3" size="sm" variant="outline" disabled={!name.trim() || create.isPending} onClick={() => create.mutate()} data-testid={`button-add-room-${propertyId}`}>
         Add room
       </Button>
+    </div>
+  );
+}
+
+// --- Overview: CONFLICT booking resolution (Task 8) ---
+// A CONFLICT booking was paid but its dates were taken by the time payment
+// confirmed. The admin either confirms it (re-checks availability, 409s if
+// still taken) or cancels — plain cancel always available, "Cancel + refund"
+// only for a Stripe booking with a PAID Stripe payment to refund. Refund is
+// real money: the dialog shows the exact PAID-Stripe total and requires the
+// admin to type it back before the button enables (see client/src/lib/adminRefund.ts).
+function ConflictBookingActions({ booking, payments }: { booking: Booking; payments: Payment[] }) {
+  const { toast } = useToast();
+  const [refundDialogOpen, setRefundDialogOpen] = useState(false);
+  const [typedAmount, setTypedAmount] = useState("");
+
+  const eligibility = refundEligibility(booking, payments);
+
+  const confirm = useMutation({
+    mutationFn: async () => apiRequest("POST", `/api/admin/bookings/${booking.id}/confirm`),
+    onSuccess: () => {
+      toast({ title: "Booking confirmed" });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+    },
+    onError: (e: Error) => toast({ title: "Could not confirm", description: e.message, variant: "destructive" }),
+  });
+
+  const cancel = useMutation({
+    mutationFn: async (refund: boolean) => {
+      const res = await apiRequest("POST", `/api/admin/bookings/${booking.id}/cancel`, { refund });
+      return res.json() as Promise<{ ok: boolean; reference: string; alreadyCancelled: boolean; refunded: boolean; refundIds: string[] }>;
+    },
+    onSuccess: (result) => {
+      toast({
+        title: result.refunded ? "Cancelled and refunded" : "Booking cancelled",
+        description: result.refunded
+          ? `Refund${result.refundIds.length > 1 ? "s" : ""} issued: ${result.refundIds.join(", ")}`
+          : undefined,
+      });
+      setRefundDialogOpen(false);
+      setTypedAmount("");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/reconciliation"] });
+    },
+    onError: (e: Error) => toast({ title: "Could not cancel", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" disabled={confirm.isPending} onClick={() => confirm.mutate()} data-testid={`button-confirm-${booking.id}`}>
+        Confirm
+      </Button>
+      <Button
+        size="sm"
+        variant="destructive"
+        disabled={cancel.isPending}
+        onClick={() => {
+          if (window.confirm(`Cancel booking ${booking.reference}? This cannot be undone.`)) {
+            cancel.mutate(false);
+          }
+        }}
+        data-testid={`button-cancel-${booking.id}`}
+      >
+        Cancel
+      </Button>
+      {eligibility.eligible && (
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => setRefundDialogOpen(true)}
+          data-testid={`button-cancel-refund-${booking.id}`}
+        >
+          Cancel + refund
+        </Button>
+      )}
+
+      <Dialog open={refundDialogOpen} onOpenChange={setRefundDialogOpen}>
+        <DialogContent data-testid={`dialog-refund-${booking.id}`}>
+          <DialogHeader>
+            <DialogTitle>Refund {money(eligibility.amount)} to the guest?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            This cancels booking {booking.reference} and refunds the paid Stripe total. This cannot be undone. Type the
+            exact amount below to confirm.
+          </p>
+          <Input
+            value={typedAmount}
+            onChange={(e) => setTypedAmount(e.target.value)}
+            placeholder={eligibility.amount.toFixed(2)}
+            data-testid={`input-refund-amount-${booking.id}`}
+          />
+          <DialogFooter>
+            <Button
+              variant="destructive"
+              disabled={!amountMatches(typedAmount, eligibility.amount) || cancel.isPending}
+              onClick={() => cancel.mutate(true)}
+              data-testid={`button-confirm-refund-${booking.id}`}
+            >
+              Refund &amp; cancel
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

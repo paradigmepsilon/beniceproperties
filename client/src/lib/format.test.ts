@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cityOf, fromNightly, shortDate } from "./format";
+import { cityOf, dateTime, fromNightly, fullDate, shortDate } from "./format";
 
 describe("cityOf", () => {
   it("extracts the city from a full street address", () => {
@@ -38,6 +38,23 @@ describe("cityOf", () => {
 describe("shortDate", () => {
   it("formats an ISO date as 'MMM d'", () => {
     expect(shortDate("2026-08-14")).toBe("Aug 14");
+  });
+});
+
+describe("fullDate", () => {
+  it("formats an ISO date as 'MMM d, yyyy'", () => {
+    expect(fullDate("2026-08-14")).toBe("Aug 14, 2026");
+  });
+
+  it("is stable across a year boundary", () => {
+    expect(fullDate("2026-12-31")).toBe("Dec 31, 2026");
+    expect(fullDate("2027-01-01")).toBe("Jan 1, 2027");
+  });
+});
+
+describe("dateTime", () => {
+  it("formats an ISO timestamp with a local time-of-day", () => {
+    expect(dateTime("2026-08-14T09:15:00.000Z")).toMatch(/^Aug 14, 2026, \d{1,2}:\d{2} (AM|PM)$/);
   });
 });
 

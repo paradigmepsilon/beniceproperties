@@ -438,7 +438,7 @@ export default function RoomDetail() {
                 <span className="text-sm font-normal text-muted-foreground"> / wk</span>
               </p>
               <p className="text-xs text-muted-foreground">
-                {room.status === "AVAILABLE" ? `${COLIVING_MIN_DAYS}-night minimum` : "Not available"}
+                {notAvailable ? "Not available" : `${COLIVING_MIN_DAYS}-night minimum`}
               </p>
             </div>
             <Button
