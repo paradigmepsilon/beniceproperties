@@ -127,17 +127,15 @@ describe("buildLeaseQuote — guards", () => {
     ).rejects.toBeInstanceOf(LeaseError);
   });
 
-  it("rejects a room under MAINTENANCE or INACTIVE (ROOM_UNBOOKABLE_STATUSES)", async () => {
+  it("rejects a room under HOLD, MAINTENANCE, or INACTIVE (ROOM_UNBOOKABLE_STATUSES)", async () => {
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
-    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00", "MAINTENANCE"));
-    await expect(
-      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "WEEKLY" }),
-    ).rejects.toThrow(/no longer available/i);
 
-    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00", "INACTIVE"));
-    await expect(
-      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "WEEKLY" }),
-    ).rejects.toThrow(/no longer available/i);
+    for (const status of ["HOLD", "MAINTENANCE", "INACTIVE"]) {
+      mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00", status));
+      await expect(
+        buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "WEEKLY" }),
+      ).rejects.toThrow(/no longer available/i);
+    }
   });
 
   it("does NOT reject a room with status OCCUPIED — occupancy is derived from date overlaps, not the status flag", async () => {

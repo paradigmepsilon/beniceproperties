@@ -271,7 +271,11 @@ export default function PropertyDetail() {
                                 ? "Available"
                                 : room.status === "HOLD"
                                   ? "On hold"
-                                  : "Occupied"}
+                                  : room.status === "MAINTENANCE"
+                                    ? "Under maintenance"
+                                    : room.status === "INACTIVE"
+                                      ? "Unavailable"
+                                      : "Occupied"}
                           </span>
                         </div>
                         <p className="mt-2 text-sm">

@@ -239,6 +239,13 @@ describe("resolveBooking — co-living term gate (7–28 = booking, else rejecte
     ).rejects.toThrow(/no longer available/i);
   });
 
+  it("rejects a room with status HOLD regardless of date availability (deliberate admin hold, not date-driven)", async () => {
+    mockStorage.getRoom.mockResolvedValue({ ...ROOM, status: "HOLD" } as never);
+    await expect(
+      resolveBooking({ propertyId: "p2", roomId: "r1", checkIn: "2026-07-01", checkOut: "2026-07-11" }),
+    ).rejects.toThrow(/no longer available/i);
+  });
+
   it("reads the per-room cleaning fee onto the resolved short stay", async () => {
     mockStorage.getRoom.mockResolvedValue({ ...ROOM, cleaningFee: "75" } as never);
     const r = await resolveBooking({

@@ -252,7 +252,15 @@ export default function RoomDetail() {
             <p className="mt-3 text-sm text-muted-foreground">{property?.name}</p>
             <h1 className="mt-1 font-display text-3xl font-semibold tracking-tight">{room.name}</h1>
             <span className={`mt-3 inline-block rounded-full px-3 py-1 text-xs font-bold ${room.status === "AVAILABLE" ? "bg-good-bg text-good" : "bg-secondary text-muted-foreground"}`}>
-              {room.status === "AVAILABLE" ? "Available" : room.status === "HOLD" ? "On hold" : "Occupied"}
+              {room.status === "AVAILABLE"
+                ? "Available"
+                : room.status === "HOLD"
+                  ? "On hold"
+                  : room.status === "MAINTENANCE"
+                    ? "Under maintenance"
+                    : room.status === "INACTIVE"
+                      ? "Unavailable"
+                      : "Occupied"}
             </span>
 
             {/* Mobile price anchor. On desktop the reserve card is sticky and the
