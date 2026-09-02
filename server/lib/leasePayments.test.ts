@@ -30,8 +30,14 @@ const mockStripe = vi.hoisted(() => ({
   retrievePaymentIntent: vi.fn(),
   refundPaymentIntent: vi.fn(),
 }));
+const mockNotify = vi.hoisted(() => ({
+  notifyGuest: vi.fn(),
+  sendEmail: vi.fn(),
+  notifyAdmin: vi.fn(),
+}));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./stripe", () => mockStripe);
+vi.mock("./notifications", () => mockNotify);
 
 import {
   startFirstPayment,
@@ -209,6 +215,8 @@ describe("finalizeDepositPayment", () => {
     mockStorage.updateScheduleRow.mockResolvedValue(undefined);
     mockStorage.updateRoom.mockResolvedValue(undefined);
     mockStorage.hasLifecycleEvent.mockResolvedValue(true); // suppress lifecycle sends
+    mockNotify.notifyGuest.mockResolvedValue({ email: { sent: true }, sms: { sent: true } });
+    mockNotify.notifyAdmin.mockResolvedValue({ email: { sent: true }, telegram: { sent: true } });
     mockStripe.retrievePaymentIntent.mockResolvedValue({ id: "pi_dep_1", payment_method: "pm_saved_1" });
     mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_first_1" });
   });
@@ -232,6 +240,12 @@ describe("finalizeDepositPayment", () => {
       expect.objectContaining({ status: "PENDING_VERIFICATION" }),
     );
     expect(mockStorage.updateLease).not.toHaveBeenCalledWith("lease-1", expect.objectContaining({ status: "ACTIVE" }));
+    // An operator is told the room is secured.
+    expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
+    expect(mockNotify.notifyAdmin.mock.calls[0][0].context).toMatchObject({
+      leaseId: "lease-1",
+      kind: "DEPOSIT_PAID",
+    });
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
   });
 

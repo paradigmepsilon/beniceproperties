@@ -26,7 +26,7 @@ import { resolvePortalLease } from "./portal";
 import { uploadBuffer, getPresignedDownloadUrl, deleteObject, isR2Configured } from "./storage-r2";
 import { LeaseError } from "./lease";
 import { activateVerifiedLease } from "./leasePayments";
-import { notifyGuest } from "./notifications";
+import { notifyGuest, notifyAdmin } from "./notifications";
 import { US_STATE_CODES, type Vehicle } from "@shared/schema";
 import { log } from "../server-log";
 
@@ -130,12 +130,24 @@ export async function uploadLicense(
   });
 
   // Surface to ops (deduped: one OPEN VERIFICATION_PENDING per lease at a time).
-  await storage.raiseEscalationOnce({
+  // Only a NEW escalation pages an admin — a re-upload on an open review doesn't.
+  const verifEsc = await storage.raiseEscalationOnce({
     leaseId: lease.id,
     kind: "VERIFICATION_PENDING",
     severity: "LOW",
     detail: `Driver's license uploaded for review (guest ${lease.guestId}).`,
   });
+  if (verifEsc) {
+    await notifyAdmin({
+      subject: "ID awaiting review — a tenant uploaded their license",
+      // No PII beyond the ids: the document itself is only ever viewed through
+      // the presigned admin route.
+      body:
+        `Lease ${lease.id} has a driver's license awaiting review. ` +
+        `Approve or reject it in the admin console to activate the lease.`,
+      context: { leaseId: lease.id, guestId: lease.guestId, kind: "ESCALATION" },
+    });
+  }
 
   log(`license uploaded for lease ${lease.id} → PENDING_REVIEW`, "verify");
   return { verificationStatus: "PENDING_REVIEW", licenseUploadedAt: now };

@@ -27,7 +27,7 @@
 // =============================================================================
 
 import { storage } from "../storage";
-import { notifyGuest } from "./notifications";
+import { notifyGuest, notifyAdmin } from "./notifications";
 import { chargeSavedCard } from "./stripe";
 import { buildLeaseChargeMetadata } from "./paymentMetadata";
 import {
@@ -212,14 +212,24 @@ async function handleOverdue(
         emailSent: sent.email.sent,
         smsSent: sent.sms.sent,
       });
-      // Flag UO (overdue). Deduped to one OPEN escalation per installment.
-      await storage.raiseEscalationOnce({
+      // Flag UO (overdue). Deduped to one OPEN escalation per installment; the
+      // admin alert rides that same dedupe (only a NEW row pages a human).
+      const overdueEsc = await storage.raiseEscalationOnce({
         leaseId: lease.id,
         scheduleSeq: row.scheduleSeq,
         kind: "PAYMENT_OVERDUE",
         severity: "MEDIUM",
         detail: `Installment #${row.scheduleSeq} ($${row.amount}) overdue since ${row.dueDate}.`,
       });
+      if (overdueEsc) {
+        await notifyAdmin({
+          subject: `Payment overdue — ${property.name} (${guest.name}) #${row.scheduleSeq}`,
+          body:
+            `Installment #${row.scheduleSeq} ($${row.amount}) for ${guest.name} at ${property.name} ` +
+            `is ${past} day${past === 1 ? "" : "s"} past due (due ${row.dueDate}). Late fees are accruing.`,
+          context: { leaseId: lease.id, guestId: guest.id, kind: "ESCALATION" },
+        });
+      }
       result.overdueMessages += 1;
     }
   }
@@ -237,6 +247,13 @@ async function handleOverdue(
         `(threshold ${thresholdDays}).`,
     });
     if (raised) {
+      await notifyAdmin({
+        subject: `LEASE DEFAULTED — ${property.name} (${guest.name})`,
+        body:
+          `Lease ${lease.id} at ${property.name} moved to DEFAULTED: installment #${row.scheduleSeq} ` +
+          `($${row.amount}) unpaid ${past} days (threshold ${thresholdDays}).`,
+        context: { leaseId: lease.id, guestId: guest.id, kind: "ESCALATION" },
+      });
       const already = await storage.hasNotification({
         leaseId: lease.id,
         scheduleSeq: null,
@@ -283,8 +300,8 @@ export async function handleChargeFailure(args: {
     await storage.updateScheduleRow(args.scheduleRow.id, { status: "FAILED" });
   }
 
-  // Flag UO immediately.
-  await storage.raiseEscalationOnce({
+  // Flag UO immediately, and page an admin on a NEW escalation only.
+  const failureEsc = await storage.raiseEscalationOnce({
     leaseId: args.lease.id,
     scheduleSeq: args.scheduleRow.scheduleSeq,
     kind: "PAYMENT_FAILED",
@@ -293,6 +310,16 @@ export async function handleChargeFailure(args: {
       `Card-on-file charge FAILED for installment #${args.scheduleRow.scheduleSeq} ` +
       `($${args.scheduleRow.amount})${args.reason ? `: ${args.reason}` : ""}.`,
   });
+  if (failureEsc) {
+    await notifyAdmin({
+      subject: `Card charge FAILED — ${args.guest.name} installment #${args.scheduleRow.scheduleSeq}`,
+      body:
+        `Saved-card charge of $${args.scheduleRow.amount} for ${args.guest.name} ` +
+        `(${args.guest.email}) failed${args.reason ? `: ${args.reason}` : ""}. ` +
+        `Installment #${args.scheduleRow.scheduleSeq} is marked FAILED; the guest has been sent a fix link.`,
+      context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "ESCALATION" },
+    });
+  }
 
   // Email + SMS the guest a payment-fix link (once per day per installment).
   const already = await storage.hasNotification({

@@ -13,10 +13,12 @@ const mockStorage = vi.hoisted(() => ({
   getScheduleByLease: vi.fn(),
   hasLifecycleEvent: vi.fn(),
   recordLifecycleEvent: vi.fn(),
+  getSetting: vi.fn(),
 }));
 const mockNotify = vi.hoisted(() => ({
   notifyGuest: vi.fn(),
   sendEmail: vi.fn(),
+  notifyAdmin: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./notifications", () => mockNotify);
@@ -24,6 +26,7 @@ vi.mock("./notifications", () => mockNotify);
 import {
   onLeaseActivated,
   onPaymentReceived,
+  onBookingConfirmed,
   runLeaseEndingNotices,
   daysUntil,
 } from "./lifecycle";
@@ -54,8 +57,10 @@ beforeEach(() => {
   ]);
   mockStorage.hasLifecycleEvent.mockResolvedValue(false);
   mockStorage.recordLifecycleEvent.mockResolvedValue({});
+  mockStorage.getSetting.mockResolvedValue(undefined); // unset → guest sends ON
   mockNotify.notifyGuest.mockResolvedValue({ email: { sent: true }, sms: { sent: true } });
   mockNotify.sendEmail.mockResolvedValue({ sent: true });
+  mockNotify.notifyAdmin.mockResolvedValue({ email: { sent: true }, telegram: { sent: true } });
 });
 
 describe("daysUntil", () => {
@@ -77,7 +82,10 @@ describe("onLeaseActivated", () => {
     expect(kinds).toContain("COLIVING_SCHEDULE_RECAP");
     expect(kinds).toContain("COLIVING_ADMIN_NEW_LEASE");
     expect(mockNotify.notifyGuest).toHaveBeenCalledTimes(2); // welcome + recap
-    expect(mockNotify.sendEmail).toHaveBeenCalledTimes(1); // admin
+    // The admin notice fans out over email + Telegram via notifyAdmin (one call,
+    // NOT a second raw sendEmail — no double-send).
+    expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
+    expect(mockNotify.sendEmail).not.toHaveBeenCalled();
   });
 
   it("does not resend an event already recorded (idempotent)", async () => {
@@ -112,6 +120,82 @@ describe("onPaymentReceived", () => {
       scheduleRow: { scheduleSeq: 2, amount: "250" },
     });
     expect(mockNotify.notifyGuest).not.toHaveBeenCalled();
+  });
+});
+
+describe("onBookingConfirmed", () => {
+  const BOOKING = {
+    id: "bk-1",
+    propertyId: "prop-1",
+    roomId: "r1",
+    guestId: "g1",
+    model: "COLIVING",
+    checkIn: "2026-07-01",
+    checkOut: "2026-07-10",
+    status: "ACTIVE",
+    reference: "BNP-7QK4-2F9X",
+    quotedTotal: "980.00",
+  };
+  const ROOM = { id: "r1", name: "Garden", roomNumber: "2" };
+
+  it("sends the guest confirmation + the admin alert, each recorded once", async () => {
+    await onBookingConfirmed({ booking: BOOKING, property: PROP, room: ROOM, guest: GUEST });
+
+    expect(mockNotify.notifyGuest).toHaveBeenCalledTimes(1);
+    expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
+
+    const guestCall = mockNotify.notifyGuest.mock.calls[0][0];
+    expect(guestCall.subject).toContain("BNP-7QK4-2F9X");
+    expect(guestCall.body).toContain("/lookup");
+    expect(guestCall.context).toMatchObject({ bookingId: "bk-1", kind: "BOOKING_CONFIRMED" });
+
+    const kinds = mockStorage.recordLifecycleEvent.mock.calls.map((c) => c[0].eventType);
+    expect(kinds).toEqual(["BOOKING_CONFIRMED", "ADMIN_NEW_BOOKING"]);
+    // Idempotency is keyed on the BOOKING, never a lease.
+    for (const call of mockStorage.recordLifecycleEvent.mock.calls) {
+      expect(call[0].bookingId).toBe("bk-1");
+      expect(call[0].leaseId ?? null).toBeNull();
+      expect(call[0].scheduleSeq).toBeNull();
+    }
+    // The dedupe lookup uses the object ref form, scoped to the booking.
+    expect(mockStorage.hasLifecycleEvent).toHaveBeenCalledWith(
+      { bookingId: "bk-1" },
+      "BOOKING_CONFIRMED",
+      null,
+    );
+  });
+
+  it("skips the guest send when guest_auto_notifications is disabled, but still alerts admin", async () => {
+    mockStorage.getSetting.mockResolvedValue({ key: "guest_auto_notifications", value: "false" });
+
+    await onBookingConfirmed({ booking: BOOKING, property: PROP, room: ROOM, guest: GUEST });
+
+    expect(mockNotify.notifyGuest).not.toHaveBeenCalled();
+    expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
+    const guestRec = mockStorage.recordLifecycleEvent.mock.calls.find(
+      (c) => c[0].eventType === "BOOKING_CONFIRMED",
+    );
+    expect(guestRec?.[0].status).toBe("SKIPPED");
+  });
+
+  it("is a no-op on a second call (already recorded)", async () => {
+    mockStorage.hasLifecycleEvent.mockResolvedValue(true);
+    await onBookingConfirmed({ booking: BOOKING, property: PROP, room: ROOM, guest: GUEST });
+    expect(mockNotify.notifyGuest).not.toHaveBeenCalled();
+    expect(mockNotify.notifyAdmin).not.toHaveBeenCalled();
+    expect(mockStorage.recordLifecycleEvent).not.toHaveBeenCalled();
+  });
+
+  it("flags a CONFLICT booking in the admin subject and never emails the guest", async () => {
+    await onBookingConfirmed({
+      booking: { ...BOOKING, status: "CONFLICT" },
+      property: PROP,
+      room: ROOM,
+      guest: GUEST,
+    });
+    // A CONFLICT booking is not a confirmation — guest stays silent.
+    expect(mockNotify.notifyGuest).not.toHaveBeenCalled();
+    expect(mockNotify.notifyAdmin.mock.calls[0][0].subject).toContain("CONFLICT");
   });
 });
 

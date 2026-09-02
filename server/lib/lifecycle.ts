@@ -19,10 +19,10 @@
 // =============================================================================
 
 import { storage } from "../storage";
-import { notifyGuest, sendEmail } from "./notifications";
+import { notifyGuest, notifyAdmin } from "./notifications";
 import { LEASE_ENDING_NOTICE_DAYS } from "@shared/schema";
 import { log } from "../server-log";
-import type { Lease, Property, Guest, PaymentScheduleRow } from "@shared/schema";
+import type { Booking, Lease, Property, Room, Guest, PaymentScheduleRow } from "@shared/schema";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -78,6 +78,38 @@ export const LIFECYCLE_TEMPLATES = {
       `so we can verify your identity. Once we approve it, your lease goes active and your first ` +
       `week's rent is charged. Upload here: ${v.portalUrl}`,
   }),
+  // --- Short-stay bookings (no lease: STR nightly, or a 7–28-night co-living stay) ---
+  bookingConfirmed: (v: {
+    name: string;
+    property: string;
+    room: string | null;
+    checkIn: string;
+    checkOut: string;
+    reference: string;
+    total: string;
+    lookupUrl: string;
+  }) => ({
+    subject: `You're booked — ${v.property}${v.room ? `, ${v.room}` : ""} (${v.reference})`,
+    body:
+      `Hi ${v.name}, your stay at ${v.property}${v.room ? ` (${v.room})` : ""} is confirmed for ${v.checkIn} to ${v.checkOut}. ` +
+      `Reference ${v.reference}, paid ${v.total}. Check-in details arrive the day before arrival. ` +
+      `View your booking anytime: ${v.lookupUrl}`,
+  }),
+  adminNewBooking: (v: {
+    property: string;
+    room: string | null;
+    guest: string;
+    email: string;
+    phone: string;
+    checkIn: string;
+    checkOut: string;
+    reference: string;
+    total: string;
+    status: string;
+  }) => ({
+    subject: `${v.status === "CONFLICT" ? "⚠️ CONFLICT — " : ""}New booking — ${v.property}${v.room ? ` ${v.room}` : ""} ${v.checkIn}→${v.checkOut}`,
+    body: `${v.guest} (${v.email}${v.phone ? `, ${v.phone}` : ""}) · ${v.reference} · ${v.total}${v.status === "CONFLICT" ? "\n\nDATES WERE ALREADY TAKEN. Booking saved as CONFLICT (paid, not blocking). Resolve in the admin console: confirm, or cancel + refund." : ""}`,
+  }),
   leaseEnding: (v: { name: string; property: string; end: string; days: number; portalUrl: string }) => ({
     subject: `Your lease ends in ${v.days} days`,
     body:
@@ -106,7 +138,7 @@ export async function onLeaseActivated(leaseId: string): Promise<void> {
   if (!property || !guest) return;
 
   // Welcome (once).
-  if (!(await storage.hasLifecycleEvent(lease.id, "COLIVING_WELCOME", null))) {
+  if (!(await storage.hasLifecycleEvent({ leaseId: lease.id }, "COLIVING_WELCOME", null))) {
     const tpl = LIFECYCLE_TEMPLATES.welcome({ name: guest.name, property: property.name, start: lease.startDate });
     const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
     await storage.recordLifecycleEvent({
@@ -120,7 +152,7 @@ export async function onLeaseActivated(leaseId: string): Promise<void> {
   }
 
   // Schedule recap (once).
-  if (!(await storage.hasLifecycleEvent(lease.id, "COLIVING_SCHEDULE_RECAP", null))) {
+  if (!(await storage.hasLifecycleEvent({ leaseId: lease.id }, "COLIVING_SCHEDULE_RECAP", null))) {
     const rows = schedule
       .map((s) => `  #${s.scheduleSeq}  ${s.dueDate}  ${fmtMoney(parseFloat(s.amount))}`)
       .join("\n");
@@ -142,7 +174,7 @@ export async function onLeaseActivated(leaseId: string): Promise<void> {
   }
 
   // Admin notice (once) — to the configured admin email.
-  if (!(await storage.hasLifecycleEvent(lease.id, "COLIVING_ADMIN_NEW_LEASE", null))) {
+  if (!(await storage.hasLifecycleEvent({ leaseId: lease.id }, "COLIVING_ADMIN_NEW_LEASE", null))) {
     const tpl = LIFECYCLE_TEMPLATES.adminNewLease({
       property: property.name,
       guest: guest.name,
@@ -150,16 +182,19 @@ export async function onLeaseActivated(leaseId: string): Promise<void> {
       end: lease.endDate,
       total: fmtMoney(parseFloat(lease.totalLeaseValue)),
     });
-    const adminEmail = process.env.ADMIN_EMAIL;
-    const res = adminEmail
-      ? await sendEmail({ to: adminEmail, subject: tpl.subject, text: tpl.body })
-      : { sent: false };
+    // Email + Telegram fan-out (one call, not a second raw sendEmail — the
+    // lifecycle_events row below is still the single dedupe guard).
+    const res = await notifyAdmin({
+      subject: tpl.subject,
+      body: tpl.body,
+      context: { leaseId: lease.id, guestId: guest.id, kind: "LEASE_ACTIVATED" },
+    });
     await storage.recordLifecycleEvent({
       leaseId: lease.id,
       eventType: "COLIVING_ADMIN_NEW_LEASE",
       scheduleSeq: null,
-      status: res.sent ? "SENT" : "SKIPPED",
-      emailSent: res.sent,
+      status: res.email.sent || res.telegram.sent ? "SENT" : "SKIPPED",
+      emailSent: res.email.sent,
       smsSent: false,
     });
   }
@@ -178,7 +213,7 @@ export async function onPaymentReceived(args: {
   scheduleRow: Pick<PaymentScheduleRow, "scheduleSeq" | "amount">;
 }): Promise<void> {
   const { lease, property, guest, scheduleRow } = args;
-  if (await storage.hasLifecycleEvent(lease.id, "PAYMENT_RECEIPT", scheduleRow.scheduleSeq)) return;
+  if (await storage.hasLifecycleEvent({ leaseId: lease.id }, "PAYMENT_RECEIPT", scheduleRow.scheduleSeq)) return;
 
   const tpl = LIFECYCLE_TEMPLATES.paymentReceipt({
     name: guest.name,
@@ -207,7 +242,7 @@ export async function onDepositReceived(args: {
   guest: Guest;
 }): Promise<void> {
   const { lease, property, guest } = args;
-  if (await storage.hasLifecycleEvent(lease.id, "DEPOSIT_RECEIPT", null)) return;
+  if (await storage.hasLifecycleEvent({ leaseId: lease.id }, "DEPOSIT_RECEIPT", null)) return;
 
   const rooms = await storage.getLeaseRooms(lease.id);
   const roomNames = rooms.map((r) => r.roomNameSnapshot).join(", ") || "your room";
@@ -230,6 +265,135 @@ export async function onDepositReceived(args: {
 }
 
 // ---------------------------------------------------------------------------
+// Event: short-stay booking confirmed (called from the materialize path and the
+// checkout.session.completed webhook branch)
+// ---------------------------------------------------------------------------
+
+/** "Room 2 — Garden" when a room number is set, else just the room name. */
+function roomDisplayName(room?: Room | null): string | null {
+  if (!room) return null;
+  return room.roomNumber ? `Room ${room.roomNumber} — ${room.name}` : room.name;
+}
+
+/** Guest lookup page for a booking with no lease/portal token. */
+function bookingLookupUrl(): string {
+  return `${process.env.PUBLIC_BASE_URL ?? "https://beniceproperties.vercel.app"}/lookup`;
+}
+
+/**
+ * Confirmation fan-out for a short-stay booking (STR nightly or a 7–28-night
+ * co-living stay — neither has a lease, so idempotency keys on the BOOKING).
+ *
+ * - Guest confirmation: sent unless the `guest_auto_notifications` setting is
+ *   explicitly "false" (unset = ON), and NEVER for a CONFLICT booking — a paid
+ *   booking whose dates were taken is not a confirmation until an admin resolves
+ *   it. A suppressed send still records a SKIPPED lifecycle_events row so it
+ *   can't fire later behind the operator's back.
+ * - Admin alert: ALWAYS, so nothing paid goes unseen.
+ *
+ * Both are idempotent via lifecycle_events (bookingId, eventType, null).
+ */
+export async function onBookingConfirmed(args: {
+  booking: Booking;
+  property: Property;
+  room?: Room | null;
+  guest: Guest;
+}): Promise<void> {
+  const { booking, property, room, guest } = args;
+  const isConflict = booking.status === "CONFLICT";
+  const roomLabel = roomDisplayName(room);
+  const total = fmtMoney(parseFloat(booking.quotedTotal));
+
+  // --- Guest confirmation (settings-gated, never on a conflict) ---
+  // A CONFLICT booking records NOTHING here: the guest send has to stay possible
+  // for when an admin later confirms it, and a SKIPPED row would permanently
+  // suppress it.
+  if (
+    !isConflict &&
+    !(await storage.hasLifecycleEvent({ bookingId: booking.id }, "BOOKING_CONFIRMED", null))
+  ) {
+    // Unset/any-other-value = ON. Only the literal "false" disables guest sends.
+    const autoSetting = await storage.getSetting("guest_auto_notifications");
+    const guestSendsOn = autoSetting?.value !== "false";
+
+    if (guestSendsOn) {
+      const tpl = LIFECYCLE_TEMPLATES.bookingConfirmed({
+        name: guest.name,
+        property: property.name,
+        room: roomLabel,
+        checkIn: booking.checkIn,
+        checkOut: booking.checkOut ?? "",
+        reference: booking.reference,
+        total,
+        lookupUrl: bookingLookupUrl(),
+      });
+      const sent = await notifyGuest({
+        email: guest.email,
+        phone: guest.phone,
+        subject: tpl.subject,
+        body: tpl.body,
+        context: { bookingId: booking.id, guestId: guest.id, kind: "BOOKING_CONFIRMED" },
+      });
+      await storage.recordLifecycleEvent({
+        bookingId: booking.id,
+        leaseId: null,
+        eventType: "BOOKING_CONFIRMED",
+        scheduleSeq: null,
+        status: sent.email.sent || sent.sms.sent ? "SENT" : "SKIPPED",
+        emailSent: sent.email.sent,
+        smsSent: sent.sms.sent,
+      });
+    } else {
+      await storage.recordLifecycleEvent({
+        bookingId: booking.id,
+        leaseId: null,
+        eventType: "BOOKING_CONFIRMED",
+        scheduleSeq: null,
+        status: "SKIPPED",
+        emailSent: false,
+        smsSent: false,
+      });
+    }
+  }
+
+  // --- Admin alert (always) ---
+  if (!(await storage.hasLifecycleEvent({ bookingId: booking.id }, "ADMIN_NEW_BOOKING", null))) {
+    const tpl = LIFECYCLE_TEMPLATES.adminNewBooking({
+      property: property.name,
+      room: roomLabel,
+      guest: guest.name,
+      email: guest.email,
+      phone: guest.phone ?? "",
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut ?? "",
+      reference: booking.reference,
+      total,
+      status: booking.status,
+    });
+    const res = await notifyAdmin({
+      subject: tpl.subject,
+      body: tpl.body,
+      context: {
+        bookingId: booking.id,
+        guestId: guest.id,
+        kind: isConflict ? "BOOKING_CONFLICT" : "ADMIN_NEW_BOOKING",
+      },
+    });
+    await storage.recordLifecycleEvent({
+      bookingId: booking.id,
+      leaseId: null,
+      eventType: "ADMIN_NEW_BOOKING",
+      scheduleSeq: null,
+      status: res.email.sent || res.telegram.sent ? "SENT" : "SKIPPED",
+      emailSent: res.email.sent,
+      smsSent: false,
+    });
+  }
+
+  log(`lifecycle: booking ${booking.reference} (${booking.status}) notifications processed`, "lifecycle");
+}
+
+// ---------------------------------------------------------------------------
 // Scheduler: lease-ending notices (~14 days before end_date)
 // ---------------------------------------------------------------------------
 
@@ -240,7 +404,7 @@ export async function runLeaseEndingNotices(today: string = ymd(new Date())): Pr
     const until = daysUntil(lease.endDate, today);
     // Fire when within the notice window (<= 14 days out, still in the future).
     if (until > LEASE_ENDING_NOTICE_DAYS || until < 0) continue;
-    if (await storage.hasLifecycleEvent(lease.id, "LEASE_ENDING_SOON", null)) continue;
+    if (await storage.hasLifecycleEvent({ leaseId: lease.id }, "LEASE_ENDING_SOON", null)) continue;
 
     const [property, guest] = await Promise.all([
       storage.getProperty(lease.propertyId),

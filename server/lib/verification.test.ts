@@ -31,7 +31,7 @@ const mockR2 = vi.hoisted(() => ({
 }));
 const mockPortal = vi.hoisted(() => ({ resolvePortalLease: vi.fn() }));
 const mockLeasePayments = vi.hoisted(() => ({ activateVerifiedLease: vi.fn() }));
-const mockNotify = vi.hoisted(() => ({ notifyGuest: vi.fn() }));
+const mockNotify = vi.hoisted(() => ({ notifyGuest: vi.fn(), notifyAdmin: vi.fn() }));
 
 vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./storage-r2", () => mockR2);
@@ -76,6 +76,7 @@ beforeEach(() => {
   mockR2.uploadBuffer.mockResolvedValue({ key: "k", size: 16 });
   mockStorage.updateLease.mockResolvedValue(undefined);
   mockStorage.raiseEscalationOnce.mockResolvedValue(null);
+  mockNotify.notifyAdmin.mockResolvedValue({ email: { sent: true }, telegram: { sent: true } });
 });
 
 describe("uploadLicense", () => {
@@ -97,6 +98,19 @@ describe("uploadLicense", () => {
       expect.objectContaining({ leaseId: "lease-1", kind: "VERIFICATION_PENDING" }),
     );
     expect(res.verificationStatus).toBe("PENDING_REVIEW");
+    // Deduped escalation (returned null) → no admin page.
+    expect(mockNotify.notifyAdmin).not.toHaveBeenCalled();
+  });
+
+  it("pages an admin when the review escalation is newly raised", async () => {
+    mockStorage.raiseEscalationOnce.mockResolvedValue({ id: "esc-1" });
+    await uploadLicense("tok_abc", jpg());
+    expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
+    const alert = mockNotify.notifyAdmin.mock.calls[0][0];
+    expect(alert.subject).toMatch(/ID awaiting review/i);
+    // No document PII in the alert body — only the lease id.
+    expect(alert.body).toContain("lease-1");
+    expect(alert.context).toMatchObject({ leaseId: "lease-1", kind: "ESCALATION" });
   });
 
   it("rejects an unsupported file type", async () => {

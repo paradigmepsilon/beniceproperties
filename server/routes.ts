@@ -60,6 +60,10 @@ import {
   refundDeposit,
 } from "./lib/leasePayments";
 import { billAccruedLateFees, handleChargeFailure } from "./lib/dunning";
+import { materializeShortStayBooking } from "./lib/materialize";
+import { cancelBooking, confirmConflictBooking } from "./lib/bookingConflicts";
+import { onBookingConfirmed } from "./lib/lifecycle";
+import { notifyAdmin } from "./lib/notifications";
 import {
   getPortalView,
   payInstallmentNow,
@@ -91,7 +95,6 @@ import {
   createCheckoutSession,
   createOneTimePaymentIntent,
   updatePaymentIntentContact,
-  refundPaymentIntent,
   createWeeklySubscriptionCheckout,
   constructWebhookEvent,
 } from "./lib/stripe";
@@ -1607,28 +1610,37 @@ export async function registerRoutes(app: Express): Promise<void> {
   });
 
   // Cancel a booking (admin). Sets status → CANCELLED, which both availability
-  // paths exclude (ne(status,"CANCELLED")), so the dates are released. Also frees
-  // a co-living room that this booking had marked OCCUPIED. Idempotent: cancelling
-  // an already-CANCELLED booking is a no-op. Used to clear stale/abandoned bookings
-  // that were silently holding dates.
+  // paths exclude (ne(status,"CANCELLED")), so the dates are released. Frees a
+  // co-living room only when nothing else covers it today. Idempotent.
+  //
+  // MONEY: a refund happens ONLY when the admin explicitly passes
+  // `{ refund: true }` — never as a side effect of cancelling. See
+  // server/lib/bookingConflicts.ts.
   app.post("/api/admin/bookings/:id/cancel", requireAdmin, async (req, res, next) => {
     try {
-      const booking = await storage.getBooking(req.params.id);
-      if (!booking) return res.status(404).json({ message: "Booking not found" });
-      if (booking.status === "CANCELLED") {
-        return res.json({ ok: true, alreadyCancelled: true, reference: booking.reference });
-      }
-      await storage.updateBooking(booking.id, { status: "CANCELLED" });
-      // Free the co-living room this booking had occupied (STR has no room).
-      if (booking.roomId) {
-        const room = await storage.getRoom(booking.roomId);
-        if (room && room.status === "OCCUPIED") {
-          await storage.updateRoom(booking.roomId, { status: "AVAILABLE" });
-        }
-      }
-      log(`booking ${booking.reference} (${booking.id}) CANCELLED by admin`, "admin");
-      res.json({ ok: true, reference: booking.reference });
+      const refund = req.body?.refund === true;
+      const result = await cancelBooking({
+        bookingId: req.params.id,
+        actor: adminActor(req),
+        refund,
+      });
+      res.json({ ok: true, ...result });
     } catch (err) {
+      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // Confirm a paid CONFLICT booking (admin). Re-runs the availability gate
+  // excluding this booking; 409s if the dates are still taken. On success the
+  // booking goes live, the room is occupied, the escalation is resolved, and the
+  // guest + admin confirmations fire.
+  app.post("/api/admin/bookings/:id/confirm", requireAdmin, async (req, res, next) => {
+    try {
+      const booking = await confirmConflictBooking(req.params.id, adminActor(req));
+      res.json({ ok: true, booking });
+    } catch (err) {
+      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
       next(err);
     }
   });
@@ -1690,6 +1702,20 @@ export async function registerRoutes(app: Express): Promise<void> {
               amount: payment.amount,
               property_id: booking.propertyId,
               confirmed_by: adminActor(req),
+            },
+          });
+          // Admin alert: an off-band payment just settled a booking.
+          await notifyAdmin({
+            subject: `Manual payment marked paid — ${booking.reference}`,
+            body:
+              `${payment.method} payment of $${payment.amount} for ${booking.reference} ` +
+              `(${manualGuest.name}, ${manualGuest.email}) marked PAID by ${adminActor(req)}. ` +
+              `Booking is now ${booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"}.`,
+            context: {
+              bookingId: booking.id,
+              guestId: manualGuest.id,
+              kind: "MANUAL_PAYMENT_CONFIRMED",
+              sentBy: adminActor(req),
             },
           });
         }
@@ -1816,123 +1842,6 @@ function subIdFromInvoice(invoice: import("stripe").Stripe.Invoice): string | un
   return lineSub;
 }
 
-/**
- * Materialize a short-stay booking from a succeeded PaymentIntent's metadata
- * (payment-first model). No booking row exists until this runs. Idempotent across
- * Stripe retries (keyed on `reference`); re-checks availability so a rare
- * concurrent double-book is refunded rather than overbooked.
- */
-async function materializeShortStayBooking(
-  pi: import("stripe").Stripe.PaymentIntent,
-): Promise<void> {
-  const m = pi.metadata ?? {};
-  const reference = m.reference;
-  if (!reference) {
-    log(`short-stay PI ${pi.id} has no reference — cannot materialize`, "stripe");
-    return;
-  }
-
-  // Idempotency: if a booking with this reference already exists (Stripe retry, or
-  // a manual booking that reused the reference space), just ensure its payment is
-  // PAID and stop.
-  const existing = await storage.getBookingByReference(reference);
-  if (existing) {
-    const payment = await storage.getPaymentByStripeRef(pi.id);
-    if (payment && payment.status !== "PAID") {
-      await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
-    }
-    log(`short-stay booking ${reference} already exists — idempotent no-op`, "stripe");
-    return;
-  }
-
-  // Guest completeness guard: contact is attached before confirmPayment, so this
-  // should never be blank — but never write a booking we can't email.
-  const guestName = m.guest_name;
-  const guestEmail = m.guest_email;
-  if (!guestName || guestName === "null" || !guestEmail || guestEmail === "null") {
-    log(`short-stay PI ${pi.id} (${reference}) missing guest contact — NOT materializing`, "stripe");
-    posthog.capture({ distinctId: pi.id, event: "booking_intent_missing_contact", properties: { reference } });
-    return;
-  }
-
-  const propertyId = m.property_id;
-  const roomId = m.room_id && m.room_id !== "null" ? m.room_id : undefined;
-  const checkIn = m.check_in && m.check_in !== "null" ? m.check_in : undefined;
-  const checkOut = m.check_out && m.check_out !== "null" ? m.check_out : undefined;
-
-  // Availability race guard: re-check that the dates/room are still free. If they
-  // were taken since the intent was created, do NOT book — refund and alert.
-  try {
-    await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-  } catch (err) {
-    if (err instanceof BookingError) {
-      log(
-        `short-stay ${reference} dates taken since intent — refunding PI ${pi.id}: ${err.message}`,
-        "stripe",
-      );
-      try {
-        await refundPaymentIntent({ paymentIntentId: pi.id, idempotencyKey: `refund:${pi.id}` });
-      } catch (refundErr) {
-        log(`REFUND FAILED for ${pi.id} (${reference}): ${(refundErr as Error).message}`, "stripe");
-      }
-      posthog.capture({
-        distinctId: guestEmail,
-        event: "booking_double_book_refunded",
-        properties: { reference, payment_intent_id: pi.id, reason: err.message },
-      });
-      return;
-    }
-    throw err;
-  }
-
-  // Rebuild the booking from metadata.
-  const model = m.model === "COLIVING" ? "COLIVING" : "STR";
-  const guestRow = await storage.upsertGuestByEmail({
-    name: guestName,
-    email: guestEmail,
-    phone: m.guest_phone && m.guest_phone !== "null" ? m.guest_phone : undefined,
-  });
-  const booking = await storage.createBooking({
-    propertyId,
-    roomId: roomId ?? null,
-    guestId: guestRow.id,
-    model,
-    checkIn: checkIn!,
-    checkOut: checkOut ?? null,
-    status: model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
-    paymentMethod: "STRIPE",
-    reference,
-    quotedTotal: m.quoted_total ?? "0",
-  });
-  if (roomId) await storage.updateRoom(roomId, { status: "OCCUPIED" });
-  await storage.createPayment({
-    bookingId: booking.id,
-    type: "ONE_TIME",
-    method: "STRIPE",
-    amount: m.amount ?? "0",
-    surcharge: m.surcharge ?? "0",
-    status: "PAID",
-    stripeRef: pi.id,
-    confirmedBy: null,
-    paidAt: new Date(),
-  });
-  posthog.capture({
-    distinctId: guestEmail,
-    event: "booking_confirmed",
-    properties: {
-      reference,
-      booking_id: booking.id,
-      property_id: propertyId,
-      property_type: model,
-      room_id: roomId ?? null,
-      check_in: checkIn,
-      check_out: checkOut,
-      payment_intent_id: pi.id,
-    },
-  });
-  log(`short-stay booking ${reference} materialized + confirmed via ${pi.id}`, "stripe");
-}
-
 async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<void> {
   switch (event.type) {
     case "checkout.session.completed": {
@@ -1985,6 +1894,21 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
             check_out: booking.checkOut,
           },
         });
+        // Guest confirmation + admin alert (idempotent on the booking, so a
+        // Stripe webhook retry can't double-send).
+        const confirmedProperty = await storage.getProperty(booking.propertyId);
+        const confirmedRoom = booking.roomId ? await storage.getRoom(booking.roomId) : null;
+        if (confirmedProperty) {
+          await onBookingConfirmed({
+            booking: {
+              ...booking,
+              status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
+            },
+            property: confirmedProperty,
+            room: confirmedRoom,
+            guest: confirmedGuest,
+          });
+        }
       }
       log(`booking ${reference} confirmed via checkout.session.completed`, "stripe");
       break;
@@ -2162,6 +2086,24 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
             }
           }
         }
+      }
+      // Operator alert. SCHEDULED_RENT is excluded: handleChargeFailure above
+      // already pages an admin on the escalation it raises, and paging twice for
+      // one decline trains operators to ignore the channel.
+      if (kind !== "SCHEDULED_RENT") {
+        await notifyAdmin({
+          subject: `Card charge FAILED — ${kind ?? "untagged"} ($${(pi.amount / 100).toFixed(2)})`,
+          body:
+            `PaymentIntent ${pi.id} (${kind ?? "untagged"}) failed` +
+            `${pi.metadata?.lease_id && pi.metadata.lease_id !== "null" ? ` for lease ${pi.metadata.lease_id}` : ""}` +
+            `${pi.metadata?.schedule_seq ? ` installment #${pi.metadata.schedule_seq}` : ""}: ` +
+            `${pi.last_payment_error?.message ?? "no reason given"}.`,
+          context: {
+            leaseId:
+              pi.metadata?.lease_id && pi.metadata.lease_id !== "null" ? pi.metadata.lease_id : null,
+            kind: "PAYMENT_FAILED",
+          },
+        });
       }
       log(`payment_intent.payment_failed (${kind ?? "untagged"}) ${pi.id}`, "stripe");
       break;

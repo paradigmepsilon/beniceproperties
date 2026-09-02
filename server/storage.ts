@@ -242,7 +242,16 @@ export interface IStorage {
   }): Promise<MessageLogRow[]>;
 
   // --- Lifecycle events (idempotent send log) ---
-  hasLifecycleEvent(leaseId: string, eventType: string, scheduleSeq: number | null): Promise<boolean>;
+  /**
+   * Has this lifecycle send already happened? Scoped by REF — a lease-scoped
+   * event (`{ leaseId }`) or a booking-scoped one (`{ bookingId }`). Short-stay
+   * bookings have no lease, so their confirmation/admin sends key on bookingId.
+   */
+  hasLifecycleEvent(
+    ref: { leaseId?: string | null; bookingId?: string | null },
+    eventType: string,
+    scheduleSeq: number | null,
+  ): Promise<boolean>;
   recordLifecycleEvent(data: InsertLifecycleEvent): Promise<LifecycleEvent>;
 
   // --- Payment schedule ---
@@ -275,8 +284,13 @@ export interface IStorage {
   setSetting(key: string, value: string): Promise<AppSetting>;
 
   // --- UO escalations (raised here, surfaced/resolved by UO in Phase 8) ---
-  getEscalations(opts?: { status?: string; leaseId?: string }): Promise<UoEscalation[]>;
-  /** Create an escalation only if no OPEN one of the same (lease, seq, kind) exists. */
+  getEscalations(opts?: { status?: string; leaseId?: string; bookingId?: string }): Promise<UoEscalation[]>;
+  /**
+   * Create an escalation only if an equivalent one isn't already OPEN. Dedupe is
+   * scoped to the subject: (leaseId, scheduleSeq, kind) for a lease, or
+   * (bookingId, kind) for a booking — so a booking-scoped raise can never dedupe
+   * against an unrelated lease. Returns null when deduped.
+   */
   raiseEscalationOnce(data: InsertUoEscalation): Promise<UoEscalation | null>;
   updateEscalation(id: string, updates: Partial<InsertUoEscalation>): Promise<UoEscalation | undefined>;
 
@@ -908,14 +922,20 @@ class Storage implements IStorage {
 
   // --- Lifecycle events ---
   async hasLifecycleEvent(
-    leaseId: string,
+    ref: { leaseId?: string | null; bookingId?: string | null },
     eventType: string,
     scheduleSeq: number | null,
   ): Promise<boolean> {
+    // Exactly one of leaseId/bookingId scopes the lookup. Without a scope this
+    // would match every lease's row of that type, so refuse rather than guess.
+    const conds = [eq(lifecycleEvents.eventType, eventType)];
+    if (ref.leaseId) conds.push(eq(lifecycleEvents.leaseId, ref.leaseId));
+    else if (ref.bookingId) conds.push(eq(lifecycleEvents.bookingId, ref.bookingId));
+    else return false;
     const rows = await db
       .select()
       .from(lifecycleEvents)
-      .where(and(eq(lifecycleEvents.leaseId, leaseId), eq(lifecycleEvents.eventType, eventType)));
+      .where(and(...conds));
     return rows.some((r) => (r.scheduleSeq ?? null) === scheduleSeq);
   }
 
@@ -1078,25 +1098,42 @@ class Storage implements IStorage {
   }
 
   // --- UO escalations ---
-  async getEscalations(opts?: { status?: string; leaseId?: string }): Promise<UoEscalation[]> {
+  async getEscalations(opts?: {
+    status?: string;
+    leaseId?: string;
+    bookingId?: string;
+  }): Promise<UoEscalation[]> {
     const filters = [];
     if (opts?.status) filters.push(eq(uoEscalations.status, opts.status));
     if (opts?.leaseId) filters.push(eq(uoEscalations.leaseId, opts.leaseId));
+    if (opts?.bookingId) filters.push(eq(uoEscalations.bookingId, opts.bookingId));
     const q = db.select().from(uoEscalations).orderBy(desc(uoEscalations.createdAt));
     return filters.length ? q.where(and(...filters)) : q;
   }
 
   async raiseEscalationOnce(data: InsertUoEscalation): Promise<UoEscalation | null> {
-    // Dedupe: don't open a second escalation of the same kind for the same
-    // installment while one is still OPEN.
+    // Dedupe is SCOPED to the subject of the escalation:
+    //   lease-scoped   → (leaseId, scheduleSeq, kind, OPEN)
+    //   booking-scoped → (bookingId, kind, OPEN)
+    // An unscoped call (neither id) would otherwise collapse every open
+    // escalation of that kind into one, so it never dedupes across subjects.
     const conds = [eq(uoEscalations.kind, data.kind), eq(uoEscalations.status, "OPEN")];
     if (data.leaseId) conds.push(eq(uoEscalations.leaseId, data.leaseId));
+    else if (data.bookingId) conds.push(eq(uoEscalations.bookingId, data.bookingId));
+
     const open = await db
       .select()
       .from(uoEscalations)
       .where(and(...conds));
-    const seq = data.scheduleSeq ?? null;
-    if (open.some((e) => (e.scheduleSeq ?? null) === seq)) return null;
+    if (data.bookingId && !data.leaseId) {
+      // Booking-scoped escalations carry no installment; one OPEN row per
+      // (booking, kind) is the key.
+      if (open.length > 0) return null;
+    } else {
+      // Lease-scoped (and the legacy unscoped case): per-installment.
+      const seq = data.scheduleSeq ?? null;
+      if (open.some((e) => (e.scheduleSeq ?? null) === seq)) return null;
+    }
     const [row] = await db.insert(uoEscalations).values(data).returning();
     return row;
   }

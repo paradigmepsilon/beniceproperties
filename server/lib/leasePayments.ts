@@ -38,6 +38,7 @@ import { calculateBreakdown } from "@shared/pricing";
 import { LeaseError } from "./lease";
 import { handleChargeFailure, billAccruedLateFees } from "./dunning";
 import { onLeaseActivated, onPaymentReceived, onDepositReceived } from "./lifecycle";
+import { notifyAdmin } from "./notifications";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow } from "@shared/schema";
 
@@ -342,11 +343,24 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
     "stripe",
   );
 
-  // Deposit receipt only (activation lifecycle fires later, on approval).
+  // Deposit receipt only (activation lifecycle fires later, on approval), plus
+  // an admin alert — a secured room is an operator event.
   try {
     const property = await storage.getProperty(lease.propertyId);
     const guest = await storage.getGuest(lease.guestId);
-    if (property && guest) await onDepositReceived({ lease, property, guest });
+    if (property && guest) {
+      // Admin alert first: a guest-send failure must not swallow the operator's
+      // notice that a room is now held.
+      await notifyAdmin({
+        subject: `Deposit paid — ${property.name} (${guest.name})`,
+        body:
+          `${guest.name} (${guest.email}) paid the $${lease.depositAmountSnapshot ?? "0"} deposit for ` +
+          `${property.name}, ${lease.startDate} → ${lease.endDate}. Room(s) secured; lease is ` +
+          `PENDING_VERIFICATION awaiting ID approval.`,
+        context: { leaseId: lease.id, guestId: guest.id, kind: "DEPOSIT_PAID" },
+      });
+      await onDepositReceived({ lease, property, guest });
+    }
   } catch (err) {
     log(`deposit lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }

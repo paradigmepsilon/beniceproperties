@@ -26,6 +26,7 @@ const mockNotify = vi.hoisted(() => ({
   notifyGuest: vi.fn(),
   sendEmail: vi.fn(),
   sendSms: vi.fn(),
+  notifyAdmin: vi.fn(),
 }));
 const mockStripe = vi.hoisted(() => ({ chargeSavedCard: vi.fn() }));
 
@@ -80,6 +81,7 @@ beforeEach(() => {
   mockStorage.updateScheduleRow.mockResolvedValue(undefined);
   mockStorage.updateLease.mockResolvedValue(undefined);
   mockNotify.notifyGuest.mockResolvedValue({ email: { sent: true }, sms: { sent: true } });
+  mockNotify.notifyAdmin.mockResolvedValue({ email: { sent: true }, telegram: { sent: true } });
 });
 
 describe("daysPastDue", () => {
@@ -207,6 +209,20 @@ describe("handleChargeFailure", () => {
     const msg = mockNotify.notifyGuest.mock.calls[0][0];
     expect(msg.subject).toMatch(/failed/i);
     expect(msg.body).toMatch(/lease\/pay\?leaseId=lease-1/);
+    // A new escalation also pages an operator.
+    expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
+    expect(mockNotify.notifyAdmin.mock.calls[0][0].subject).toMatch(/FAILED/);
+  });
+
+  it("does not re-page an admin when the escalation was already open (deduped)", async () => {
+    mockStorage.raiseEscalationOnce.mockResolvedValue(null); // dedupe hit
+    await handleChargeFailure({
+      lease: activeLease(),
+      guest: GUEST,
+      scheduleRow: row(2, "2026-07-10", { status: "DUE" }),
+      today: "2026-07-10",
+    });
+    expect(mockNotify.notifyAdmin).not.toHaveBeenCalled();
   });
 });
 

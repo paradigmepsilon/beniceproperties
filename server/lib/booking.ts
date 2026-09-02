@@ -127,6 +127,7 @@ export async function strHasConflict(
   propertyId: string,
   checkIn: string,
   checkOut: string,
+  excludeBookingId?: string,
 ): Promise<boolean> {
   // Every source below stores/receives a half-open range (checkout day is free
   // to check in) — one overlap check for all three, via the shared helper.
@@ -136,8 +137,19 @@ export async function strHasConflict(
 
   // (1) BNP direct bookings for this whole-property listing.
   const existing = await storage.getBookings();
+  // CONFLICT rows are paid-but-unresolved and block nothing (same rule as
+  // storage.getColivingBookingsForRoom); `excludeBookingId` lets the admin
+  // confirm action re-check the gate without the booking blocking itself.
   const directBlocks = existing
-    .filter((b) => b.propertyId === propertyId && b.model === "STR" && b.status !== "CANCELLED" && b.checkOut)
+    .filter(
+      (b) =>
+        b.propertyId === propertyId &&
+        b.model === "STR" &&
+        b.status !== "CANCELLED" &&
+        b.status !== "CONFLICT" &&
+        b.id !== excludeBookingId &&
+        b.checkOut,
+    )
     .map((b) => ({ startDate: b.checkIn, endDate: b.checkOut as string }));
   if (hits(directBlocks)) return true;
 
