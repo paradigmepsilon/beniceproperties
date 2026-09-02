@@ -1705,12 +1705,18 @@ export async function registerRoutes(app: Express): Promise<void> {
             },
           });
           // Admin alert: an off-band payment just settled a booking.
+          const settledTail =
+            `marked PAID by ${adminActor(req)}. Booking is now ` +
+            `${booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"}.`;
           await notifyAdmin({
             subject: `Manual payment marked paid — ${booking.reference}`,
             body:
               `${payment.method} payment of $${payment.amount} for ${booking.reference} ` +
-              `(${manualGuest.name}, ${manualGuest.email}) marked PAID by ${adminActor(req)}. ` +
-              `Booking is now ${booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"}.`,
+              `(${manualGuest.name}, ${manualGuest.email}) ${settledTail}`,
+            // Telegram: name only, no contact details (third-party channel).
+            telegramText:
+              `${payment.method} payment of $${payment.amount} for ${booking.reference} ` +
+              `(${manualGuest.name}) ${settledTail}`,
             context: {
               bookingId: booking.id,
               guestId: manualGuest.id,
@@ -2055,6 +2061,11 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
     case "payment_intent.payment_failed": {
       const pi = event.data.object as import("stripe").Stripe.PaymentIntent;
       const kind = pi.metadata?.payment_kind;
+      // Did the dunning path actually take ownership of this decline? Only then
+      // does it own the operator alert; every other route out of the block below
+      // (malformed metadata, unresolved lease/guest, an already PAID/WAIVED row,
+      // or handleChargeFailure itself throwing) must still page a human.
+      let dunningHandled = false;
       if (kind === "SCHEDULED_RENT") {
         const leaseId = pi.metadata?.lease_id;
         const seq = parseInt(pi.metadata?.schedule_seq ?? "", 10);
@@ -2080,6 +2091,7 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
               });
               try {
                 await handleChargeFailure({ lease, guest, scheduleRow: failed, reason: pi.last_payment_error?.message });
+                dunningHandled = true;
               } catch (dErr) {
                 log(`webhook failure-path error ${leaseId} seq ${seq}: ${(dErr as Error).message}`, "stripe");
               }
@@ -2087,10 +2099,12 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
           }
         }
       }
-      // Operator alert. SCHEDULED_RENT is excluded: handleChargeFailure above
-      // already pages an admin on the escalation it raises, and paging twice for
-      // one decline trains operators to ignore the channel.
-      if (kind !== "SCHEDULED_RENT") {
+      // Operator alert — a fallback, not a duplicate. When handleChargeFailure ran
+      // it has already paged with full lease/guest context, so paging again would
+      // just train operators to ignore the channel. When it did NOT run, this is
+      // the only notice a human gets, so it must fire. No guest contact details:
+      // this path may not have resolved a guest at all.
+      if (!dunningHandled) {
         await notifyAdmin({
           subject: `Card charge FAILED — ${kind ?? "untagged"} ($${(pi.amount / 100).toFixed(2)})`,
           body:

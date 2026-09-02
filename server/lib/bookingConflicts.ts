@@ -40,13 +40,23 @@ async function resolveConflictEscalations(bookingId: string, actor: string): Pro
 }
 
 /**
- * Promote a CONFLICT (or otherwise unconfirmed) booking to a live one, but only
- * if the dates are actually free now. Throws BookingError(409) otherwise, having
- * changed nothing.
+ * Promote a CONFLICT booking to a live one, but only if the dates are actually
+ * free now. Throws BookingError(409) otherwise, having changed nothing.
+ *
+ * Restricted to `status === "CONFLICT"` on purpose: this is the resolution
+ * action for a paid-but-conflicted booking, not a general status setter. Without
+ * the guard it would happily resurrect a CANCELLED (possibly already refunded)
+ * booking into ACTIVE and re-occupy its room.
  */
 export async function confirmConflictBooking(bookingId: string, actor: string): Promise<Booking> {
   const booking = await storage.getBooking(bookingId);
   if (!booking) throw new BookingError("Booking not found", 404);
+  if (booking.status !== "CONFLICT") {
+    throw new BookingError(
+      `Only a CONFLICT booking can be confirmed here (this one is ${booking.status})`,
+      409,
+    );
+  }
 
   // Re-run the same gate the guest-facing flow uses, excluding THIS booking so a
   // CONFLICT row can't block its own confirmation.
@@ -105,8 +115,15 @@ export interface CancelBookingResult {
 
 /**
  * Cancel a booking. Refunds ONLY when `refund === true` — the caller (an admin
- * action) is the authorization. Idempotent: cancelling an already-CANCELLED
- * booking is a no-op and never refunds on the second pass.
+ * action) is the authorization.
+ *
+ * Idempotent, and deliberately NOT short-circuited on an already-CANCELLED
+ * booking when a refund was asked for. The cancel is written before the refund
+ * loop, so a Stripe error mid-refund leaves a CANCELLED booking with the money
+ * still held; an `alreadyCancelled` early return would then make the refund
+ * unretryable and strand the guest's money. Re-attempts are safe because every
+ * refund carries the stable `refund:<stripeRef>` idempotency key — Stripe
+ * returns the original refund rather than issuing a second one.
  */
 export async function cancelBooking(args: {
   bookingId: string;
@@ -116,7 +133,8 @@ export async function cancelBooking(args: {
   const booking = await storage.getBooking(args.bookingId);
   if (!booking) throw new BookingError("Booking not found", 404);
 
-  if (booking.status === "CANCELLED") {
+  const alreadyCancelled = booking.status === "CANCELLED";
+  if (alreadyCancelled && args.refund !== true) {
     return {
       reference: booking.reference,
       alreadyCancelled: true,
@@ -126,13 +144,13 @@ export async function cancelBooking(args: {
     };
   }
 
-  await storage.updateBooking(booking.id, { status: "CANCELLED" });
+  if (!alreadyCancelled) await storage.updateBooking(booking.id, { status: "CANCELLED" });
 
   // Free the co-living room ONLY if nothing else covers it today. The status
   // update above already excludes this booking from that computation, so a room held by
   // another live booking/lease/block stays OCCUPIED.
   let roomFreed = false;
-  if (booking.roomId) {
+  if (booking.roomId && !alreadyCancelled) {
     const occupiedToday = await storage.getOccupiedRoomIdsOn(todayIso());
     if (!occupiedToday.has(booking.roomId)) {
       const room = await storage.getRoom(booking.roomId);
@@ -178,7 +196,7 @@ export async function cancelBooking(args: {
 
   return {
     reference: booking.reference,
-    alreadyCancelled: false,
+    alreadyCancelled,
     roomFreed,
     refunded: refundIds.length > 0,
     refundIds,

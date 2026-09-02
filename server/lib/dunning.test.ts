@@ -211,7 +211,13 @@ describe("handleChargeFailure", () => {
     expect(msg.body).toMatch(/lease\/pay\?leaseId=lease-1/);
     // A new escalation also pages an operator.
     expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
-    expect(mockNotify.notifyAdmin.mock.calls[0][0].subject).toMatch(/FAILED/);
+    const alert = mockNotify.notifyAdmin.mock.calls[0][0];
+    expect(alert.subject).toMatch(/FAILED/);
+    // Telegram (third party) gets the guest's NAME, never their email/phone.
+    expect(alert.body).toContain(GUEST.email);
+    expect(alert.telegramText).toContain(GUEST.name);
+    expect(alert.telegramText).not.toContain(GUEST.email);
+    expect(alert.telegramText).not.toContain(GUEST.phone);
   });
 
   it("does not re-page an admin when the escalation was already open (deduped)", async () => {

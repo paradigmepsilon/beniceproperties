@@ -26,7 +26,7 @@ import type { Booking, Lease, Property, Room, Guest, PaymentScheduleRow } from "
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
-const fmtMoney = (v: number) =>
+export const fmtMoney = (v: number) =>
   new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
 
 /** Days from `today` until `date` (positive = future). */
@@ -40,6 +40,13 @@ export function daysUntil(date: string, today: string): number {
 // Admin-editable templates (data — an admin surface can override these). Each is
 // a function of substitution vars so callers never hand-format copy.
 // ---------------------------------------------------------------------------
+
+/** Appended to both channels of a CONFLICT admin alert — carries no guest PII. */
+const CONFLICT_ADMIN_NOTE = (status: string) =>
+  status === "CONFLICT"
+    ? "\n\nDATES WERE ALREADY TAKEN. Booking saved as CONFLICT (paid, not blocking). " +
+      "Resolve in the admin console: confirm, or cancel + refund."
+    : "";
 
 export const LIFECYCLE_TEMPLATES = {
   welcome: (v: { name: string; property: string; start: string }) => ({
@@ -108,7 +115,10 @@ export const LIFECYCLE_TEMPLATES = {
     status: string;
   }) => ({
     subject: `${v.status === "CONFLICT" ? "⚠️ CONFLICT — " : ""}New booking — ${v.property}${v.room ? ` ${v.room}` : ""} ${v.checkIn}→${v.checkOut}`,
-    body: `${v.guest} (${v.email}${v.phone ? `, ${v.phone}` : ""}) · ${v.reference} · ${v.total}${v.status === "CONFLICT" ? "\n\nDATES WERE ALREADY TAKEN. Booking saved as CONFLICT (paid, not blocking). Resolve in the admin console: confirm, or cancel + refund." : ""}`,
+    body: `${v.guest} (${v.email}${v.phone ? `, ${v.phone}` : ""}) · ${v.reference} · ${v.total}${CONFLICT_ADMIN_NOTE(v.status)}`,
+    // Telegram is a third party: guest NAME + listing + dates + reference +
+    // amount only. Contact details stay in the admin EMAIL body above.
+    telegramText: `${v.guest} · ${v.property}${v.room ? ` ${v.room}` : ""} · ${v.checkIn}→${v.checkOut} · ${v.reference} · ${v.total}${CONFLICT_ADMIN_NOTE(v.status)}`,
   }),
   leaseEnding: (v: { name: string; property: string; end: string; days: number; portalUrl: string }) => ({
     subject: `Your lease ends in ${v.days} days`,
@@ -270,14 +280,14 @@ export async function onDepositReceived(args: {
 // ---------------------------------------------------------------------------
 
 /** "Room 2 — Garden" when a room number is set, else just the room name. */
-function roomDisplayName(room?: Room | null): string | null {
+export function roomDisplayName(room?: Room | null): string | null {
   if (!room) return null;
   return room.roomNumber ? `Room ${room.roomNumber} — ${room.name}` : room.name;
 }
 
 /** Guest lookup page for a booking with no lease/portal token. */
 function bookingLookupUrl(): string {
-  return `${process.env.PUBLIC_BASE_URL ?? "https://beniceproperties.vercel.app"}/lookup`;
+  return `${publicBaseUrl()}/lookup`;
 }
 
 /**
@@ -373,6 +383,7 @@ export async function onBookingConfirmed(args: {
     const res = await notifyAdmin({
       subject: tpl.subject,
       body: tpl.body,
+      telegramText: tpl.telegramText,
       context: {
         bookingId: booking.id,
         guestId: guest.id,

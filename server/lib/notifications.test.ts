@@ -75,6 +75,34 @@ describe("notifyAdmin", () => {
     );
   });
 
+  // PRIVACY: Telegram is a third party. Anything with guest contact details in
+  // the email body must pass a redacted `telegramText`, and that is what goes out.
+  it("sends telegramText over Telegram while email keeps the full body", async () => {
+    process.env.ADMIN_EMAIL = "fallback@example.com";
+    await notifyAdmin({
+      subject: "New booking",
+      body: "Jane Doe (jane@example.com, +15551234567) · BNP-1 · $100",
+      telegramText: "Jane Doe · BNP-1 · $100",
+    });
+    expect(mockTelegram.sendTelegram).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "New booking\n\nJane Doe · BNP-1 · $100" }),
+    );
+    const telegramSent = mockTelegram.sendTelegram.mock.calls[0][0].text as string;
+    expect(telegramSent).not.toContain("jane@example.com");
+    expect(telegramSent).not.toContain("+15551234567");
+    // The email still carries the contact details the operator needs.
+    expect(mockStorage.createMessageLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "EMAIL",
+        body: "Jane Doe (jane@example.com, +15551234567) · BNP-1 · $100",
+      }),
+    );
+    // …and the message_log row for Telegram records the redacted text, not the body.
+    expect(mockStorage.createMessageLog).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "TELEGRAM", body: "New booking\n\nJane Doe · BNP-1 · $100" }),
+    );
+  });
+
   it("sends email and telegram in parallel and returns both results", async () => {
     process.env.ADMIN_EMAIL = "fallback@example.com";
     mockTelegram.sendTelegram.mockResolvedValue({ sent: true, channel: "telegram" });

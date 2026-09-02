@@ -260,10 +260,19 @@ export async function notifyGuest(opts: {
  * Fan out an admin alert over email (ADMIN_NOTIFY_EMAIL, falling back to
  * ADMIN_EMAIL) and Telegram in parallel. Used for anything an operator needs
  * to see immediately — failed charges, escalations, defaults.
+ *
+ * PRIVACY — the two channels are NOT equivalent. Email goes to our own admin
+ * inbox; Telegram routes the message through a third party. Any alert whose
+ * `body` carries guest contact details (email, phone) MUST also pass
+ * `telegramText`: the same alert reduced to what an operator needs at a glance —
+ * guest NAME, listing, dates, reference, amount — and nothing that identifies
+ * how to reach them. When `telegramText` is omitted the body is used for both,
+ * so only pass a body without contact details in that case.
  */
 export async function notifyAdmin(opts: {
   subject: string;
   body: string;
+  telegramText?: string;
   context?: Omit<MessageContext, "audience">;
 }): Promise<{ email: SendResult; telegram: SendResult }> {
   const to = process.env.ADMIN_NOTIFY_EMAIL || process.env.ADMIN_EMAIL;
@@ -272,7 +281,10 @@ export async function notifyAdmin(opts: {
     to
       ? sendEmail({ to, subject: opts.subject, text: opts.body, context: ctx })
       : Promise.resolve<SendResult>({ sent: false, channel: "email", reason: "no-admin-email" }),
-    sendTelegramLogged({ text: `${opts.subject}\n\n${opts.body}`, context: ctx }),
+    sendTelegramLogged({
+      text: `${opts.subject}\n\n${opts.telegramText ?? opts.body}`,
+      context: ctx,
+    }),
   ]);
   return { email, telegram };
 }

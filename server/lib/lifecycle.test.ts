@@ -178,6 +178,29 @@ describe("onBookingConfirmed", () => {
     expect(guestRec?.[0].status).toBe("SKIPPED");
   });
 
+  it("keeps guest email + phone OUT of the Telegram text but IN the admin email body", async () => {
+    await onBookingConfirmed({ booking: BOOKING, property: PROP, room: ROOM, guest: GUEST });
+
+    const alert = mockNotify.notifyAdmin.mock.calls[0][0];
+    // Email body: the operator needs to be able to reach the guest.
+    expect(alert.body).toContain(GUEST.email);
+    expect(alert.body).toContain(GUEST.phone);
+    // Telegram (third party): name + listing + dates + reference + amount only.
+    expect(alert.telegramText).toBeTruthy();
+    expect(alert.telegramText).not.toContain(GUEST.email);
+    expect(alert.telegramText).not.toContain(GUEST.phone);
+    expect(alert.telegramText).toContain(GUEST.name);
+    expect(alert.telegramText).toContain("BNP-7QK4-2F9X");
+  });
+
+  it("builds the lookup URL from the one shared public base URL", async () => {
+    delete process.env.PUBLIC_BASE_URL;
+    await onBookingConfirmed({ booking: BOOKING, property: PROP, room: ROOM, guest: GUEST });
+    expect(mockNotify.notifyGuest.mock.calls[0][0].body).toContain(
+      "https://www.beniceproperties.com/lookup",
+    );
+  });
+
   it("is a no-op on a second call (already recorded)", async () => {
     mockStorage.hasLifecycleEvent.mockResolvedValue(true);
     await onBookingConfirmed({ booking: BOOKING, property: PROP, room: ROOM, guest: GUEST });

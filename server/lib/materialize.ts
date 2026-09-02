@@ -23,9 +23,15 @@
 import { storage as realStorage } from "../storage";
 import { resolveBooking as realResolveBooking, BookingError } from "./booking";
 import { notifyAdmin as realNotifyAdmin } from "./notifications";
-import { onBookingConfirmed as realOnBookingConfirmed, LIFECYCLE_TEMPLATES } from "./lifecycle";
+import {
+  onBookingConfirmed as realOnBookingConfirmed,
+  LIFECYCLE_TEMPLATES,
+  roomDisplayName,
+  fmtMoney,
+} from "./lifecycle";
 import { posthog } from "./posthog";
 import { log } from "../server-log";
+import type { Booking } from "@shared/schema";
 
 /** Postgres `exclusion_violation` — the range-overlap constraint rejected the row. */
 const PG_EXCLUSION_VIOLATION = "23P01";
@@ -45,6 +51,107 @@ const defaultDeps = (): MaterializeDeps => ({
 });
 
 /**
+ * A booking already exists for this reference — repair whatever the previous
+ * attempt did not finish. Each step carries its own idempotency guard, so
+ * running this on every Stripe retry is safe:
+ *
+ *  - payment row: created when absent, flipped to PAID when present-but-not-paid,
+ *    left alone when already PAID (never duplicated).
+ *  - CONFLICT booking: `raiseEscalationOnce` re-runs (deduped on
+ *    (bookingId, kind, OPEN)); the admin is paged only when that returns a NEW
+ *    row, so a webhook retry storm cannot re-page. Never a guest send, never a
+ *    room grab.
+ *  - live booking (CONFIRMED/ACTIVE): `onBookingConfirmed` re-runs, deduped via
+ *    lifecycle_events, so a confirmation lost to a mid-flight crash still lands.
+ *  - CANCELLED/other: left alone — a human already decided.
+ */
+async function repairExistingBooking(args: {
+  existing: Booking;
+  pi: import("stripe").Stripe.PaymentIntent;
+  reference: string;
+  deps: MaterializeDeps;
+}): Promise<void> {
+  const { existing, pi, reference, deps } = args;
+  const { storage, notifyAdmin, onBookingConfirmed } = deps;
+  const m = pi.metadata ?? {};
+
+  const payment = await storage.getPaymentByStripeRef(pi.id);
+  if (!payment) {
+    // The booking landed but the payment row did not. The guest paid — record it.
+    await storage.createPayment({
+      bookingId: existing.id,
+      type: "ONE_TIME",
+      method: "STRIPE",
+      amount: m.amount ?? "0",
+      surcharge: m.surcharge ?? "0",
+      status: "PAID",
+      stripeRef: pi.id,
+      confirmedBy: null,
+      paidAt: new Date(),
+    });
+    log(`short-stay ${reference}: booking existed without a payment row — PAID row written`, "stripe");
+  } else if (payment.status !== "PAID") {
+    await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
+  }
+
+  if (existing.status === "CONFLICT") {
+    const raised = await storage.raiseEscalationOnce({
+      bookingId: existing.id,
+      leaseId: null,
+      kind: "BOOKING_CONFLICT",
+      severity: "HIGH",
+      detail:
+        `Paid booking ${reference} (PI ${pi.id}) is held in CONFLICT — resolve by confirming ` +
+        `or cancelling + refunding.`,
+    });
+    // Only a NEW escalation pages a human: an OPEN one means the first pass
+    // already alerted, and Stripe retries the same event many times.
+    if (raised) {
+      const [property, room, guest] = await Promise.all([
+        storage.getProperty(existing.propertyId),
+        existing.roomId ? storage.getRoom(existing.roomId) : Promise.resolve(undefined),
+        storage.getGuest(existing.guestId),
+      ]);
+      const tpl = LIFECYCLE_TEMPLATES.adminNewBooking({
+        property: property?.name ?? existing.propertyId,
+        room: roomDisplayName(room),
+        guest: guest?.name ?? "(unknown guest)",
+        email: guest?.email ?? "",
+        phone: guest?.phone ?? "",
+        checkIn: existing.checkIn,
+        checkOut: existing.checkOut ?? "",
+        reference,
+        total: fmtMoney(parseFloat(existing.quotedTotal)),
+        status: "CONFLICT",
+      });
+      await notifyAdmin({
+        subject: tpl.subject,
+        body: tpl.body,
+        telegramText: tpl.telegramText,
+        context: { bookingId: existing.id, guestId: guest?.id ?? null, kind: "BOOKING_CONFLICT" },
+      });
+    }
+    log(`short-stay ${reference} already exists as CONFLICT — escalation re-checked`, "stripe");
+    return;
+  }
+
+  if (existing.status === "CONFIRMED" || existing.status === "ACTIVE") {
+    const [property, room, guest] = await Promise.all([
+      storage.getProperty(existing.propertyId),
+      existing.roomId ? storage.getRoom(existing.roomId) : Promise.resolve(undefined),
+      storage.getGuest(existing.guestId),
+    ]);
+    if (property && guest) {
+      await onBookingConfirmed({ booking: existing, property, room: room ?? null, guest });
+    }
+    log(`short-stay booking ${reference} already exists — confirmation re-checked`, "stripe");
+    return;
+  }
+
+  log(`short-stay booking ${reference} already exists (${existing.status}) — left as is`, "stripe");
+}
+
+/**
  * Materialize a short-stay booking from a succeeded PaymentIntent's metadata.
  * Idempotent across Stripe retries (keyed on `reference`).
  */
@@ -60,16 +167,15 @@ export async function materializeShortStayBooking(
     return;
   }
 
-  // Idempotency: if a booking with this reference already exists (Stripe retry, or
-  // a manual booking that reused the reference space), just ensure its payment is
-  // PAID and stop.
+  // Idempotency: a booking with this reference already exists (a Stripe retry, or
+  // a manual booking that reused the reference space). This is NOT automatically
+  // a no-op — the first attempt may have died partway through — so every step is
+  // re-run under its own idempotency guard: the payment row is created if
+  // missing, a CONFLICT is re-escalated (deduped), and a live booking re-fires
+  // its confirmation (deduped via lifecycle_events).
   const existing = await storage.getBookingByReference(reference);
   if (existing) {
-    const payment = await storage.getPaymentByStripeRef(pi.id);
-    if (payment && payment.status !== "PAID") {
-      await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
-    }
-    log(`short-stay booking ${reference} already exists — idempotent no-op`, "stripe");
+    await repairExistingBooking({ existing, pi, reference, deps });
     return;
   }
 
@@ -83,11 +189,38 @@ export async function materializeShortStayBooking(
     return;
   }
 
-  const propertyId = m.property_id;
+  const propertyId = m.property_id && m.property_id !== "null" ? m.property_id : undefined;
   const roomId = m.room_id && m.room_id !== "null" ? m.room_id : undefined;
   const checkIn = m.check_in && m.check_in !== "null" ? m.check_in : undefined;
   const checkOut = m.check_out && m.check_out !== "null" ? m.check_out : undefined;
   const model = m.model === "COLIVING" ? ("COLIVING" as const) : ("STR" as const);
+
+  // Structural guard: `property_id` and `check_in` are NOT NULL on the booking
+  // row, so without them there is nothing writable. Page a human rather than
+  // throwing a constraint error into the webhook (which Stripe would retry
+  // forever) or writing a half-booking. The alert carries no guest contact
+  // details — it is a broken-intent report, not a booking notice.
+  if (!propertyId || !checkIn) {
+    const missing = [!propertyId && "property_id", !checkIn && "check_in"].filter(Boolean).join(", ");
+    log(
+      `short-stay PI ${pi.id} (${reference}) missing ${missing} — NOT materializing, admin alerted`,
+      "stripe",
+    );
+    await notifyAdmin({
+      subject: `⚠️ Paid booking could not be created — ${reference}`,
+      body:
+        `PaymentIntent ${pi.id} for reference ${reference} ($${m.quoted_total ?? m.amount ?? "?"}) ` +
+        `succeeded but its metadata is missing ${missing}, so no booking row could be written. ` +
+        `The charge stands. Reconcile this manually in Stripe and the admin console.`,
+      context: { kind: "BOOKING_MATERIALIZE_FAILED" },
+    });
+    posthog.capture({
+      distinctId: pi.id,
+      event: "booking_materialize_failed",
+      properties: { reference, missing },
+    });
+    return;
+  }
 
   // Availability race guard: re-check that the dates/room are still free. A
   // failure does NOT refund — it downgrades the booking to CONFLICT below.
@@ -114,7 +247,7 @@ export async function materializeShortStayBooking(
     roomId: roomId ?? null,
     guestId: guestRow.id,
     model,
-    checkIn: checkIn!,
+    checkIn,
     checkOut: checkOut ?? null,
     paymentMethod: "STRIPE" as const,
     reference,
@@ -169,19 +302,20 @@ export async function materializeShortStayBooking(
     });
     const tpl = LIFECYCLE_TEMPLATES.adminNewBooking({
       property: property?.name ?? propertyId,
-      room: room ? (room.roomNumber ? `Room ${room.roomNumber} — ${room.name}` : room.name) : null,
+      room: roomDisplayName(room),
       guest: guestName,
       email: guestEmail,
       phone: m.guest_phone && m.guest_phone !== "null" ? m.guest_phone : "",
-      checkIn: checkIn ?? "",
+      checkIn,
       checkOut: checkOut ?? "",
       reference,
-      total: `$${m.quoted_total ?? "0"}`,
+      total: fmtMoney(parseFloat(m.quoted_total ?? "0")),
       status: "CONFLICT",
     });
     await notifyAdmin({
       subject: tpl.subject,
       body: tpl.body,
+      telegramText: tpl.telegramText,
       context: { bookingId: booking.id, guestId: guestRow.id, kind: "BOOKING_CONFLICT" },
     });
     posthog.capture({

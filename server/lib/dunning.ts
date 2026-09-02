@@ -311,12 +311,17 @@ export async function handleChargeFailure(args: {
       `($${args.scheduleRow.amount})${args.reason ? `: ${args.reason}` : ""}.`,
   });
   if (failureEsc) {
+    const failureTail =
+      `failed${args.reason ? `: ${args.reason}` : ""}. Installment #${args.scheduleRow.scheduleSeq} ` +
+      `is marked FAILED; the guest has been sent a fix link.`;
     await notifyAdmin({
       subject: `Card charge FAILED — ${args.guest.name} installment #${args.scheduleRow.scheduleSeq}`,
       body:
         `Saved-card charge of $${args.scheduleRow.amount} for ${args.guest.name} ` +
-        `(${args.guest.email}) failed${args.reason ? `: ${args.reason}` : ""}. ` +
-        `Installment #${args.scheduleRow.scheduleSeq} is marked FAILED; the guest has been sent a fix link.`,
+        `(${args.guest.email}) ${failureTail}`,
+      // Telegram: name only, no contact details (third-party channel).
+      telegramText:
+        `Saved-card charge of $${args.scheduleRow.amount} for ${args.guest.name} ${failureTail}`,
       context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "ESCALATION" },
     });
   }

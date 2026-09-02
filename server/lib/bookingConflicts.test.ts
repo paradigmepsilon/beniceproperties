@@ -161,6 +161,30 @@ describe("cancelBooking", () => {
     expect(mockStripe.refundPaymentIntent).not.toHaveBeenCalled();
   });
 
+  // A refund that threw must stay retryable. The booking is CANCELLED by then,
+  // so an `alreadyCancelled` short-circuit would strand the guest's money.
+  it("still refunds on a retry after the first refund attempt threw", async () => {
+    mockStripe.refundPaymentIntent.mockRejectedValueOnce(new Error("Stripe timeout"));
+
+    await expect(
+      cancelBooking({ bookingId: "bk-1", actor: "admin@bnp", refund: true }),
+    ).rejects.toThrow("Stripe timeout");
+    expect(mockStorage.updateBooking).toHaveBeenCalledWith("bk-1", { status: "CANCELLED" });
+
+    // Retry: the booking is now CANCELLED, but the refund must still go through.
+    mockStorage.getBooking.mockResolvedValue(booking({ status: "CANCELLED" }));
+    const res = await cancelBooking({ bookingId: "bk-1", actor: "admin@bnp", refund: true });
+
+    expect(res.refunded).toBe(true);
+    expect(res.alreadyCancelled).toBe(true);
+    // Same idempotency key both times — Stripe returns the one refund.
+    for (const call of mockStripe.refundPaymentIntent.mock.calls) {
+      expect(call[0]).toEqual({ paymentIntentId: "pi_123", idempotencyKey: "refund:pi_123" });
+    }
+    // Cancelling twice must not re-write the status.
+    expect(mockStorage.updateBooking).toHaveBeenCalledTimes(1);
+  });
+
   it("404s on an unknown booking", async () => {
     mockStorage.getBooking.mockResolvedValue(undefined);
     await expect(cancelBooking({ bookingId: "nope", actor: "admin@bnp" })).rejects.toMatchObject({
@@ -238,4 +262,17 @@ describe("confirmConflictBooking", () => {
     mockStorage.getBooking.mockResolvedValue(undefined);
     await expect(confirmConflictBooking("nope", "admin@bnp")).rejects.toMatchObject({ status: 404 });
   });
+
+  // Only a CONFLICT booking is resolvable this way — otherwise this endpoint
+  // would resurrect a CANCELLED (possibly refunded) booking into ACTIVE.
+  it.each(["CANCELLED", "ACTIVE", "CONFIRMED", "COMPLETED", "PENDING_PAYMENT"])(
+    "refuses to confirm a booking in status %s",
+    async (status) => {
+      mockStorage.getBooking.mockResolvedValue(booking({ status }));
+      await expect(confirmConflictBooking("bk-1", "admin@bnp")).rejects.toMatchObject({ status: 409 });
+      expect(mockStorage.updateBooking).not.toHaveBeenCalled();
+      expect(mockStorage.updateRoom).not.toHaveBeenCalled();
+      expect(mockLifecycle.onBookingConfirmed).not.toHaveBeenCalled();
+    },
+  );
 });

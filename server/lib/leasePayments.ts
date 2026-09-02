@@ -351,12 +351,15 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
     if (property && guest) {
       // Admin alert first: a guest-send failure must not swallow the operator's
       // notice that a room is now held.
+      const depositSummary =
+        `paid the $${lease.depositAmountSnapshot ?? "0"} deposit for ${property.name}, ` +
+        `${lease.startDate} → ${lease.endDate}. Room(s) secured; lease is PENDING_VERIFICATION ` +
+        `awaiting ID approval.`;
       await notifyAdmin({
         subject: `Deposit paid — ${property.name} (${guest.name})`,
-        body:
-          `${guest.name} (${guest.email}) paid the $${lease.depositAmountSnapshot ?? "0"} deposit for ` +
-          `${property.name}, ${lease.startDate} → ${lease.endDate}. Room(s) secured; lease is ` +
-          `PENDING_VERIFICATION awaiting ID approval.`,
+        body: `${guest.name} (${guest.email}) ${depositSummary}`,
+        // Telegram: name only, no contact details (third-party channel).
+        telegramText: `${guest.name} ${depositSummary}`,
         context: { leaseId: lease.id, guestId: guest.id, kind: "DEPOSIT_PAID" },
       });
       await onDepositReceived({ lease, property, guest });
