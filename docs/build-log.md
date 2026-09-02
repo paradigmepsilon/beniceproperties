@@ -2630,3 +2630,181 @@ referenced in `scripts/build-api.mjs` but not defined in package.json, so nothin
 guards against a stale committed `api/index.js`.
 
 SEO-AEO-ROUND-3 (ALT-TEXT + RSS-FEED + ANALYTICS-VISIBILITY): COMPLETE — tests green
+
+
+---
+
+## 2026-09-02 — DECONFLICTION-ALERTS-MESSAGING
+
+**Why.** A 2026-09-02 audit found two real guests had paid deposits (Stripe
+live) with no booking, guest, or payment row, no confirmation, and no room
+block — referenced below only as BNP-5F2B-WNJM and BNP-BGFK-W3FL. Root causes:
+the Stripe webhook was never subscribed to `payment_intent.succeeded` (the
+only path that materializes a payment-first booking); production had no email
+or SMS provider configured, so every notification had been a silent dry-run
+since launch; the Airbnb iCal import had never written a row despite an hourly
+cron; `rooms.status = OCCUPIED` acted as a global date gate instead of a
+derived/display value; there was no outbound path for short-stay
+confirmations, no admin compose surface, and no Telegram anywhere in the
+codebase; Unified Ops rendered `YYYY-MM-DD` one day early; and there was no
+way to record an off-platform booking or manually block a room. Full detail:
+`docs/superpowers/specs/2026-09-02-booking-deconfliction-and-messaging-design.md`.
+Plan: `docs/superpowers/plans/2026-09-02-booking-deconfliction-and-messaging.md`
+(11 tasks, subagent-driven-development with a controller review round after
+each). Branch `feat/booking-deconfliction-and-messaging`, 12 commits
+(`9bc6425`..`ffbb0d5`) plus 5 review/fix commits.
+
+**What was built.**
+- **Deconfliction.** A new `manual_blocks` table (off-platform booking /
+  maintenance / owner-use / other, zero schema change per listing) folded into
+  every availability gate — `isRoomAvailableForRange`, `strHasConflict`,
+  `buildStrAvailability`/`buildRoomAvailability`, the lease conflict guard —
+  alongside a new shared `overlapsRange` helper that normalizes bookings,
+  external iCal blocks, manual blocks, and leases to one half-open comparison.
+  `rooms.status` no longer gates future dates: `resolveBooking` and
+  `buildLeaseQuote` now reject only `HOLD`/`MAINTENANCE`/`INACTIVE` (`OCCUPIED`
+  is display-only, corrected by a daily `syncRoomOccupancyStatus` sweep from
+  actual overlaps). A Postgres exclusion constraint
+  (`bookings_room_no_overlap`, `btree_gist`) backstops the app-level checks for
+  short-stay bookings. All "today" calls (client and server) now go through
+  one `todayIso()` in `shared/dates.ts` (America/New_York calendar day) instead
+  of ad hoc UTC slicing. A paid short-stay booking that lands on taken dates is
+  no longer auto-refunded: it lands as a new `CONFLICT` status (blocks no
+  dates, occupies no room), the payment records PAID, a HIGH `BOOKING_CONFLICT`
+  escalation is raised, and an admin is paged; a human then force-confirms
+  (`POST /api/admin|uo/bookings/:id/confirm`) or cancels with an explicit
+  refund (`POST .../cancel?refund=true`) — no code path refunds on its own.
+  `icalSync` now honors Airbnb "Not available" host-blocks
+  (`app_settings.ical_honor_host_blocks`), records `ical_last_sync_at` /
+  `ical_last_sync_result` on every run, and raises a deduped stale/failed-sync
+  alert (checked hourly, on the daily sweep, and in the long-lived scheduler).
+- **Admin alerts.** `server/lib/telegram.ts` (env-gated, dry-run-safe, never
+  throws — same shape as the existing email/SMS transports) plus a
+  `notifyAdmin({ subject, body, telegramText? })` fan-out to email and
+  Telegram in parallel, both channels logged to the new `message_log` table.
+  Wired into: short-stay booking materialized, booking `CONFLICT`, manual
+  (CashApp/Zelle) mark-paid, co-living deposit paid, lease activated,
+  card-on-file failure, every new `uo_escalations` row, and iCal sync
+  failure/staleness.
+- **Guest messaging with tracking.** `message_log` is the single audit trail
+  for every outbound/inbound message (channel, status, provider ref, actor).
+  `guest_messages` now scopes to a short-stay booking as well as a lease.
+  `server/lib/adminMessages.ts` (`sendStaffMessage`/`listThreads`/`getThread`)
+  makes staff replies actually deliver by email/SMS instead of only writing a
+  DB row; `uoApi.respondToMessage` delegates to the same function so a UO
+  reply gets identical delivery + logging. New `BOOKING_CONFIRMED` (guest) and
+  `ADMIN_NEW_BOOKING` (admin) templates fire from `onBookingConfirmed()`,
+  idempotent via `lifecycle_events`, gated by an
+  `app_settings.guest_auto_notifications` toggle (default on) and never sent
+  for a `CONFLICT` booking. Backfilled bookings are created by script, not the
+  webhook, so they never trigger an auto-send.
+- **Admin console UI (Task 8).** New "Messages" tab (thread list + reply,
+  guest-picker compose), a manual-blocks panel and calendar-sync-status panel
+  on Inventory, and CONFLICT-booking Confirm / Cancel / Cancel+refund actions
+  on Overview — the refund amount is computed from the sum of PAID Stripe
+  payments (amount + surcharge) and gated behind the admin typing that exact
+  total back before it fires.
+- **Unified Ops companion changes** (separate repo, branch
+  `feat/bnp-date-fix-and-management`, commits `241c26a`, `5630004`, `bc50709`,
+  `6643e7b` on top of `dce1795`): `241c26a` fixed the one-day-early
+  `YYYY-MM-DD` rendering (`bnp-bookings-admin.tsx`, `contact-stay-history.tsx`,
+  `bnp-inventory-admin.tsx`) with a shared UTC-parsing `formatIsoDate()`.
+  `5630004` added the UO-side management surface — messages, manual blocks,
+  calendar sync status, conflict actions — against BNP's new service-token API
+  (`BNP_API_URL`/`BNP_API_TOKEN` env). `bc50709` fixed review findings (sync
+  panel rendering, refund basis aligned to PAID-Stripe sum, delivery-trail
+  scoping, businessCode pinning). `6643e7b` restored a booking-detail 404 path
+  and pinned `businessCode` on the bookings list/detail routes that `bc50709`'s
+  fix round had touched.
+
+**Rulings made during the build** (controller decisions during
+subagent-driven-development, `progress.md`):
+- No git worktree — single-developer repo, owner authorized working directly
+  on the feature branch.
+- Task 6's calendar-status routes read Task 7's `ical_last_sync_*` setting
+  keys by name ahead of Task 7 landing (keys fixed by the plan).
+- Task 5 creates both `server/lib/materialize.ts` and
+  `server/lib/bookingConflicts.ts` (plan's file list under-named this).
+- Tasks 10–11 (Unified Ops repo) run in parallel with the BNP tasks — no file
+  overlap, though Task 11 still waits on Task 1's table shapes.
+- `ROOM_UNBOOKABLE_STATUSES = ["HOLD","MAINTENANCE","INACTIVE"]` and
+  `ROOM_STATUSES` gains `MAINTENANCE`/`INACTIVE` so the admin PATCH can
+  actually set them; `HOLD` stays unbookable (a regression in an earlier
+  fix round would have made HOLD rooms bookable — caught and reverted).
+- Task 3 review: fold all three `strHasConflict` overlap sources onto
+  `overlapsRange` — the earlier "either is fine" allowance had come from the
+  controller's own dispatch message, not the task brief; corrected.
+- Task 5: Telegram alert text carries guest NAME + listing + dates +
+  reference + amount only; email/phone stay in the admin EMAIL only
+  (sensitive-data rule — fewest fields to an external service). Caught in
+  review as a CRITICAL finding (guest contact info had reached Telegram at 4
+  call sites) and fixed in commit `706b994`.
+- Task 5: `PUBLIC_BASE_URL` fallback is the canonical
+  `https://www.beniceproperties.com` (an earlier dispatch value was wrong;
+  consolidated to one `publicBaseUrl()`).
+- Task 5: `cancelBooking` writes no `message_log` row for a refund — the
+  refund is recorded via `log()` and the returned refund ids, by design.
+- Task 5: on a Stripe retry of a CONFLICT materialization, the admin alert
+  fires only when `raiseEscalationOnce` returns a *new* row, so a retry can't
+  re-page on every attempt.
+- Task 8: "Cancel + refund" shown only for Stripe bookings with a PAID Stripe
+  payment; the confirmation dialog requires the admin to type the PAID-Stripe
+  sum back; no dev-server/browser writes were made against the configured
+  (production) database during the build.
+- Task 11 (UO): refund confirmation basis = `SUM(amount + surcharge)` over
+  PAID Stripe payments with a `stripe_ref` — matches what BNP actually
+  refunds; the same rule was sent back to Task 8 so both sides agree.
+- Task 11 (UO): pin the pre-existing bookings list + detail routes (not just
+  the new ones) since they also carry booking/payment data.
+
+**Tests run + results (this session, HEAD `ffbb0d5`).**
+- `npm run check` (tsc) — clean, no errors.
+- `npm test` (vitest) — **36 test files, 449 tests, all passing.** (The 4
+  pre-existing `icalSync.test.ts` failures noted in earlier task reports —
+  fixtures with dates that had rotted into the past — were fixed during Task 7
+  and no longer appear.)
+- `npm run build` — Vite client build + PWA precache (20 entries) + API bundle
+  succeeded; `scripts/prerender.mjs` baked 42/42 routes; `dist/index.js`
+  330.7kb. `git status` clean afterward (build output is gitignored).
+- Unified Ops side (`feat/bnp-date-fix-and-management`) was verified inside
+  its own tasks (10, 11) per that repo's checks; not re-run from this BNP
+  session.
+
+**Operational steps that stay manual (owner)** — from the spec, not run by
+any agent in this build:
+1. Stripe dashboard: add `payment_intent.succeeded` and
+   `payment_intent.payment_failed` to the beniceproperties webhook endpoint.
+2. `node scripts/materialize-lost-bookings.mjs --confirm` (dry run verified
+   clean on 2026-09-02).
+3. Vercel Production env for BNP: `TELEGRAM_BOT_TOKEN`,
+   `TELEGRAM_ADMIN_CHAT_ID`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`,
+   `SMTP_PASS`, `MAIL_FROM`, `ADMIN_NOTIFY_EMAIL`, `TWILIO_ACCOUNT_SID`,
+   `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `UO_BNP_API_TOKEN`. Unified Ops:
+   `BNP_API_URL`, `BNP_API_TOKEN`.
+4. Run `scripts/push-deconfliction-messaging.mjs` (idempotent, additive-only;
+   backs up `bookings`, `guest_messages`, `lifecycle_events` to
+   `docs/migration-backups/` first per floor #1 — not run against any
+   database in this build), deploy BNP, deploy Unified Ops, trigger one
+   calendar sync.
+
+**Deferred** (per the brief, plus minors surfaced during review that the
+controller chose not to fold into this branch — see `progress.md` for the
+full list):
+- Portal messaging for short-stay guests (portal stays lease-scoped for now).
+- Admin-editable message template text.
+- Stripe API-version upgrade.
+- `docs/migration-backups/` already has 5 pre-existing git-tracked files
+  unrelated to this build — flagged for the owner to check for PII, not
+  reviewed as part of this task.
+- A handful of small items logged during task reviews rather than fixed:
+  `raiseEscalationOnce` dedupe still ignores scope when `leaseId` is absent in
+  one path Task 5 had to key around explicitly; three separate module-local
+  `publicBaseUrl()` copies remain (lifecycle/dunning/verification) with the
+  same fallback instead of one shared helper; `getManualBlocks`/
+  `getMessageLog` are unbounded at the storage layer (route layer is expected
+  to pass a limit); the admin messages/calendar panels have no `isError`
+  states on their queries; UTC "today" still appears in a few dunning/
+  lifecycle/leasePayments/kpiRollup call sites the plan flagged but didn't
+  require touching this round.
+
+DECONFLICTION-ALERTS-MESSAGING: COMPLETE — tests green
