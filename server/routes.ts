@@ -31,7 +31,6 @@ import {
   insertManualBlockSchema,
   US_STATE_CODES,
   COLIVING_MIN_DAYS,
-  LEASE_STATUSES,
   type PropertyListItem,
   type RoomWithAvailability,
   type JournalBlock,
@@ -1532,8 +1531,9 @@ export async function registerRoutes(app: Express): Promise<void> {
     } catch (e) { uoErr(e, res, next); }
   });
   // NOTE: GET /api/uo/messages is registered later (Task 6, mountMessagingRoutes)
-  // with the richer, shared listThreads view (guest/property/booking context) —
-  // it supersedes the old lease-only uo.listGuestMessageThreads.
+  // with the richer, batched, shared listThreads view (guest/property/booking
+  // context) — it supersedes the old lease-only per-thread-lookup version that
+  // used to live here (removed with its uoApi.listGuestMessageThreads backer).
   app.get("/api/uo/escalations", requireServiceToken, async (req, res, next) => {
     try {
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
@@ -1622,19 +1622,14 @@ export async function registerRoutes(app: Express): Promise<void> {
     leaseId: z.string().optional(),
     subject: z.string().optional(),
     body: z.string().min(1),
-    channels: z.array(z.enum(["EMAIL", "SMS"])),
+    channels: z.array(z.enum(["EMAIL", "SMS"])).min(1),
   });
   const replyBodySchema = z.object({
     body: z.string().min(1),
-    channels: z.array(z.enum(["EMAIL", "SMS"])),
+    channels: z.array(z.enum(["EMAIL", "SMS"])).min(1),
   });
   const createBlockBodySchema = insertManualBlockSchema.omit({ source: true, createdBy: true });
   const autoNotifyBodySchema = z.object({ enabled: z.boolean() });
-  const TERMINAL_LEASE_STATUSES = new Set<(typeof LEASE_STATUSES)[number]>([
-    "COMPLETED",
-    "TERMINATED",
-    "DEFAULTED",
-  ]);
   const GUEST_AUTO_NOTIFY_KEY = "guest_auto_notifications_enabled";
 
   function messageHandlers(source: "ADMIN" | "UO", actorFrom: (req: express.Request) => string) {
@@ -1642,7 +1637,12 @@ export async function registerRoutes(app: Express): Promise<void> {
       listThreads: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
           const status = typeof req.query.status === "string" ? req.query.status : undefined;
-          res.json({ threads: await adminMessages.listThreads(status ? { status } : undefined) });
+          let limit: number | undefined;
+          if (typeof req.query.limit === "string") {
+            const n = parseInt(req.query.limit, 10);
+            if (Number.isFinite(n)) limit = n;
+          }
+          res.json({ threads: await adminMessages.listThreads({ status, limit }) });
         } catch (e) {
           messagingErr(e, res, next);
         }
@@ -1714,7 +1714,8 @@ export async function registerRoutes(app: Express): Promise<void> {
       },
       deleteBlock: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
-          await storage.deleteManualBlock(req.params.id);
+          const deleted = await storage.deleteManualBlock(req.params.id);
+          if (!deleted) return res.status(404).json({ message: "Block not found" });
           res.json({ ok: true });
         } catch (e) {
           messagingErr(e, res, next);
@@ -1748,36 +1749,27 @@ export async function registerRoutes(app: Express): Promise<void> {
       },
       // Guest picker: everyone currently reachable — active/upcoming bookings
       // plus non-terminal leases — with enough context (property, reference)
-      // to start a new staff message thread against the right one.
+      // to start a new staff message thread against the right one. Both
+      // halves are single joined queries (getBookingsWithGuest /
+      // getActiveLeasesWithGuest) — no per-row getGuest/getProperty loop.
       guests: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
-          const [bookingsWithGuest, leases] = await Promise.all([
+          const [bookingsWithGuest, activeLeases] = await Promise.all([
             storage.getBookingsWithGuest({ from: todayIso() }),
-            storage.getLeases(),
+            storage.getActiveLeasesWithGuest(),
           ]);
-          const activeLeases = leases.filter(
-            (l) => !TERMINAL_LEASE_STATUSES.has(l.status as (typeof LEASE_STATUSES)[number]),
-          );
-          const leaseRows = await Promise.all(
-            activeLeases.map(async (l) => {
-              const [guest, property] = await Promise.all([
-                storage.getGuest(l.guestId),
-                storage.getProperty(l.propertyId),
-              ]);
-              return {
-                leaseId: l.id,
-                guestId: l.guestId,
-                guestName: guest?.name ?? null,
-                guestEmail: guest?.email ?? null,
-                guestPhone: guest?.phone ?? null,
-                propertyId: l.propertyId,
-                propertyName: property?.name ?? null,
-                status: l.status,
-                startDate: l.startDate,
-                endDate: l.endDate,
-              };
-            }),
-          );
+          const leaseRows = activeLeases.map((l) => ({
+            leaseId: l.id,
+            guestId: l.guestId,
+            guestName: l.guest.name,
+            guestEmail: l.guest.email,
+            guestPhone: l.guest.phone,
+            propertyId: l.propertyId,
+            propertyName: l.property.name,
+            status: l.status,
+            startDate: l.startDate,
+            endDate: l.endDate,
+          }));
           const bookingRows = bookingsWithGuest.map((b) => ({
             bookingId: b.id,
             guestId: b.guestId,
@@ -1811,7 +1803,9 @@ export async function registerRoutes(app: Express): Promise<void> {
         try {
           const parsed = autoNotifyBodySchema.safeParse(req.body);
           if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+          const actor = actorFrom(req);
           await storage.setSetting(GUEST_AUTO_NOTIFY_KEY, parsed.data.enabled ? "true" : "false");
+          log(`guest_auto_notifications set to ${parsed.data.enabled} by ${actor}`, "admin");
           res.json({ enabled: parsed.data.enabled });
         } catch (e) {
           messagingErr(e, res, next);

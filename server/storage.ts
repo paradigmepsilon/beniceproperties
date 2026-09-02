@@ -9,7 +9,7 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, desc, eq, gt, gte, inArray, lte, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, lte, max, ne, sql } from "drizzle-orm";
 import { db } from "./db";
 import { overlapsRange } from "./lib/ranges";
 import {
@@ -120,6 +120,8 @@ export interface IStorage {
   // --- Properties ---
   getProperties(opts?: { activeOnly?: boolean }): Promise<Property[]>;
   getProperty(id: string): Promise<Property | undefined>;
+  /** Batched by-id lookup (e.g. thread-list enrichment) — one query, not N. */
+  getPropertiesByIds(ids: string[]): Promise<Property[]>;
   createProperty(data: InsertProperty): Promise<Property>;
   updateProperty(id: string, updates: Partial<InsertProperty>): Promise<Property | undefined>;
 
@@ -132,6 +134,8 @@ export interface IStorage {
   // --- Guests (minimal PII; never pushed to UO) ---
   getGuest(id: string): Promise<Guest | undefined>;
   getGuestByEmail(email: string): Promise<Guest | undefined>;
+  /** Batched by-id lookup (e.g. thread-list enrichment) — one query, not N. */
+  getGuestsByIds(ids: string[]): Promise<Guest[]>;
   upsertGuestByEmail(data: InsertGuest): Promise<Guest>;
 
   // --- Newsletter (owned email-capture list) ---
@@ -147,6 +151,8 @@ export interface IStorage {
   getBooking(id: string): Promise<Booking | undefined>;
   getBookingByReference(reference: string): Promise<Booking | undefined>;
   getBookings(opts?: { status?: string }): Promise<Booking[]>;
+  /** Batched by-id lookup (e.g. thread-list enrichment) — one query, not N. */
+  getBookingsByIds(ids: string[]): Promise<Booking[]>;
   /**
    * Non-cancelled STR bookings with a checkOut on/after `date`, for the given
    * properties, ordered by checkIn — the inputs to the "next opening" chain
@@ -193,6 +199,14 @@ export interface IStorage {
   // --- Leases (co-living) ---
   getLease(id: string): Promise<Lease | undefined>;
   getLeases(opts?: { status?: string; guestId?: string; propertyId?: string }): Promise<Lease[]>;
+  /** Batched by-id lookup (e.g. thread-list enrichment) — one query, not N. */
+  getLeasesByIds(ids: string[]): Promise<Lease[]>;
+  /**
+   * Non-terminal (still-live) leases joined to guest/property in one query —
+   * the guest picker's lease half, mirroring getBookingsWithGuest's join
+   * pattern instead of getLeases() + a per-row getGuest/getProperty loop.
+   */
+  getActiveLeasesWithGuest(): Promise<Array<Lease & { guest: Guest; property: Property }>>;
   /**
    * Soonest endDate (>= `onOrAfter`) of an OCCUPYING lease per property —
    * statuses where the deposit is paid and a room is actually held
@@ -226,11 +240,18 @@ export interface IStorage {
   // --- Guest messages (threaded portal questions / requests) ---
   getMessageThreadsByLease(leaseId: string): Promise<GuestMessage[]>; // roots only
   getMessageThreadsByBooking(bookingId: string): Promise<GuestMessage[]>; // roots only
-  getMessageThreadRoots(opts?: { status?: string }): Promise<GuestMessage[]>; // every thread, roots only
+  /** Every thread's root row, newest first. `limit` bounds the page (admin/UO inbox). */
+  getMessageThreadRoots(opts?: { status?: string; limit?: number }): Promise<GuestMessage[]>;
   getMessagesByThread(threadId: string): Promise<GuestMessage[]>; // all in a thread
   getMessage(id: string): Promise<GuestMessage | undefined>;
   createMessage(data: InsertGuestMessage): Promise<GuestMessage>;
   updateMessage(id: string, updates: Partial<InsertGuestMessage>): Promise<GuestMessage | undefined>;
+  /**
+   * Per-thread message count + last-message timestamp, one grouped query for
+   * every threadId given — the thread-list enrichment's batched stand-in for
+   * an N+1 getMessagesByThread-per-root loop.
+   */
+  getThreadStats(threadIds: string[]): Promise<Array<{ threadId: string; messageCount: number; lastMessageAt: Date }>>;
 
   // --- Message log (append-only audit trail of every send/receive, any channel) ---
   createMessageLog(data: InsertMessageLog): Promise<MessageLogRow>;
@@ -329,7 +350,8 @@ export interface IStorage {
   getManualBlocksForProperty(propertyId: string): Promise<ManualBlock[]>;
   getManualBlocks(opts?: { propertyId?: string; roomId?: string; from?: string }): Promise<ManualBlock[]>;
   createManualBlock(data: InsertManualBlock): Promise<ManualBlock>;
-  deleteManualBlock(id: string): Promise<void>;
+  /** Returns true if a row was actually deleted (false when the id didn't exist). */
+  deleteManualBlock(id: string): Promise<boolean>;
 
   // --- Airbnb iCal listings + synced blocks (URL lives on properties/rooms) ---
   /** Active listings with a non-null airbnb_ical_url — the sync work-list.
@@ -404,6 +426,11 @@ class Storage implements IStorage {
     return row;
   }
 
+  async getPropertiesByIds(ids: string[]): Promise<Property[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(properties).where(inArray(properties.id, ids));
+  }
+
   async createProperty(data: InsertProperty): Promise<Property> {
     const [row] = await db.insert(properties).values(data).returning();
     return row;
@@ -446,6 +473,11 @@ class Storage implements IStorage {
   async getGuest(id: string): Promise<Guest | undefined> {
     const [row] = await db.select().from(guests).where(eq(guests.id, id));
     return row;
+  }
+
+  async getGuestsByIds(ids: string[]): Promise<Guest[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(guests).where(inArray(guests.id, ids));
   }
 
   async getGuestByEmail(email: string): Promise<Guest | undefined> {
@@ -500,6 +532,11 @@ class Storage implements IStorage {
   async getBooking(id: string): Promise<Booking | undefined> {
     const [row] = await db.select().from(bookings).where(eq(bookings.id, id));
     return row;
+  }
+
+  async getBookingsByIds(ids: string[]): Promise<Booking[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(bookings).where(inArray(bookings.id, ids));
   }
 
   async getBookingByReference(reference: string): Promise<Booking | undefined> {
@@ -706,6 +743,34 @@ class Storage implements IStorage {
     return filters.length ? q.where(and(...filters)) : q;
   }
 
+  async getLeasesByIds(ids: string[]): Promise<Lease[]> {
+    if (ids.length === 0) return [];
+    return db.select().from(leases).where(inArray(leases.id, ids));
+  }
+
+  /**
+   * Non-terminal leases — ROOM_BLOCKING_LEASE_STATUSES is exactly "every
+   * status short of COMPLETED/TERMINATED/DEFAULTED" — joined to guest +
+   * property in one query. Mirrors getBookingsWithGuest's join pattern; the
+   * guest picker uses this instead of getLeases() + a per-row lookup loop.
+   */
+  async getActiveLeasesWithGuest(): Promise<Array<Lease & { guest: Guest; property: Property }>> {
+    const rows = await db
+      .select()
+      .from(leases)
+      .leftJoin(guests, eq(leases.guestId, guests.id))
+      .leftJoin(properties, eq(leases.propertyId, properties.id))
+      .where(inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]))
+      .orderBy(desc(leases.createdAt));
+    return rows
+      .filter((r) => r.guests !== null && r.properties !== null)
+      .map((r) => ({
+        ...r.leases,
+        guest: r.guests as Guest,
+        property: r.properties as Property,
+      }));
+  }
+
   async getSoonestOccupyingLeaseEndByProperty(
     propertyIds: string[],
     onOrAfter: string,
@@ -843,15 +908,16 @@ class Storage implements IStorage {
     return all.filter((m) => m.id === m.threadId);
   }
 
-  async getMessageThreadRoots(opts?: { status?: string }): Promise<GuestMessage[]> {
+  async getMessageThreadRoots(opts?: { status?: string; limit?: number }): Promise<GuestMessage[]> {
     // Every thread's root row across all leases/bookings: id === threadId.
     const filters = [sql`${guestMessages.threadId} = ${guestMessages.id}`];
     if (opts?.status) filters.push(eq(guestMessages.status, opts.status));
-    return db
+    const q = db
       .select()
       .from(guestMessages)
       .where(and(...filters))
       .orderBy(desc(guestMessages.createdAt));
+    return opts?.limit ? q.limit(opts.limit) : q;
   }
 
   async getMessagesByThread(threadId: string): Promise<GuestMessage[]> {
@@ -865,6 +931,33 @@ class Storage implements IStorage {
   async getMessage(id: string): Promise<GuestMessage | undefined> {
     const [row] = await db.select().from(guestMessages).where(eq(guestMessages.id, id));
     return row;
+  }
+
+  /**
+   * One grouped query for message count + last-message time across every
+   * threadId given — the batched stand-in for calling getMessagesByThread
+   * once per thread root in a list view.
+   */
+  async getThreadStats(
+    threadIds: string[],
+  ): Promise<Array<{ threadId: string; messageCount: number; lastMessageAt: Date }>> {
+    if (threadIds.length === 0) return [];
+    const rows = await db
+      .select({
+        threadId: guestMessages.threadId,
+        messageCount: count(guestMessages.id),
+        lastMessageAt: max(guestMessages.createdAt),
+      })
+      .from(guestMessages)
+      .where(inArray(guestMessages.threadId, threadIds))
+      .groupBy(guestMessages.threadId);
+    return rows.map((r) => ({
+      threadId: r.threadId,
+      // COUNT() comes back as a bigint-safe string over the Neon HTTP driver,
+      // not a JS number, despite drizzle's `count()` typing it as `number`.
+      messageCount: Number(r.messageCount),
+      lastMessageAt: new Date(r.lastMessageAt as unknown as string),
+    }));
   }
 
   async createMessage(data: InsertGuestMessage): Promise<GuestMessage> {
@@ -1313,8 +1406,9 @@ class Storage implements IStorage {
     return row;
   }
 
-  async deleteManualBlock(id: string): Promise<void> {
-    await db.delete(manualBlocks).where(eq(manualBlocks.id, id));
+  async deleteManualBlock(id: string): Promise<boolean> {
+    const deleted = await db.delete(manualBlocks).where(eq(manualBlocks.id, id)).returning();
+    return deleted.length > 0;
   }
 
   // ---------------------------------------------------------------------------

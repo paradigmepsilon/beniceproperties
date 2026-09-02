@@ -23,6 +23,11 @@ const mockStorage = vi.hoisted(() => ({
   createMessage: vi.fn(),
   updateMessage: vi.fn(),
   getMessageLog: vi.fn(),
+  getGuestsByIds: vi.fn(),
+  getBookingsByIds: vi.fn(),
+  getLeasesByIds: vi.fn(),
+  getPropertiesByIds: vi.fn(),
+  getThreadStats: vi.fn(),
 }));
 const mockNotify = vi.hoisted(() => ({
   notifyGuest: vi.fn(),
@@ -222,27 +227,44 @@ describe("sendStaffMessage — reply", () => {
 });
 
 describe("listThreads", () => {
-  it("enriches each root with guest, property, and booking/lease context", async () => {
-    mockStorage.getMessageThreadRoots.mockResolvedValue([
-      {
-        id: "t1",
-        threadId: "t1",
-        bookingId: "b1",
-        leaseId: null,
-        guestId: "g1",
-        status: "OPEN",
-        category: "QUESTION",
-        subject: "Question",
-        createdAt: new Date("2026-01-01T00:00:00Z"),
-      },
-    ]);
-    mockStorage.getMessagesByThread.mockResolvedValue([
-      { id: "t1", threadId: "t1", createdAt: new Date("2026-01-01T00:00:00Z") },
-      { id: "m2", threadId: "t1", createdAt: new Date("2026-01-02T00:00:00Z") },
-    ]);
+  const ROOT_1 = {
+    id: "t1",
+    threadId: "t1",
+    bookingId: "b1",
+    leaseId: null,
+    guestId: "g1",
+    status: "OPEN",
+    category: "QUESTION",
+    subject: "Question",
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+  };
+  const ROOT_2 = {
+    id: "t2",
+    threadId: "t2",
+    bookingId: null,
+    leaseId: "lease-1",
+    guestId: "g1",
+    status: "OPEN",
+    category: "OTHER",
+    subject: null,
+    createdAt: new Date("2026-01-03T00:00:00Z"),
+  };
 
+  beforeEach(() => {
+    mockStorage.getMessageThreadRoots.mockResolvedValue([ROOT_1, ROOT_2]);
+    mockStorage.getGuestsByIds.mockResolvedValue([GUEST]);
+    mockStorage.getBookingsByIds.mockResolvedValue([BOOKING]);
+    mockStorage.getLeasesByIds.mockResolvedValue([LEASE]);
+    mockStorage.getPropertiesByIds.mockResolvedValue([PROPERTY]);
+    mockStorage.getThreadStats.mockResolvedValue([
+      { threadId: "t1", messageCount: 2, lastMessageAt: new Date("2026-01-02T00:00:00Z") },
+      { threadId: "t2", messageCount: 1, lastMessageAt: new Date("2026-01-03T00:00:00Z") },
+    ]);
+  });
+
+  it("enriches each root with guest/property/booking-or-lease context via ONE batched call per lookup (not per row)", async () => {
     const threads = await listThreads();
-    expect(threads).toHaveLength(1);
+    expect(threads).toHaveLength(2);
     expect(threads[0]).toMatchObject({
       id: "t1",
       guestName: "Jane Doe",
@@ -252,7 +274,41 @@ describe("listThreads", () => {
       leaseId: null,
       bookingId: "b1",
       messageCount: 2,
+      lastMessageAt: new Date("2026-01-02T00:00:00Z"),
     });
+    expect(threads[1]).toMatchObject({
+      id: "t2",
+      propertyName: "Old Bill Cook",
+      bookingReference: null,
+      leaseId: "lease-1",
+      bookingId: null,
+      messageCount: 1,
+    });
+
+    // Two roots, but every enrichment lookup fired exactly ONCE — the N+1 fix.
+    expect(mockStorage.getGuestsByIds).toHaveBeenCalledTimes(1);
+    expect(mockStorage.getBookingsByIds).toHaveBeenCalledTimes(1);
+    expect(mockStorage.getLeasesByIds).toHaveBeenCalledTimes(1);
+    expect(mockStorage.getPropertiesByIds).toHaveBeenCalledTimes(1);
+    expect(mockStorage.getThreadStats).toHaveBeenCalledTimes(1);
+    expect(mockStorage.getThreadStats).toHaveBeenCalledWith(["t1", "t2"]);
+    // The old N+1 path (a getMessagesByThread call per root) must be gone.
+    expect(mockStorage.getMessagesByThread).not.toHaveBeenCalled();
+  });
+
+  it("returns [] without any enrichment queries when there are no roots", async () => {
+    mockStorage.getMessageThreadRoots.mockResolvedValue([]);
+    const threads = await listThreads();
+    expect(threads).toEqual([]);
+    expect(mockStorage.getGuestsByIds).not.toHaveBeenCalled();
+  });
+
+  it("defaults the page limit to 100 and clamps an oversized limit to 500", async () => {
+    await listThreads();
+    expect(mockStorage.getMessageThreadRoots).toHaveBeenCalledWith({ status: undefined, limit: 100 });
+
+    await listThreads({ limit: 10_000 });
+    expect(mockStorage.getMessageThreadRoots).toHaveBeenLastCalledWith({ status: undefined, limit: 500 });
   });
 });
 

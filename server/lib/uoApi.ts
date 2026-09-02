@@ -160,28 +160,6 @@ export async function listPaymentsWithMetadata(opts?: { leaseId?: string }) {
   return out;
 }
 
-export async function listGuestMessageThreads(status?: string) {
-  // Across all leases: gather roots, optionally filtered by status.
-  const leases = await storage.getLeases();
-  const threads = [];
-  for (const lease of leases) {
-    const roots = await storage.getMessageThreadsByLease(lease.id);
-    for (const r of roots) {
-      if (status && r.status !== status) continue;
-      threads.push({
-        id: r.id,
-        leaseId: r.leaseId,
-        category: r.category,
-        subject: r.subject,
-        status: r.status,
-        body: r.body,
-        createdAt: r.createdAt,
-      });
-    }
-  }
-  return threads;
-}
-
 export async function listEscalations(status?: string) {
   return storage.getEscalations(status ? { status } : undefined);
 }

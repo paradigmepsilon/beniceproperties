@@ -161,35 +161,67 @@ export interface ThreadSummary {
   messageCount: number;
 }
 
-export async function listThreads(opts?: { status?: string }): Promise<ThreadSummary[]> {
-  const roots = await storage.getMessageThreadRoots(opts);
-  const out: ThreadSummary[] = [];
+const DEFAULT_THREAD_LIMIT = 100;
+const MAX_THREAD_LIMIT = 500;
 
-  for (const root of roots) {
-    const [guest, messages] = await Promise.all([
-      storage.getGuest(root.guestId),
-      storage.getMessagesByThread(root.threadId),
-    ]);
+/**
+ * The admin/UO inbox. Bounded (`limit`, default 100 / max 500 — an unbounded
+ * inbox query would only get worse as threads accumulate) and batched: every
+ * root's guest/booking/lease/property/stat lookup is one `inArray` (or
+ * grouped) query across the whole page, never a per-root round trip.
+ */
+export async function listThreads(opts?: { status?: string; limit?: number }): Promise<ThreadSummary[]> {
+  const limit = Math.min(Math.max(opts?.limit ?? DEFAULT_THREAD_LIMIT, 1), MAX_THREAD_LIMIT);
+  const roots = await storage.getMessageThreadRoots({ status: opts?.status, limit });
+  if (roots.length === 0) return [];
+
+  const guestIds = Array.from(new Set(roots.map((r) => r.guestId)));
+  const bookingIds = Array.from(
+    new Set(roots.map((r) => r.bookingId).filter((id): id is string => Boolean(id))),
+  );
+  const leaseIds = Array.from(
+    new Set(roots.map((r) => r.leaseId).filter((id): id is string => Boolean(id))),
+  );
+  const threadIds = roots.map((r) => r.threadId);
+
+  const [guestRows, bookingRows, leaseRows, stats] = await Promise.all([
+    storage.getGuestsByIds(guestIds),
+    storage.getBookingsByIds(bookingIds),
+    storage.getLeasesByIds(leaseIds),
+    storage.getThreadStats(threadIds),
+  ]);
+
+  const propertyIds = Array.from(
+    new Set([...bookingRows.map((b) => b.propertyId), ...leaseRows.map((l) => l.propertyId)]),
+  );
+  const propertyRows = await storage.getPropertiesByIds(propertyIds);
+
+  const guestById = new Map(guestRows.map((g) => [g.id, g]));
+  const bookingById = new Map(bookingRows.map((b) => [b.id, b]));
+  const leaseById = new Map(leaseRows.map((l) => [l.id, l]));
+  const propertyById = new Map(propertyRows.map((p) => [p.id, p]));
+  const statsByThread = new Map(stats.map((s) => [s.threadId, s]));
+
+  return roots.map((root) => {
+    const guest = guestById.get(root.guestId);
 
     let propertyName: string | null = null;
     let bookingReference: string | null = null;
     if (root.bookingId) {
-      const booking = await storage.getBooking(root.bookingId);
+      const booking = bookingById.get(root.bookingId);
       if (booking) {
         bookingReference = booking.reference;
-        const property = await storage.getProperty(booking.propertyId);
-        propertyName = property?.name ?? null;
+        propertyName = propertyById.get(booking.propertyId)?.name ?? null;
       }
     } else if (root.leaseId) {
-      const lease = await storage.getLease(root.leaseId);
+      const lease = leaseById.get(root.leaseId);
       if (lease) {
-        const property = await storage.getProperty(lease.propertyId);
-        propertyName = property?.name ?? null;
+        propertyName = propertyById.get(lease.propertyId)?.name ?? null;
       }
     }
 
-    const lastMessage = messages[messages.length - 1] ?? root;
-    out.push({
+    const stat = statsByThread.get(root.threadId);
+    return {
       id: root.id,
       status: root.status,
       category: root.category,
@@ -201,12 +233,13 @@ export async function listThreads(opts?: { status?: string }): Promise<ThreadSum
       bookingReference,
       leaseId: root.leaseId ?? null,
       bookingId: root.bookingId ?? null,
-      lastMessageAt: lastMessage.createdAt,
-      messageCount: messages.length,
-    });
-  }
-
-  return out;
+      // Every root is itself a message, so a missing stats row (shouldn't
+      // happen — the root always has at least itself) still degrades to
+      // sane values instead of null/NaN.
+      lastMessageAt: stat?.lastMessageAt ?? root.createdAt,
+      messageCount: stat?.messageCount ?? 1,
+    };
+  });
 }
 
 export interface ThreadDetail {
