@@ -17,8 +17,9 @@ import {
 } from "@shared/leaseSchedule";
 import { chooseRate, RateError } from "@shared/rateSelection";
 import type { LeaseQuoteResponse, LeaseScheduleLine } from "@shared/api-types";
-import { MAX_LEASE_DAYS, allowedCadencesForTerm } from "@shared/schema";
+import { MAX_LEASE_DAYS, ROOM_UNBOOKABLE_STATUSES, allowedCadencesForTerm } from "@shared/schema";
 import { storage } from "../storage";
+import { overlapsRange } from "./ranges";
 import type { Room } from "@shared/schema";
 
 const CADENCE_PERIOD_DAYS: Record<PaymentCadence, number> = {
@@ -67,8 +68,10 @@ export interface LeaseQuoteInput {
 /**
  * Validate the selection and build the full schedule preview. Checks:
  *  - property exists, is active, and is COLIVING,
- *  - every roomId belongs to that property and is AVAILABLE,
- *  - no room is blocked by an external (Airbnb/OTA) reservation for the range,
+ *  - every roomId belongs to that property and is not MAINTENANCE/INACTIVE
+ *    (ROOM_UNBOOKABLE_STATUSES) — OCCUPIED does not block a future range,
+ *  - no room is blocked by an external (Airbnb/OTA) reservation or a manual
+ *    admin block for the range,
  *  - the term is ≤ 90 days,
  *  - the schedule generates cleanly.
  */
@@ -90,26 +93,36 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     if (!room || room.propertyId !== property.id) {
       throw new LeaseError("One of the selected rooms was not found in this property", 404);
     }
-    if (room.status !== "AVAILABLE") {
+    if ((ROOM_UNBOOKABLE_STATUSES as readonly string[]).includes(room.status)) {
       throw new LeaseError(`Room ${room.name} is no longer available`, 409);
     }
-    // External (Airbnb/OTA) block guard — EXTERNAL BLOCKS ONLY, never lease
-    // overlaps. A room synced-blocked on Airbnb for these dates must not be
-    // quotable/bookable, or the guest can price+proceed on top of an OTA
-    // reservation → double-booking. We deliberately do NOT check lease overlaps
+    // External (Airbnb/OTA) + manual admin block guard — these sources ONLY,
+    // never lease overlaps. A room synced-blocked on Airbnb, or manually
+    // blocked (off-platform booking / maintenance / owner use), for these
+    // dates must not be quotable/bookable, or the guest can price+proceed on
+    // top of it → double-booking. We deliberately do NOT check lease overlaps
     // here (that stays at createLease() time) so a stale DRAFT or the guest's
-    // own in-progress lease never false-blocks the quote. Overlap math matches
-    // isRoomAvailableForRange's room-external rule: the stored DTEND is
-    // checkout-morning-exclusive, so a selection abutting b.endDate is free.
+    // own in-progress lease never false-blocks the quote. Both sources store a
+    // half-open range (endDate is checkout-morning-exclusive), matching
+    // isRoomAvailableForRange; the lease request's own endDate is INCLUSIVE, so
+    // it is passed to overlapsRange as `endExclusive: false`.
+    const requestedRange = { start: input.startDate, end: input.endDate, endExclusive: false };
     const blocks = await storage.getExternalBlocksForRoom(room.id);
-    const conflict = blocks.some(
-      (b) => input.startDate < b.endDate && b.startDate <= input.endDate,
+    const externalConflict = blocks.some((b) =>
+      overlapsRange(requestedRange, { start: b.startDate, end: b.endDate, endExclusive: true }),
     );
-    if (conflict) {
+    if (externalConflict) {
       throw new LeaseError(
         `${room.name} is booked for those dates on Airbnb. Pick different dates.`,
         409,
       );
+    }
+    const manualBlocks = await storage.getManualBlocksForRoom(room.id);
+    const manualConflict = manualBlocks.some((b) =>
+      overlapsRange(requestedRange, { start: b.startDate, end: b.endDate, endExclusive: true }),
+    );
+    if (manualConflict) {
+      throw new LeaseError(`${room.name} isn't available for those dates. Pick different dates.`, 409);
     }
     rooms.push(room);
   }

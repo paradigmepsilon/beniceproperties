@@ -17,6 +17,7 @@ import { differenceInCalendarDays, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
+import { todayIso } from "@shared/dates";
 import { apiRequest, getQueryFn } from "@/lib/queryClient";
 import type {
   LeaseQuoteResponse,
@@ -71,7 +72,7 @@ export default function LeaseBooking() {
   // One or more roomId params (?roomId=a&roomId=b).
   const roomIds = useMemo(() => params.getAll("roomId").filter(Boolean), [params]);
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   // Seed the term from a range carried in from the property/room page
   // (?checkIn=&checkOut=) when it's a valid forward, not-past range; otherwise
   // start at today with an open end, as before.
@@ -106,7 +107,7 @@ export default function LeaseBooking() {
     [availabilityQueries],
   );
   const disabledDays = useMemo(
-    () => busyToDisabledMatchers(busy, { minDate: today, halfOpen: false }),
+    () => busyToDisabledMatchers(busy, { minDate: today, halfOpen: true }),
     [busy, today],
   );
   // Until EVERY room's availability has loaded, the busy set is unknown (each
@@ -119,8 +120,8 @@ export default function LeaseBooking() {
   const spansBooked =
     availReady &&
     Boolean(startDate && endDate && endDate >= startDate) &&
-    rangeHitsBusy(startDate, endDate, busy, false);
-  const datesValid = datesBookable(availReady, startDate, endDate, busy, false);
+    rangeHitsBusy(startDate, endDate, busy, true);
+  const datesValid = datesBookable(availReady, startDate, endDate, busy, true);
 
   // Term length (NIGHTS) decides the path — mirrors the server's shared gate:
   //   < 7 nights  → below the co-living minimum (not offered)

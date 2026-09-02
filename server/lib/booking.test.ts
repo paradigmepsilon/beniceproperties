@@ -15,6 +15,8 @@ const mockStorage = vi.hoisted(() => ({
   isRoomAvailableForRange: vi.fn(),
   getBookings: vi.fn(async () => []),
   getExternalBlocksForProperty: vi.fn(async () => []),
+  getManualBlocksForRoom: vi.fn(async () => []),
+  getManualBlocksForProperty: vi.fn(async () => []),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
@@ -22,6 +24,7 @@ import {
   buildQuote,
   strBaseTotal,
   resolveBooking,
+  strHasConflict,
   BookingError,
   type ResolvedBooking,
 } from "./booking";
@@ -218,6 +221,24 @@ describe("resolveBooking — co-living term gate (7–28 = booking, else rejecte
     await expect(resolveBooking({ propertyId: "p2", roomId: "r1" })).rejects.toThrow(/dates/i);
   });
 
+  it("accepts a room with status OCCUPIED when the requested dates are free", async () => {
+    mockStorage.getRoom.mockResolvedValue({ ...ROOM, status: "OCCUPIED" } as never);
+    const r = await resolveBooking({
+      propertyId: "p2",
+      roomId: "r1",
+      checkIn: "2026-07-01",
+      checkOut: "2026-07-11",
+    });
+    expect(r.model).toBe("COLIVING");
+  });
+
+  it("rejects a room with status MAINTENANCE regardless of date availability", async () => {
+    mockStorage.getRoom.mockResolvedValue({ ...ROOM, status: "MAINTENANCE" } as never);
+    await expect(
+      resolveBooking({ propertyId: "p2", roomId: "r1", checkIn: "2026-07-01", checkOut: "2026-07-11" }),
+    ).rejects.toThrow(/no longer available/i);
+  });
+
   it("reads the per-room cleaning fee onto the resolved short stay", async () => {
     mockStorage.getRoom.mockResolvedValue({ ...ROOM, cleaningFee: "75" } as never);
     const r = await resolveBooking({
@@ -227,6 +248,33 @@ describe("resolveBooking — co-living term gate (7–28 = booking, else rejecte
       checkOut: "2026-07-11",
     });
     expect(r.cleaningFee).toBe(75);
+  });
+});
+
+describe("strHasConflict — direct bookings, external blocks, manual blocks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStorage.getBookings.mockResolvedValue([]);
+    mockStorage.getExternalBlocksForProperty.mockResolvedValue([]);
+    mockStorage.getManualBlocksForProperty.mockResolvedValue([]);
+  });
+
+  it("returns false when no source has a conflict", async () => {
+    await expect(strHasConflict("p1", "2026-07-01", "2026-07-05")).resolves.toBe(false);
+  });
+
+  it("returns true when only a manual block overlaps", async () => {
+    mockStorage.getManualBlocksForProperty.mockResolvedValue([
+      { startDate: "2026-07-03", endDate: "2026-07-08" }, // half-open, overlaps requested [07-01,07-05)
+    ]);
+    await expect(strHasConflict("p1", "2026-07-01", "2026-07-05")).resolves.toBe(true);
+  });
+
+  it("a manual block does not conflict when it starts on the requested checkout day", async () => {
+    mockStorage.getManualBlocksForProperty.mockResolvedValue([
+      { startDate: "2026-07-05", endDate: "2026-07-08" },
+    ]);
+    await expect(strHasConflict("p1", "2026-07-01", "2026-07-05")).resolves.toBe(false);
   });
 });
 

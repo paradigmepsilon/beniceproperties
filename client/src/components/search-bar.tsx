@@ -4,6 +4,7 @@
 // ride along on card links so the booking flow can prefill them.
 
 import { Search } from "lucide-react";
+import { todayIso } from "@shared/dates";
 
 export interface SearchValue {
   city: string; // "ALL" or a cityOf() value
@@ -19,7 +20,7 @@ interface Props {
 }
 
 export function SearchBar({ cities, value, onChange, onSearch }: Props) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   const set = (patch: Partial<SearchValue>) => onChange({ ...value, ...patch });
 
   return (

@@ -9,6 +9,7 @@ import { useParams, useLocation, useSearch, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { ArrowLeft } from "lucide-react";
+import { todayIso } from "@shared/dates";
 import type { Property, Room } from "@shared/schema";
 import { COLIVING_MIN_DAYS, requiresLease, isDirectCoLivingStay } from "@shared/schema";
 import type { QuoteResponse, LeaseQuoteResponse } from "@shared/api-types";
@@ -52,7 +53,7 @@ export default function RoomDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const searchStr = useSearch();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
 
   const { data, isLoading } = useQuery<RoomResponse>({ queryKey: ["/api/rooms", id!] });
   // Busy ranges (room-blocking leases ∪ Airbnb iCal blocks). `availLoading` gates
@@ -119,24 +120,25 @@ export default function RoomDetail() {
     return () => window.removeEventListener("scroll", onScroll);
   }, []);
 
-  // Co-living disables the lease's end date too (a lease occupies it), so every
-  // availability call here is inclusive: halfOpen=false.
+  // The server normalizes every busy range (including a lease's inclusive
+  // endDate) to half-open before it reaches the client, so every call here
+  // passes halfOpen: true — the checkout/end day of a busy range stays free.
   const busy = avail?.busy ?? [];
   const disabledDays = busyToDisabledMatchers(busy, {
     minDate: avail?.minDate ?? today,
-    halfOpen: false,
+    halfOpen: true,
   });
   // Availability must be LOADED before any range is treated as bookable — until
   // then the busy set is unknown (defaults to []) and a booked range would look
   // free on first paint. datesBookable hard-returns false while !availReady.
   const availReady = !availLoading && !!avail;
-  const datesValid = datesBookable(availReady, startDate, endDate, busy, false);
+  const datesValid = datesBookable(availReady, startDate, endDate, busy, true);
   const spansBooked =
     availReady &&
     !!startDate &&
     !!endDate &&
     endDate >= startDate &&
-    rangeHitsBusy(startDate, endDate, busy, false);
+    rangeHitsBusy(startDate, endDate, busy, true);
 
   // Term length (NIGHTS) decides the path — mirrors the server's shared gate and
   // the lease-booking page: <7 below minimum, 7–28 short direct booking, >28 lease.

@@ -25,6 +25,14 @@ describe("busyToDisabledMatchers", () => {
     const m = busyToDisabledMatchers(busy, { minDate: "2026-07-03", halfOpen: false });
     expect(m[1]).toEqual({ from: parseISO("2026-08-10"), to: parseISO("2026-08-14") });
   });
+
+  it("half-open: the checkout day of a busy range stays selectable", () => {
+    const m = busyToDisabledMatchers([{ start: "2026-09-01", end: "2026-09-07", source: "direct" }], {
+      minDate: "2026-08-01",
+      halfOpen: true,
+    });
+    expect(m[1]).toEqual({ from: parseISO("2026-09-01"), to: parseISO("2026-09-06") });
+  });
 });
 
 describe("rangeHitsBusy", () => {

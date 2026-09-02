@@ -43,6 +43,7 @@ import {
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
 import { buildStrAvailability, buildRoomAvailability } from "./lib/availability";
+import { todayIso } from "@shared/dates";
 import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./lib/nextOpening";
 import {
   buildStrChargeMetadata,
@@ -510,7 +511,7 @@ export async function registerRoutes(app: Express): Promise<void> {
 
   app.get("/api/properties", async (req, res, next) => {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayIso();
       // Optional date-aware search. When BOTH checkIn+checkOut are present, valid,
       // forward, and not in the past, the grid filters + re-prices for that range
       // (STR: no direct/Airbnb conflict; COLIVING: from-price = cheapest room free
@@ -621,7 +622,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       // valid forward, not-past range is supplied, each room reports whether it's
       // actually bookable for THOSE dates so the room cards can grey out an
       // Airbnb/lease-blocked room even though its manual status is AVAILABLE.
-      const today = new Date().toISOString().slice(0, 10);
+      const today = todayIso();
       const ISO = /^\d{4}-\d{2}-\d{2}$/;
       const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
       const co = typeof req.query.checkOut === "string" ? req.query.checkOut : "";
@@ -679,7 +680,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       // Whole-property STR calendar is meaningless for a co-living parent (rooms
       // are booked individually) — return an empty busy set rather than error.
       if (property.type !== "STR") {
-        return res.json({ busy: [], minDate: new Date().toISOString().slice(0, 10) });
+        return res.json({ busy: [], minDate: todayIso() });
       }
       res.json(await buildStrAvailability(property.id));
     } catch (err) {

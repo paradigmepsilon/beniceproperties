@@ -24,9 +24,11 @@ import {
   COLIVING_MIN_DAYS,
   isDirectCoLivingStay,
   requiresLease,
+  ROOM_UNBOOKABLE_STATUSES,
   type Property,
   type Room,
 } from "@shared/schema";
+import { overlapsRange } from "./ranges";
 
 // Human-friendly booking reference, e.g. "BNP-7QK4-2F9X". Used in CashApp/Zelle
 // memos and guest lookup. Avoids ambiguous chars (no 0/O/1/I).
@@ -147,7 +149,17 @@ export async function strHasConflict(
   //     (room_id IS NULL). Airbnb DTEND is exclusive, so the same half-open
   //     overlap is correct.
   const blocks = await storage.getExternalBlocksForProperty(propertyId);
-  return blocks.some((b) => overlaps(b.startDate, b.endDate));
+  if (blocks.some((b) => overlaps(b.startDate, b.endDate))) return true;
+
+  // (3) Manual admin blocks (off-platform booking, maintenance, owner use) for
+  //     this property. Stored half-open, like external blocks.
+  const manualBlocks = await storage.getManualBlocksForProperty(propertyId);
+  return manualBlocks.some((b) =>
+    overlapsRange(
+      { start: checkIn, end: checkOut, endExclusive: true },
+      { start: b.startDate, end: b.endDate, endExclusive: true },
+    ),
+  );
 }
 
 export interface ResolvedBooking {
@@ -193,7 +205,7 @@ export async function resolveBooking(input: {
     if (!room || room.propertyId !== property.id) {
       throw new BookingError("Room not found", 404);
     }
-    if (room.status !== "AVAILABLE") {
+    if ((ROOM_UNBOOKABLE_STATUSES as readonly string[]).includes(room.status)) {
       throw new BookingError("That room is no longer available", 409);
     }
     if (!input.checkIn || !input.checkOut) {

@@ -42,6 +42,15 @@ import { z } from "zod";
 // the exclusion structurally keeps it out of shared/pricing.ts and /api/quote.
 export const PROPERTY_TYPES = ["STR", "COLIVING", "LTR"] as const;
 export const ROOM_STATUSES = ["AVAILABLE", "OCCUPIED", "HOLD"] as const;
+// Statuses that keep a room OFF the market regardless of date availability
+// (manual admin action, not date-driven occupancy). Used by the booking/lease
+// gates instead of `room.status !== "AVAILABLE"`, because "OCCUPIED" no longer
+// blocks FUTURE dates on its own — occupancy is derived from date overlaps
+// (bookings/leases/external/manual blocks), so a currently-occupied room must
+// still be bookable for a later, actually-free range. A room column is plain
+// text (see `rooms.status` below), so these values need not be members of
+// ROOM_STATUSES to be checked against.
+export const ROOM_UNBOOKABLE_STATUSES = ["MAINTENANCE", "INACTIVE"] as const;
 export const BOOKING_MODELS = ["STR", "COLIVING"] as const;
 export const BOOKING_STATUSES = [
   "PENDING_PAYMENT",

@@ -12,6 +12,7 @@
 //               into filtering without a real availability source.
 
 import { Search } from "lucide-react";
+import { todayIso } from "@shared/dates";
 
 export interface ColivingSearchValue {
   city: string; // "ALL" or a cityOf() value
@@ -29,7 +30,7 @@ interface Props {
 }
 
 export function ColivingSearchBar({ cities, budgets, value, onChange, onSearch }: Props) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   const set = (patch: Partial<ColivingSearchValue>) => onChange({ ...value, ...patch });
 
   return (

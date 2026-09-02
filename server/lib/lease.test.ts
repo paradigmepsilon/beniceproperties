@@ -13,6 +13,7 @@ const mockStorage = vi.hoisted(() => ({
   getRoom: vi.fn(),
   isRoomAvailableForRange: vi.fn(),
   getExternalBlocksForRoom: vi.fn(),
+  getManualBlocksForRoom: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
@@ -32,8 +33,9 @@ function room(id: string, name: string, weeklyRent: string, status = "AVAILABLE"
 beforeEach(() => {
   vi.clearAllMocks();
   mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
-  // Default: no external (Airbnb/OTA) blocks. Individual tests override.
+  // Default: no external (Airbnb/OTA) or manual blocks. Individual tests override.
   mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
+  mockStorage.getManualBlocksForRoom.mockResolvedValue([]);
 });
 
 /** An external (Airbnb) block. `end` is the exclusive DTEND (checkout morning). */
@@ -125,12 +127,30 @@ describe("buildLeaseQuote — guards", () => {
     ).rejects.toBeInstanceOf(LeaseError);
   });
 
-  it("rejects an unavailable room", async () => {
+  it("rejects a room under MAINTENANCE or INACTIVE (ROOM_UNBOOKABLE_STATUSES)", async () => {
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
-    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00", "OCCUPIED"));
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00", "MAINTENANCE"));
     await expect(
       buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "WEEKLY" }),
     ).rejects.toThrow(/no longer available/i);
+
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00", "INACTIVE"));
+    await expect(
+      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14", cadence: "WEEKLY" }),
+    ).rejects.toThrow(/no longer available/i);
+  });
+
+  it("does NOT reject a room with status OCCUPIED — occupancy is derived from date overlaps, not the status flag", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00", "OCCUPIED"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1",
+      roomIds: ["r1"],
+      startDate: "2026-07-01",
+      endDate: "2026-07-14",
+      cadence: "WEEKLY",
+    });
+    expect(q.schedule.length).toBeGreaterThan(0);
   });
 
   it("still prices a stay even if the room range looks taken (overlap is a creation-time guard, not a quote-time one)", async () => {
@@ -232,6 +252,28 @@ describe("buildLeaseQuote — external (Airbnb) block guard", () => {
     mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
     const q = await buildLeaseQuote({
       propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-14",
+    });
+    expect(q.schedule.length).toBeGreaterThan(0);
+  });
+
+  it("rejects a range overlapping this room's manual block (409, non-Airbnb message)", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    mockStorage.getManualBlocksForRoom.mockResolvedValue([extBlock("2026-07-04", "2026-07-18")]);
+    await expect(
+      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-07", endDate: "2026-07-09" }),
+    ).rejects.toThrow(/isn't available for those dates/i);
+    await expect(
+      buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-07", endDate: "2026-07-09" }),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("allows a stay that STARTS on a manual block's exclusive end (same-day turnover is free)", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+    mockStorage.getManualBlocksForRoom.mockResolvedValue([extBlock("2026-07-11", "2026-07-18")]);
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-18", endDate: "2026-07-25",
     });
     expect(q.schedule.length).toBeGreaterThan(0);
   });

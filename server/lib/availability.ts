@@ -1,10 +1,11 @@
 // server/lib/availability.ts
 // =============================================================================
 // Public availability for the guest calendar. Merges a listing's BUSY ranges
-// from BNP-owned data (direct STR bookings / room-blocking leases) with the
-// external iCal blocks synced from its Airbnb calendar into one normalized list
-// the client uses to disable dates. See GET /api/properties/:id/availability and
-// GET /api/rooms/:id/availability.
+// from BNP-owned data (direct STR bookings / room-blocking leases), the
+// external iCal blocks synced from its Airbnb calendar, and manual admin
+// blocks (off-platform bookings, maintenance holds, owner use) into one
+// normalized list the client uses to disable dates. See
+// GET /api/properties/:id/availability and GET /api/rooms/:id/availability.
 //
 // WIRE CONTRACT (AvailabilityResponse.busy): every range's `end` is the FIRST
 // FREE day (half-open), mirroring iCal DTEND. STR bookings and external blocks
@@ -16,10 +17,7 @@
 import { addDays, format, parseISO } from "date-fns";
 import { storage } from "../storage";
 import type { AvailabilityResponse, BusyRange } from "@shared/api-types";
-
-function todayIso(): string {
-  return format(new Date(), "yyyy-MM-dd");
-}
+import { todayIso } from "@shared/dates";
 
 /** Inclusive end date → exclusive (first-free) end date. */
 function exclusiveEnd(inclusiveEnd: string): string {
@@ -32,7 +30,8 @@ function sortByStart(ranges: BusyRange[]): BusyRange[] {
 
 /**
  * STR whole-property availability: non-cancelled direct bookings (half-open)
- * ∪ external iCal blocks (room_id IS NULL). Only ranges ending today or later.
+ * ∪ external iCal blocks (room_id IS NULL) ∪ manual property-level blocks.
+ * Only ranges ending today or later.
  */
 export async function buildStrAvailability(propertyId: string): Promise<AvailabilityResponse> {
   const today = todayIso();
@@ -47,18 +46,25 @@ export async function buildStrAvailability(propertyId: string): Promise<Availabi
     .filter((b) => b.endDate >= today)
     .map((b) => ({ start: b.startDate, end: b.endDate, source: "external" as const }));
 
-  return { busy: sortByStart([...directRanges, ...externalRanges]), minDate: today };
+  const manualBlocks = await storage.getManualBlocksForProperty(propertyId);
+  const manualRanges: BusyRange[] = manualBlocks
+    .filter((b) => b.endDate >= today)
+    .map((b) => ({ start: b.startDate, end: b.endDate, source: "manual" as const }));
+
+  return { busy: sortByStart([...directRanges, ...externalRanges, ...manualRanges]), minDate: today };
 }
 
 /**
  * Co-living room availability: room-blocking leases (inclusive end → normalized
  * to exclusive) ∪ non-cancelled direct co-living bookings (half-open) ∪ external
- * iCal blocks for the room. Only ranges ending today or later.
+ * iCal blocks for the room ∪ manual room-level blocks. Only ranges ending today
+ * or later.
  *
- * The three sources here MUST mirror storage.isRoomAvailableForRange (leases +
- * co-living direct bookings + external blocks): if the calendar omits a source
- * the quote path checks, a guest can pick a day the calendar shows free and then
- * get a 409 at quote time. The direct-booking source below closes that gap.
+ * These sources here MUST mirror storage.isRoomAvailableForRange (leases +
+ * co-living direct bookings + external blocks + manual blocks): if the calendar
+ * omits a source the quote path checks, a guest can pick a day the calendar
+ * shows free and then get a 409 at quote time. The direct-booking source below
+ * closes that gap.
  */
 export async function buildRoomAvailability(roomId: string): Promise<AvailabilityResponse> {
   const today = todayIso();
@@ -81,5 +87,13 @@ export async function buildRoomAvailability(roomId: string): Promise<Availabilit
     .filter((b) => b.endDate >= today)
     .map((b) => ({ start: b.startDate, end: b.endDate, source: "external" as const }));
 
-  return { busy: sortByStart([...leaseRanges, ...bookingRanges, ...externalRanges]), minDate: today };
+  const manualBlocks = await storage.getManualBlocksForRoom(roomId);
+  const manualRanges: BusyRange[] = manualBlocks
+    .filter((b) => b.endDate >= today)
+    .map((b) => ({ start: b.startDate, end: b.endDate, source: "manual" as const }));
+
+  return {
+    busy: sortByStart([...leaseRanges, ...bookingRanges, ...externalRanges, ...manualRanges]),
+    minDate: today,
+  };
 }

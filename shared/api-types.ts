@@ -53,11 +53,13 @@ export interface QuoteResponse {
 
 /**
  * A busy (unavailable) date range for a listing. `end` is the FIRST FREE day
- * (half-open) — mirrors iCal DTEND. The client converts each range into disabled
- * calendar days: STR disables [start, end) (checkout day selectable as a new
- * check-in); co-living rooms disable [start, end] inclusive (a lease occupies
- * its end date). `source` is for debugging/telemetry only — the client does not
- * branch on it.
+ * (half-open) — mirrors iCal DTEND. This holds for co-living too: a lease's
+ * stored `endDate` is inclusive, but the server normalizes it to exclusive
+ * (+1 day) before it reaches this wire type (see server/lib/availability.ts),
+ * so every range here is uniformly half-open. The client converts each range
+ * into disabled calendar days [start, end) — the checkout/end day stays
+ * selectable as a new check-in. `source` is for debugging/telemetry only —
+ * the client does not branch on it.
  */
 export interface BusyRange {
   start: string; // YYYY-MM-DD

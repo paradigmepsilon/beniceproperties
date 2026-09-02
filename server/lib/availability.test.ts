@@ -12,15 +12,16 @@ const store = {
   roomBlocks: [] as any[],
 };
 
-vi.mock("../storage", () => ({
-  storage: {
-    getStrBookingsForProperty: vi.fn(async () => store.strBookings),
-    getExternalBlocksForProperty: vi.fn(async () => store.propertyBlocks),
-    getRoomBlockingLeasesForRoom: vi.fn(async () => store.leases),
-    getColivingBookingsForRoom: vi.fn(async () => store.roomBookings),
-    getExternalBlocksForRoom: vi.fn(async () => store.roomBlocks),
-  },
+const mockStorage = vi.hoisted(() => ({
+  getStrBookingsForProperty: vi.fn(),
+  getExternalBlocksForProperty: vi.fn(),
+  getRoomBlockingLeasesForRoom: vi.fn(),
+  getColivingBookingsForRoom: vi.fn(),
+  getExternalBlocksForRoom: vi.fn(),
+  getManualBlocksForRoom: vi.fn(),
+  getManualBlocksForProperty: vi.fn(),
 }));
+vi.mock("../storage", () => ({ storage: mockStorage }));
 
 import { buildStrAvailability, buildRoomAvailability } from "./availability";
 
@@ -30,6 +31,13 @@ beforeEach(() => {
   store.leases = [];
   store.roomBookings = [];
   store.roomBlocks = [];
+  mockStorage.getStrBookingsForProperty.mockImplementation(async () => store.strBookings);
+  mockStorage.getExternalBlocksForProperty.mockImplementation(async () => store.propertyBlocks);
+  mockStorage.getRoomBlockingLeasesForRoom.mockImplementation(async () => store.leases);
+  mockStorage.getColivingBookingsForRoom.mockImplementation(async () => store.roomBookings);
+  mockStorage.getExternalBlocksForRoom.mockImplementation(async () => store.roomBlocks);
+  mockStorage.getManualBlocksForRoom.mockResolvedValue([]);
+  mockStorage.getManualBlocksForProperty.mockResolvedValue([]);
 });
 
 const FUTURE_A = "2999-08-10";
@@ -58,6 +66,15 @@ describe("buildStrAvailability", () => {
     const r = await buildStrAvailability("p1");
     expect(r.busy).toHaveLength(0);
   });
+
+  it("includes manual blocks as busy ranges (source manual), dropping past ones", async () => {
+    mockStorage.getManualBlocksForProperty.mockResolvedValue([
+      { startDate: FUTURE_A, endDate: FUTURE_B },
+      { startDate: "2000-01-01", endDate: "2000-01-03" }, // past → drop
+    ]);
+    const r = await buildStrAvailability("p1");
+    expect(r.busy).toEqual([{ start: FUTURE_A, end: FUTURE_B, source: "manual" }]);
+  });
 });
 
 describe("buildRoomAvailability", () => {
@@ -84,5 +101,20 @@ describe("buildRoomAvailability", () => {
     ];
     const r = await buildRoomAvailability("room1");
     expect(r.busy).toHaveLength(0);
+  });
+
+  it("includes manual blocks as busy ranges (source manual)", async () => {
+    mockStorage.getRoomBlockingLeasesForRoom.mockResolvedValue([]);
+    mockStorage.getColivingBookingsForRoom.mockResolvedValue([]);
+    mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
+    mockStorage.getManualBlocksForRoom.mockResolvedValue([{ startDate: "2026-12-01", endDate: "2026-12-05" }]);
+    const res = await buildRoomAvailability("room-1");
+    expect(res.busy).toEqual([{ start: "2026-12-01", end: "2026-12-05", source: "manual" }]);
+  });
+
+  it("drops a past manual block", async () => {
+    mockStorage.getManualBlocksForRoom.mockResolvedValue([{ startDate: "2000-01-01", endDate: "2000-01-03" }]);
+    const res = await buildRoomAvailability("room-1");
+    expect(res.busy).toHaveLength(0);
   });
 });

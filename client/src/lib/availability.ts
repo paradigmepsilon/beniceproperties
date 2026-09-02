@@ -1,10 +1,13 @@
 // client/src/lib/availability.ts
 // Pure helpers turning the server's busy ranges (AvailabilityResponse) into
 // react-day-picker `disabled` matchers, plus a client-side range guard. The
-// server sends every range half-open (`end` = first free day). STR disables
-// [start, end) (checkout day stays selectable as a new check-in); co-living
-// rooms disable [start, end] inclusive (a lease occupies its end date) — the
-// `halfOpen` flag switches between the two.
+// server sends every range half-open (`end` = first free day) — including
+// co-living lease ranges, which the server normalizes from their INCLUSIVE
+// stored endDate to exclusive before they ever reach the client (see
+// server/lib/availability.ts). Every current caller (STR and co-living alike)
+// passes `halfOpen: true`, so the checkout/end day of any busy range stays
+// selectable as a new check-in. The `halfOpen` flag itself still supports the
+// inclusive mode (`false`) for any range that genuinely is inclusive-end.
 
 import { parseISO, subDays } from "date-fns";
 import type { Matcher } from "react-day-picker";
@@ -12,8 +15,9 @@ import type { BusyRange } from "@shared/api-types";
 
 /**
  * Build DayPicker `disabled` matchers: a floor before `minDate`, plus one
- * range matcher per busy span. When `halfOpen` (STR), the last disabled day is
- * `end - 1` (checkout day free); otherwise (co-living) `end` itself is disabled.
+ * range matcher per busy span. When `halfOpen` (every current caller), the
+ * last disabled day is `end - 1` (checkout day free); when `false`, `end`
+ * itself is disabled (for a genuinely inclusive-end range).
  */
 export function busyToDisabledMatchers(
   busy: BusyRange[],
@@ -35,10 +39,11 @@ export function busyToDisabledMatchers(
  * days, but react-day-picker can select a range spanning them). All comparisons
  * are on ISO `YYYY-MM-DD` strings (lexicographic = chronological).
  *
- * STR busy ranges are half-open [start, end); a stay [checkIn, checkOut) hits it
- * when checkIn < end && start < checkOut. For co-living (inclusive lease end),
- * the caller passes `halfOpen=false` and the range's inclusive end is treated as
- * occupied: checkIn <= end && start < checkOut.
+ * Busy ranges from the server are half-open [start, end); a stay
+ * [checkIn, checkOut) hits one when checkIn < end && start < checkOut — every
+ * current caller passes `halfOpen=true`. `halfOpen=false` treats `end` as
+ * occupied instead (checkIn <= end && start < checkOut), for a genuinely
+ * inclusive-end range.
  */
 export function rangeHitsBusy(
   checkIn: string,

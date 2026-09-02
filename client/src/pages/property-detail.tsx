@@ -7,6 +7,7 @@ import { useState } from "react";
 import { Link, useParams, useLocation, useSearch } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
+import { todayIso } from "@shared/dates";
 import type { Property, RoomWithAvailability } from "@shared/schema";
 import type { QuoteResponse } from "@shared/api-types";
 import { apiRequest } from "@/lib/queryClient";
@@ -34,7 +35,7 @@ export default function PropertyDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const searchStr = useSearch();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayIso();
   // Seed dates from the home hero search (?checkIn=&checkOut=) when they're
   // still sensible; otherwise start empty like a direct visit.
   const [checkIn, setCheckIn] = useState(() => {
