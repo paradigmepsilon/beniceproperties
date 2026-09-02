@@ -216,6 +216,7 @@ export async function resolveBooking(input: {
       roomId: room.id,
       startDate: input.checkIn,
       endDate: input.checkOut,
+      endExclusive: true,
     });
     if (!free) throw new BookingError("Those dates are not available for this room", 409);
 

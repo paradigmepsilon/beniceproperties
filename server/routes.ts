@@ -554,6 +554,7 @@ export async function registerRoutes(app: Express): Promise<void> {
                     roomId: r.id,
                     startDate: dated.checkIn,
                     endDate: dated.checkOut,
+                    endExclusive: true,
                   }),
                 ),
               );
@@ -644,6 +645,7 @@ export async function registerRoutes(app: Express): Promise<void> {
                   roomId: r.id,
                   startDate: dated.checkIn,
                   endDate: dated.checkOut,
+                  endExclusive: true,
                 })),
             })),
           )

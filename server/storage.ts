@@ -9,8 +9,9 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, desc, eq, gte, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, lte, ne, sql } from "drizzle-orm";
 import { db } from "./db";
+import { overlapsRange } from "./lib/ranges";
 import {
   properties,
   rooms,
@@ -36,6 +37,8 @@ import {
   newsletterSubscribers,
   ltrInquiries,
   partnerInquiries,
+  manualBlocks,
+  messageLog,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -82,6 +85,10 @@ import {
   type InsertLtrInquiry,
   type PartnerInquiry,
   type InsertPartnerInquiry,
+  type ManualBlock,
+  type InsertManualBlock,
+  type MessageLogRow,
+  type InsertMessageLog,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 
@@ -148,6 +155,16 @@ export interface IStorage {
   getStrBookingsEndingOnOrAfter(propertyIds: string[], date: string): Promise<Booking[]>;
   createBooking(data: InsertBooking): Promise<Booking>;
   updateBooking(id: string, updates: Partial<InsertBooking>): Promise<Booking | undefined>;
+  /**
+   * Bookings joined to their guest/property/room for admin/UO listing views.
+   * Default statuses exclude CANCELLED and COMPLETED. `from`, when given,
+   * keeps only bookings that haven't fully checked out (`checkOut >= from`
+   * OR `checkOut IS NULL` for open-ended stays).
+   */
+  getBookingsWithGuest(opts?: {
+    statuses?: string[];
+    from?: string;
+  }): Promise<Array<Booking & { guest: Guest; property: Property; room: Room | null }>>;
 
   // --- Payments ---
   getPayment(id: string): Promise<Payment | undefined>;
@@ -208,10 +225,21 @@ export interface IStorage {
 
   // --- Guest messages (threaded portal questions / requests) ---
   getMessageThreadsByLease(leaseId: string): Promise<GuestMessage[]>; // roots only
+  getMessageThreadsByBooking(bookingId: string): Promise<GuestMessage[]>; // roots only
+  getMessageThreadRoots(opts?: { status?: string }): Promise<GuestMessage[]>; // every thread, roots only
   getMessagesByThread(threadId: string): Promise<GuestMessage[]>; // all in a thread
   getMessage(id: string): Promise<GuestMessage | undefined>;
   createMessage(data: InsertGuestMessage): Promise<GuestMessage>;
   updateMessage(id: string, updates: Partial<InsertGuestMessage>): Promise<GuestMessage | undefined>;
+
+  // --- Message log (append-only audit trail of every send/receive, any channel) ---
+  createMessageLog(data: InsertMessageLog): Promise<MessageLogRow>;
+  getMessageLog(opts: {
+    bookingId?: string;
+    leaseId?: string;
+    guestId?: string;
+    limit?: number;
+  }): Promise<MessageLogRow[]>;
 
   // --- Lifecycle events (idempotent send log) ---
   hasLifecycleEvent(leaseId: string, eventType: string, scheduleSeq: number | null): Promise<boolean>;
@@ -254,20 +282,40 @@ export interface IStorage {
 
   /**
    * Is `roomId` free for [startDate, endDate]? False if any room-blocking lease
-   * (DRAFT, PENDING_SIGNATURE, PENDING_FIRST_PAYMENT, or ACTIVE) OR any
-   * non-cancelled short co-living booking for that room overlaps the range, or an
-   * external iCal block does. `excludeLeaseId` lets a lease ignore itself when
+   * (DRAFT, PENDING_SIGNATURE, PENDING_FIRST_PAYMENT, or ACTIVE), any
+   * non-cancelled/non-CONFLICT short co-living booking, any external iCal
+   * block, or any manual block for that room overlaps the range. `startDate`/
+   * `endDate` are normalized against `endExclusive` via `overlapsRange`
+   * (server/lib/ranges.ts) — pass `true` for a half-open range (a direct
+   * booking's checkOut) or `false` for an inclusive range (a lease's endDate).
+   * `excludeLeaseId`/`excludeBookingId` let a lease/booking ignore itself when
    * re-checking.
    */
   isRoomAvailableForRange(args: {
     roomId: string;
     startDate: string;
     endDate: string;
+    endExclusive: boolean;
     excludeLeaseId?: string;
+    excludeBookingId?: string;
   }): Promise<boolean>;
 
-  /** Non-cancelled co-living direct bookings for a room (short-stay overlap guard). */
+  /** Non-cancelled, non-CONFLICT co-living direct bookings for a room (short-stay overlap guard). CONFLICT bookings are paid but never block dates. */
   getColivingBookingsForRoom(roomId: string): Promise<Booking[]>;
+
+  /**
+   * Room ids occupied on `dateIso` by a live booking (`checkIn <= d < checkOut`,
+   * non-CANCELLED/CONFLICT), a room-blocking lease (`startDate <= d <= endDate`),
+   * an external block, or a manual block. Used for admin/UO occupancy views.
+   */
+  getOccupiedRoomIdsOn(dateIso: string): Promise<Set<string>>;
+
+  // --- Manual blocks (admin/UO off-platform holds; room_id null = whole property) ---
+  getManualBlocksForRoom(roomId: string): Promise<ManualBlock[]>;
+  getManualBlocksForProperty(propertyId: string): Promise<ManualBlock[]>;
+  getManualBlocks(opts?: { propertyId?: string; roomId?: string; from?: string }): Promise<ManualBlock[]>;
+  createManualBlock(data: InsertManualBlock): Promise<ManualBlock>;
+  deleteManualBlock(id: string): Promise<void>;
 
   // --- Airbnb iCal listings + synced blocks (URL lives on properties/rooms) ---
   /** Active listings with a non-null airbnb_ical_url — the sync work-list.
@@ -487,6 +535,33 @@ class Storage implements IStorage {
     return row;
   }
 
+  async getBookingsWithGuest(opts?: {
+    statuses?: string[];
+    from?: string;
+  }): Promise<Array<Booking & { guest: Guest; property: Property; room: Room | null }>> {
+    const statuses = opts?.statuses ?? ["CONFIRMED", "ACTIVE", "CONFLICT", "PENDING_PAYMENT"];
+    const filters = [inArray(bookings.status, statuses)];
+    if (opts?.from) {
+      filters.push(sql`(${bookings.checkOut} >= ${opts.from} OR ${bookings.checkOut} IS NULL)`);
+    }
+    const rows = await db
+      .select()
+      .from(bookings)
+      .leftJoin(guests, eq(bookings.guestId, guests.id))
+      .leftJoin(properties, eq(bookings.propertyId, properties.id))
+      .leftJoin(rooms, eq(bookings.roomId, rooms.id))
+      .where(and(...filters))
+      .orderBy(desc(bookings.createdAt));
+    return rows
+      .filter((r) => r.guests !== null && r.properties !== null)
+      .map((r) => ({
+        ...r.bookings,
+        guest: r.guests as Guest,
+        property: r.properties as Property,
+        room: r.rooms,
+      }));
+  }
+
   // --- Payments ---
   async getPayment(id: string): Promise<Payment | undefined> {
     const [row] = await db.select().from(payments).where(eq(payments.id, id));
@@ -665,6 +740,7 @@ class Storage implements IStorage {
         roomId: lr.roomId,
         startDate: args.lease.startDate,
         endDate: args.lease.endDate,
+        endExclusive: false,
       });
       if (!free) {
         throw new StorageError(
@@ -743,6 +819,27 @@ class Storage implements IStorage {
     return all.filter((m) => m.id === m.threadId);
   }
 
+  async getMessageThreadsByBooking(bookingId: string): Promise<GuestMessage[]> {
+    // Roots: where id === threadId. Fetch booking messages, filter to roots.
+    const all = await db
+      .select()
+      .from(guestMessages)
+      .where(eq(guestMessages.bookingId, bookingId))
+      .orderBy(desc(guestMessages.createdAt));
+    return all.filter((m) => m.id === m.threadId);
+  }
+
+  async getMessageThreadRoots(opts?: { status?: string }): Promise<GuestMessage[]> {
+    // Every thread's root row across all leases/bookings: id === threadId.
+    const filters = [sql`${guestMessages.threadId} = ${guestMessages.id}`];
+    if (opts?.status) filters.push(eq(guestMessages.status, opts.status));
+    return db
+      .select()
+      .from(guestMessages)
+      .where(and(...filters))
+      .orderBy(desc(guestMessages.createdAt));
+  }
+
   async getMessagesByThread(threadId: string): Promise<GuestMessage[]> {
     return db
       .select()
@@ -786,6 +883,27 @@ class Storage implements IStorage {
       .where(eq(guestMessages.id, id))
       .returning();
     return row;
+  }
+
+  // --- Message log ---
+  async createMessageLog(data: InsertMessageLog): Promise<MessageLogRow> {
+    const [row] = await db.insert(messageLog).values(data).returning();
+    return row;
+  }
+
+  async getMessageLog(opts: {
+    bookingId?: string;
+    leaseId?: string;
+    guestId?: string;
+    limit?: number;
+  }): Promise<MessageLogRow[]> {
+    const filters = [];
+    if (opts.bookingId) filters.push(eq(messageLog.bookingId, opts.bookingId));
+    if (opts.leaseId) filters.push(eq(messageLog.leaseId, opts.leaseId));
+    if (opts.guestId) filters.push(eq(messageLog.guestId, opts.guestId));
+    const q = db.select().from(messageLog).orderBy(desc(messageLog.createdAt));
+    const filtered = filters.length ? q.where(and(...filters)) : q;
+    return opts.limit ? filtered.limit(opts.limit) : filtered;
   }
 
   // --- Lifecycle events ---
@@ -999,37 +1117,56 @@ class Storage implements IStorage {
     roomId: string;
     startDate: string;
     endDate: string;
+    endExclusive: boolean;
     excludeLeaseId?: string;
+    excludeBookingId?: string;
   }): Promise<boolean> {
-    // (1) Room-blocking leases for this room. Inclusive overlap: a lease occupies
-    //     its end date, so start ≤ otherEnd && otherStart ≤ end.
-    const blocking = (await this.getRoomBlockingLeasesForRoom(args.roomId)).filter(
+    const want = { start: args.startDate, end: args.endDate, endExclusive: args.endExclusive };
+
+    // (1) Room-blocking leases for this room. Leases store an INCLUSIVE endDate.
+    const leases = (await this.getRoomBlockingLeasesForRoom(args.roomId)).filter(
       (l) => l.id !== args.excludeLeaseId,
     );
-    if (blocking.some((l) => args.startDate <= l.endDate && l.startDate <= args.endDate)) {
-      return false;
-    }
-
-    // (2) Short co-living direct bookings for this room. A booking's check_out is
-    //     the departure day (half-open), so overlap is start < otherCheckOut &&
-    //     otherCheckIn ≤ end — same-day turnover stays free. Open-ended rows
-    //     (legacy deposit bookings with null check_out) can't be range-checked and
-    //     are skipped; the short-stay path always writes a real check_out.
-    const roomBookings = await this.getColivingBookingsForRoom(args.roomId);
     if (
-      roomBookings.some(
-        (b) => b.checkOut !== null && args.startDate < b.checkOut && b.checkIn <= args.endDate,
+      leases.some((l) =>
+        overlapsRange(want, { start: l.startDate, end: l.endDate, endExclusive: false }),
       )
     ) {
       return false;
     }
 
-    // (3) External iCal blocks for this ROOM listing (Airbnb). Airbnb DTEND is
-    //     exclusive (checkout morning), so for a room lease that OCCUPIES its end
-    //     date we treat the block as [startDate, endDate) — overlap is
-    //     start < otherEnd && otherStart ≤ end. Keeps a same-day turnover free.
+    // (2) Short co-living direct bookings for this room (half-open checkOut).
+    //     Open-ended rows (legacy deposit bookings with null check_out) can't be
+    //     range-checked and are skipped; the short-stay path always writes a
+    //     real check_out. CONFLICT bookings are paid but never block dates.
+    const roomBookings = (await this.getColivingBookingsForRoom(args.roomId)).filter(
+      (b) => b.id !== args.excludeBookingId,
+    );
+    if (
+      roomBookings.some(
+        (b) =>
+          b.checkOut !== null &&
+          overlapsRange(want, { start: b.checkIn, end: b.checkOut, endExclusive: true }),
+      )
+    ) {
+      return false;
+    }
+
+    // (3) External iCal blocks for this ROOM listing (Airbnb, half-open DTEND).
     const blocks = await this.getExternalBlocksForRoom(args.roomId);
-    return !blocks.some((b) => args.startDate < b.endDate && b.startDate <= args.endDate);
+    if (
+      blocks.some((b) =>
+        overlapsRange(want, { start: b.startDate, end: b.endDate, endExclusive: true }),
+      )
+    ) {
+      return false;
+    }
+
+    // (4) Manual (admin/UO off-platform) blocks for this room (half-open).
+    const manual = await this.getManualBlocksForRoom(args.roomId);
+    return !manual.some((b) =>
+      overlapsRange(want, { start: b.startDate, end: b.endDate, endExclusive: true }),
+    );
   }
 
   async getColivingBookingsForRoom(roomId: string): Promise<Booking[]> {
@@ -1041,9 +1178,106 @@ class Storage implements IStorage {
           eq(bookings.roomId, roomId),
           eq(bookings.model, "COLIVING"),
           ne(bookings.status, "CANCELLED"),
+          ne(bookings.status, "CONFLICT"),
         ),
       )
       .orderBy(asc(bookings.checkIn));
+  }
+
+  async getOccupiedRoomIdsOn(dateIso: string): Promise<Set<string>> {
+    const occupied = new Set<string>();
+
+    const bookingRows = await db
+      .select({ roomId: bookings.roomId })
+      .from(bookings)
+      .where(
+        and(
+          sql`${bookings.roomId} IS NOT NULL`,
+          ne(bookings.status, "CANCELLED"),
+          ne(bookings.status, "CONFLICT"),
+          lte(bookings.checkIn, dateIso),
+          gt(bookings.checkOut, dateIso),
+        ),
+      );
+    for (const r of bookingRows) if (r.roomId) occupied.add(r.roomId);
+
+    const leaseRows = await db
+      .select({ roomId: leaseRooms.roomId })
+      .from(leaseRooms)
+      .innerJoin(leases, eq(leaseRooms.leaseId, leases.id))
+      .where(
+        and(
+          inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]),
+          lte(leases.startDate, dateIso),
+          gte(leases.endDate, dateIso),
+        ),
+      );
+    for (const r of leaseRows) occupied.add(r.roomId);
+
+    const extRows = await db
+      .select({ roomId: externalBookings.roomId })
+      .from(externalBookings)
+      .where(
+        and(
+          sql`${externalBookings.roomId} IS NOT NULL`,
+          lte(externalBookings.startDate, dateIso),
+          gt(externalBookings.endDate, dateIso),
+        ),
+      );
+    for (const r of extRows) if (r.roomId) occupied.add(r.roomId);
+
+    const manualRows = await db
+      .select({ roomId: manualBlocks.roomId })
+      .from(manualBlocks)
+      .where(
+        and(
+          sql`${manualBlocks.roomId} IS NOT NULL`,
+          lte(manualBlocks.startDate, dateIso),
+          gt(manualBlocks.endDate, dateIso),
+        ),
+      );
+    for (const r of manualRows) if (r.roomId) occupied.add(r.roomId);
+
+    return occupied;
+  }
+
+  // --- Manual blocks ---
+  async getManualBlocksForRoom(roomId: string): Promise<ManualBlock[]> {
+    return db
+      .select()
+      .from(manualBlocks)
+      .where(eq(manualBlocks.roomId, roomId))
+      .orderBy(asc(manualBlocks.startDate));
+  }
+
+  async getManualBlocksForProperty(propertyId: string): Promise<ManualBlock[]> {
+    return db
+      .select()
+      .from(manualBlocks)
+      .where(and(eq(manualBlocks.propertyId, propertyId), sql`${manualBlocks.roomId} IS NULL`))
+      .orderBy(asc(manualBlocks.startDate));
+  }
+
+  async getManualBlocks(opts?: {
+    propertyId?: string;
+    roomId?: string;
+    from?: string;
+  }): Promise<ManualBlock[]> {
+    const filters = [];
+    if (opts?.propertyId) filters.push(eq(manualBlocks.propertyId, opts.propertyId));
+    if (opts?.roomId) filters.push(eq(manualBlocks.roomId, opts.roomId));
+    if (opts?.from) filters.push(gte(manualBlocks.endDate, opts.from));
+    const q = db.select().from(manualBlocks).orderBy(asc(manualBlocks.startDate));
+    return filters.length ? q.where(and(...filters)) : q;
+  }
+
+  async createManualBlock(data: InsertManualBlock): Promise<ManualBlock> {
+    const [row] = await db.insert(manualBlocks).values(data).returning();
+    return row;
+  }
+
+  async deleteManualBlock(id: string): Promise<void> {
+    await db.delete(manualBlocks).where(eq(manualBlocks.id, id));
   }
 
   // ---------------------------------------------------------------------------
