@@ -13,7 +13,8 @@ import { buildAndPushSnapshot } from "../../server/integrations/kpiRollup";
 import { runScheduledRentSweep } from "../../server/lib/leasePayments";
 import { runDunningSweep } from "../../server/lib/dunning";
 import { runLeaseEndingNotices } from "../../server/lib/lifecycle";
-import { refreshExternalCalendars } from "../../server/lib/icalSync";
+import { refreshExternalCalendars, checkCalendarSyncHealth } from "../../server/lib/icalSync";
+import { syncRoomOccupancyStatus } from "../../server/lib/occupancy";
 import { log } from "../../server/server-log";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -27,6 +28,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Refresh Airbnb iCal blocks first so the guest calendar + guards are fresh
     // even on days the dedicated hourly calendar cron didn't cover something.
     const calendar = await refreshExternalCalendars();
+
+    // Daily room-occupancy status sync + calendar-sync health check. Each
+    // wrapped separately so one failing never blocks the rest of the sweep.
+    let occupancy: Awaited<ReturnType<typeof syncRoomOccupancyStatus>> | undefined;
+    try {
+      occupancy = await syncRoomOccupancyStatus();
+    } catch (err) {
+      log(`room occupancy sync failed: ${(err as Error).message}`, "cron");
+    }
+    try {
+      await checkCalendarSyncHealth();
+    } catch (err) {
+      log(`calendar sync health check failed: ${(err as Error).message}`, "cron");
+    }
+
     // Phase 4: charge due CARD_ON_FILE rent installments (idempotent).
     const rent = await runScheduledRentSweep();
     // Phase 5: reminders, overdue messaging, late fees, defaults (idempotent/day).
@@ -43,7 +59,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const snapshot = await buildAndPushSnapshot();
-    return res.json({ ok: true, calendar, rent, dunning, endingNotices, active, pending: pending.length, snapshot });
+    return res.json({
+      ok: true,
+      calendar,
+      occupancy,
+      rent,
+      dunning,
+      endingNotices,
+      active,
+      pending: pending.length,
+      snapshot,
+    });
   } catch (err) {
     log(`sweep error: ${(err as Error).message}`, "cron");
     return res.status(500).json({ ok: false, message: (err as Error).message });

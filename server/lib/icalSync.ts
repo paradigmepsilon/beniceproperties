@@ -25,6 +25,8 @@ import { promises as dns } from "node:dns";
 import net from "node:net";
 import type { VEvent } from "node-ical";
 import { storage } from "../storage";
+import { notifyAdmin } from "./notifications";
+import { log } from "../server-log";
 
 /** A bookable listing with an Airbnb iCal feed URL to sync. */
 export interface IcalListing {
@@ -174,7 +176,21 @@ function todayIso(): string {
   return fmtDate(new Date());
 }
 
-export async function parseICalData(icalData: string, today: string = todayIso()): Promise<ParsedEvent[]> {
+export interface ParseICalOpts {
+  /** Override "today" for the past-event cutoff. Defaults to the real date — test injection point. */
+  today?: string;
+  /**
+   * When true, Airbnb "Not available" host-blocks are kept (normalized to
+   * summary "Airbnb (Not available)") instead of being skipped. Default false
+   * preserves the original behavior. Driven by the `ical_honor_host_blocks`
+   * app setting via syncAllListings.
+   */
+  honorHostBlocks?: boolean;
+}
+
+export async function parseICalData(icalData: string, opts: ParseICalOpts = {}): Promise<ParsedEvent[]> {
+  const today = opts.today ?? todayIso();
+  const honorHostBlocks = opts.honorHostBlocks ?? false;
   const events: ParsedEvent[] = [];
   // Dynamic import: node-ical (and its transitive deps) must NOT be evaluated at
   // module load. Loading it lazily keeps it out of the client/build graph and
@@ -193,14 +209,19 @@ export async function parseICalData(icalData: string, today: string = todayIso()
     // Skip past events.
     if (endDate < today) continue;
 
-    // Skip Airbnb "Not available" host-blocks (host-blocked / outside bookable
-    // window). "Reserved" = a real Airbnb guest booking; keep it.
+    // Airbnb "Not available" host-blocks (host-blocked / outside bookable
+    // window). "Reserved" = a real Airbnb guest booking; always keep it.
+    // Host-blocks are skipped by default; when honorHostBlocks is on they're
+    // kept with a normalized summary so downstream dedup (isGenericPlaceholder
+    // already lists "not available") still treats them as a generic
+    // placeholder, not a named guest.
     const rawSummary = (event.summary || "").toString();
-    if (/not available/i.test(rawSummary)) continue;
+    const isHostBlock = /not available/i.test(rawSummary);
+    if (isHostBlock && !honorHostBlocks) continue;
 
     events.push({
       externalId: (event.uid || key) as string,
-      summary: event.summary ? String(event.summary) : "External Event",
+      summary: isHostBlock ? "Airbnb (Not available)" : event.summary ? String(event.summary) : "External Event",
       startDate,
       endDate,
     });
@@ -312,8 +333,17 @@ export interface ListingSyncResult {
 
 export interface SyncResult {
   totalListings: number;
+  ok: number;
+  failed: number;
+  created: number;
+  updated: number;
+  removed: number;
   listings: ListingSyncResult[];
 }
+
+const HONOR_HOST_BLOCKS_SETTING = "ical_honor_host_blocks";
+const LAST_SYNC_AT_SETTING = "ical_last_sync_at";
+const LAST_SYNC_RESULT_SETTING = "ical_last_sync_result";
 
 /**
  * Sync one listing's Airbnb calendar: fetch its `airbnb_ical_url`, parse, dedup
@@ -324,7 +354,11 @@ export interface SyncResult {
  * is captured on the result (there is no feed row to stamp — sync status is
  * derived from external_bookings, and errors surface live in UO's calendar view).
  */
-export async function syncListing(listing: IcalListing, dryRun = false): Promise<ListingSyncResult> {
+export async function syncListing(
+  listing: IcalListing,
+  dryRun = false,
+  honorHostBlocks = false,
+): Promise<ListingSyncResult> {
   const base: ListingSyncResult = {
     key: listing.roomId ? `room:${listing.roomId}` : `property:${listing.propertyId}`,
     label: listing.label,
@@ -340,7 +374,7 @@ export async function syncListing(listing: IcalListing, dryRun = false): Promise
   let parsedEvents: ParsedEvent[];
   try {
     const icalData = await secureFetch(listing.url);
-    parsedEvents = await parseICalData(icalData);
+    parsedEvents = await parseICalData(icalData, { honorHostBlocks });
   } catch (err) {
     return { ...base, error: err instanceof Error ? err.message : String(err) };
   }
@@ -402,17 +436,147 @@ export async function syncListing(listing: IcalListing, dryRun = false): Promise
 /**
  * Sync every listing that has an Airbnb iCal URL, sequentially (low volume;
  * avoids hammering Airbnb). The URL lives on properties/rooms.airbnb_ical_url.
+ * Reads the `ical_honor_host_blocks` app setting once per run (missing or
+ * "true" → honor host blocks; only the literal "false" disables) and passes
+ * it to every listing. Always records `ical_last_sync_at` /
+ * `ical_last_sync_result` after the run — even when some listings failed —
+ * so checkCalendarSyncHealth has fresh status to read. A failure writing
+ * those settings is logged, never thrown.
  */
 export async function syncAllListings(dryRun = false): Promise<SyncResult> {
+  let honorHostBlocks = true;
+  try {
+    const setting = await storage.getSetting(HONOR_HOST_BLOCKS_SETTING);
+    honorHostBlocks = setting?.value !== "false";
+  } catch {
+    honorHostBlocks = true;
+  }
+
   const listings = await storage.getListingsWithIcalUrl();
   const results: ListingSyncResult[] = [];
   for (const l of listings) {
-    results.push(await syncListing(l, dryRun));
+    results.push(await syncListing(l, dryRun, honorHostBlocks));
   }
-  return { totalListings: listings.length, listings: results };
+
+  const ok = results.filter((r) => r.ok).length;
+  const failed = results.length - ok;
+  const created = results.reduce((n, r) => n + r.created, 0);
+  const updated = results.reduce((n, r) => n + r.updated, 0);
+  const removed = results.reduce((n, r) => n + r.removed, 0);
+
+  try {
+    const at = new Date().toISOString();
+    await storage.setSetting(LAST_SYNC_AT_SETTING, at);
+    await storage.setSetting(
+      LAST_SYNC_RESULT_SETTING,
+      JSON.stringify({
+        at,
+        totalListings: listings.length,
+        ok,
+        failed,
+        created,
+        updated,
+        removed,
+        listings: results.map((r) => ({ key: r.key, label: r.label, ok: r.ok, error: r.error })),
+      }),
+    );
+  } catch (err) {
+    log(`ical sync: failed to record sync status: ${(err as Error).message}`, "icalSync");
+  }
+
+  return { totalListings: listings.length, ok, failed, created, updated, removed, listings: results };
 }
 
 /** Scheduler entry point — refresh every listing's Airbnb calendar. */
 export async function refreshExternalCalendars(): Promise<SyncResult> {
   return syncAllListings(false);
+}
+
+// ─── Sync health (stale / failed) ───────────────────────────────────────────
+
+const STALE_AFTER_MS = 3 * 60 * 60 * 1000; // 3 hours
+
+export interface CalendarSyncHealth {
+  stale: boolean;
+  failed: boolean;
+  alerted: boolean;
+}
+
+/**
+ * Reads the `ical_last_sync_at` / `ical_last_sync_result` settings
+ * syncAllListings writes and decides whether the Airbnb sync needs an
+ * operator's attention: stale (no recorded sync, or older than 3h) or the
+ * last run had failures. Raises a deduped CALENDAR_SYNC_FAILED escalation
+ * (unscoped — no lease/booking — keyed per calendar day via scheduleSeq) and
+ * notifies admin only when a NEW escalation was actually opened
+ * (raiseEscalationOnce returns null when one is already OPEN, so a
+ * repeatedly-stale/failed sync doesn't spam the admin on every sweep).
+ */
+export async function checkCalendarSyncHealth(now: Date = new Date()): Promise<CalendarSyncHealth> {
+  const [lastSyncAtRow, lastResultRow] = await Promise.all([
+    storage.getSetting(LAST_SYNC_AT_SETTING),
+    storage.getSetting(LAST_SYNC_RESULT_SETTING),
+  ]);
+
+  let stale = true;
+  if (lastSyncAtRow?.value) {
+    const lastSyncAtMs = new Date(lastSyncAtRow.value).getTime();
+    stale = !Number.isFinite(lastSyncAtMs) || now.getTime() - lastSyncAtMs > STALE_AFTER_MS;
+  }
+
+  let failed = false;
+  let failedListings: { key: string; label: string; error?: string }[] = [];
+  if (lastResultRow?.value) {
+    try {
+      const parsedResult = JSON.parse(lastResultRow.value) as {
+        failed?: number;
+        listings?: { key: string; label: string; ok: boolean; error?: string }[];
+      };
+      failed = (parsedResult.failed ?? 0) > 0;
+      failedListings = (parsedResult.listings ?? []).filter((l) => !l.ok);
+    } catch {
+      // Corrupt result JSON — surface it as a failure rather than silently
+      // reporting healthy.
+      failed = true;
+    }
+  }
+
+  let alerted = false;
+  if (stale || failed) {
+    const detailParts: string[] = [];
+    if (stale) {
+      detailParts.push(
+        lastSyncAtRow?.value
+          ? `Last calendar sync recorded at ${lastSyncAtRow.value} (more than 3h ago).`
+          : "No calendar sync has ever completed.",
+      );
+    }
+    if (failed) {
+      const names = failedListings
+        .map((l) => (l.error ? `${l.label} (${l.error})` : l.label))
+        .join("; ");
+      detailParts.push(names ? `Failed listing(s): ${names}` : "The last sync run reported failures.");
+    }
+    const detail = detailParts.join(" ");
+
+    const escalation = await storage.raiseEscalationOnce({
+      leaseId: null,
+      bookingId: null,
+      scheduleSeq: Number(fmtDate(now).replace(/-/g, "")),
+      kind: "CALENDAR_SYNC_FAILED",
+      severity: "MEDIUM",
+      detail,
+    });
+    if (escalation) {
+      alerted = true;
+      // No guest data involved — safe to use the same text on both channels.
+      await notifyAdmin({
+        subject: "Airbnb calendar sync problem",
+        body: detail,
+        context: { kind: "CALENDAR_SYNC_FAILED" },
+      });
+    }
+  }
+
+  return { stale, failed, alerted };
 }

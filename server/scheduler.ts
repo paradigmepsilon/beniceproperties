@@ -16,7 +16,8 @@ import { buildAndPushSnapshot } from "./integrations/kpiRollup";
 import { runScheduledRentSweep } from "./lib/leasePayments";
 import { runDunningSweep } from "./lib/dunning";
 import { runLeaseEndingNotices } from "./lib/lifecycle";
-import { refreshExternalCalendars } from "./lib/icalSync";
+import { refreshExternalCalendars, checkCalendarSyncHealth } from "./lib/icalSync";
+import { syncRoomOccupancyStatus } from "./lib/occupancy";
 
 interface SchedulerConfig {
   /** How often to run the recurring sweep. Default: 1h. */
@@ -58,6 +59,8 @@ class BackgroundScheduler {
     this.isRunning = true;
     try {
       await this.calendarRefreshRun();
+      await this.occupancySyncRun();
+      await this.calendarHealthCheckRun();
       await this.weeklyRentRun();
       await this.dunningRun();
       await this.lifecycleRun();
@@ -89,6 +92,35 @@ class BackgroundScheduler {
       }
     } catch (err) {
       log(`calendar refresh failed: ${(err as Error).message}`, "scheduler");
+    }
+  }
+
+  private async occupancySyncRun(): Promise<void> {
+    // Daily room-occupancy status sync, driven off the same deconfliction
+    // source of truth used to guard new bookings/leases. Never throws.
+    try {
+      const result = await syncRoomOccupancyStatus();
+      if (result.changed > 0) {
+        log(
+          `room occupancy sync: ${result.occupied} occupied, ${result.available} available, ${result.changed} changed`,
+          "scheduler",
+        );
+      }
+    } catch (err) {
+      log(`room occupancy sync failed: ${(err as Error).message}`, "scheduler");
+    }
+  }
+
+  private async calendarHealthCheckRun(): Promise<void> {
+    // Stale/failed Airbnb sync alert — raises a deduped escalation + notifies
+    // admin. Never throws.
+    try {
+      const health = await checkCalendarSyncHealth();
+      if (health.alerted) {
+        log(`calendar sync health: stale=${health.stale} failed=${health.failed} (alerted)`, "scheduler");
+      }
+    } catch (err) {
+      log(`calendar sync health check failed: ${(err as Error).message}`, "scheduler");
     }
   }
 

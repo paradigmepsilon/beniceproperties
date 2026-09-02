@@ -9,9 +9,10 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, count, desc, eq, gt, gte, inArray, lte, max, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, sql } from "drizzle-orm";
 import { db } from "./db";
 import { overlapsRange } from "./lib/ranges";
+import { escalationDedupeMatch } from "./lib/escalationDedupe";
 import {
   properties,
   rooms,
@@ -1208,25 +1209,20 @@ class Storage implements IStorage {
     // Dedupe is SCOPED to the subject of the escalation:
     //   lease-scoped   → (leaseId, scheduleSeq, kind, OPEN)
     //   booking-scoped → (bookingId, kind, OPEN)
-    // An unscoped call (neither id) would otherwise collapse every open
-    // escalation of that kind into one, so it never dedupes across subjects.
+    //   unscoped       → (scheduleSeq, kind, OPEN) among OTHER unscoped rows
+    //                     only — the isNull filters below keep it from
+    //                     matching a lease/booking-scoped row that happens to
+    //                     share a scheduleSeq (a false dedupe across subjects).
     const conds = [eq(uoEscalations.kind, data.kind), eq(uoEscalations.status, "OPEN")];
     if (data.leaseId) conds.push(eq(uoEscalations.leaseId, data.leaseId));
     else if (data.bookingId) conds.push(eq(uoEscalations.bookingId, data.bookingId));
+    else conds.push(isNull(uoEscalations.leaseId), isNull(uoEscalations.bookingId));
 
     const open = await db
       .select()
       .from(uoEscalations)
       .where(and(...conds));
-    if (data.bookingId && !data.leaseId) {
-      // Booking-scoped escalations carry no installment; one OPEN row per
-      // (booking, kind) is the key.
-      if (open.length > 0) return null;
-    } else {
-      // Lease-scoped (and the legacy unscoped case): per-installment.
-      const seq = data.scheduleSeq ?? null;
-      if (open.some((e) => (e.scheduleSeq ?? null) === seq)) return null;
-    }
+    if (open.some((e) => escalationDedupeMatch(e, data))) return null;
     const [row] = await db.insert(uoEscalations).values(data).returning();
     return row;
   }

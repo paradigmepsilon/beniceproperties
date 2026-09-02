@@ -7,7 +7,7 @@
 
 import "dotenv/config";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { refreshExternalCalendars } from "../../server/lib/icalSync";
+import { refreshExternalCalendars, checkCalendarSyncHealth } from "../../server/lib/icalSync";
 import { log } from "../../server/server-log";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -18,16 +18,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     const result = await refreshExternalCalendars();
-    const created = result.listings.reduce((n, l) => n + l.created, 0);
-    const removed = result.listings.reduce((n, l) => n + l.removed, 0);
-    const failed = result.listings.filter((l) => !l.ok).length;
     if (result.totalListings > 0) {
       log(
-        `calendar cron: ${result.totalListings} listing(s), ${created} new, ${removed} removed, ${failed} failed`,
+        `calendar cron: ${result.totalListings} listing(s), ${result.created} new, ${result.removed} removed, ${result.failed} failed`,
         "cron",
       );
     }
-    return res.json({ ok: true, ...result });
+
+    // Runs hourly (unlike the daily sweep) so a stale/failed calendar sync
+    // is noticed within the hour. Own try/catch — never blocks the response.
+    try {
+      await checkCalendarSyncHealth();
+    } catch (err) {
+      log(`calendar sync health check failed: ${(err as Error).message}`, "cron");
+    }
+
+    return res.json({ ...result, ok: true });
   } catch (err) {
     log(`calendar cron error: ${(err as Error).message}`, "cron");
     return res.status(500).json({ ok: false, message: (err as Error).message });
