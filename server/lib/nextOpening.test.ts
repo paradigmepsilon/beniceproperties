@@ -1,4 +1,5 @@
 // server/lib/nextOpening.test.ts
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./nextOpening";
 
@@ -123,5 +124,23 @@ describe("cheapestAvailableWeeklyRent — date-aware from-price", () => {
       { weeklyRent: "400.00", available: true },
     ]);
     expect(r).toEqual({ fromWeeklyRent: "400", available: true });
+  });
+});
+
+// strNextOpening is pure and receives stays with no status field, so the
+// CANCELLED/CONFLICT exemption has to hold one layer up, in the query that
+// feeds it. A CONFLICT booking that reached this function would paint a
+// "Next opening" badge over dates that are actually for sale.
+describe("the stays feeding strNextOpening exclude non-blocking bookings", () => {
+  it("getStrBookingsEndingOnOrAfter filters NON_BLOCKING_BOOKING_STATUSES", () => {
+    const storageSrc = readFileSync(new URL("../storage.ts", import.meta.url), "utf8");
+    const fn = storageSrc.slice(storageSrc.indexOf("async getStrBookingsEndingOnOrAfter"));
+    expect(fn.slice(0, 900)).toContain("notInArray(bookings.status, [...NON_BLOCKING_BOOKING_STATUSES])");
+  });
+
+  it("getStrBookingsForProperty filters NON_BLOCKING_BOOKING_STATUSES", () => {
+    const storageSrc = readFileSync(new URL("../storage.ts", import.meta.url), "utf8");
+    const fn = storageSrc.slice(storageSrc.indexOf("async getStrBookingsForProperty"));
+    expect(fn.slice(0, 900)).toContain("notInArray(bookings.status, [...NON_BLOCKING_BOOKING_STATUSES])");
   });
 });

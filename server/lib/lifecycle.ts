@@ -20,7 +20,7 @@
 
 import { storage } from "../storage";
 import { notifyGuest, notifyAdmin } from "./notifications";
-import { LEASE_ENDING_NOTICE_DAYS } from "@shared/schema";
+import { LEASE_ENDING_NOTICE_DAYS, GUEST_AUTO_NOTIFICATIONS_SETTING } from "@shared/schema";
 import { log } from "../server-log";
 import type { Booking, Lease, Property, Room, Guest, PaymentScheduleRow } from "@shared/schema";
 
@@ -150,7 +150,13 @@ export async function onLeaseActivated(leaseId: string): Promise<void> {
   // Welcome (once).
   if (!(await storage.hasLifecycleEvent({ leaseId: lease.id }, "COLIVING_WELCOME", null))) {
     const tpl = LIFECYCLE_TEMPLATES.welcome({ name: guest.name, property: property.name, start: lease.startDate });
-    const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+    const sent = await notifyGuest({
+      email: guest.email,
+      phone: guest.phone,
+      subject: tpl.subject,
+      body: tpl.body,
+      context: { leaseId: lease.id, guestId: guest.id, kind: "COLIVING_WELCOME" },
+    });
     await storage.recordLifecycleEvent({
       leaseId: lease.id,
       eventType: "COLIVING_WELCOME",
@@ -172,7 +178,13 @@ export async function onLeaseActivated(leaseId: string): Promise<void> {
       rows,
       portalUrl: portalUrl(lease),
     });
-    const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+    const sent = await notifyGuest({
+      email: guest.email,
+      phone: guest.phone,
+      subject: tpl.subject,
+      body: tpl.body,
+      context: { leaseId: lease.id, guestId: guest.id, kind: "COLIVING_SCHEDULE_RECAP" },
+    });
     await storage.recordLifecycleEvent({
       leaseId: lease.id,
       eventType: "COLIVING_SCHEDULE_RECAP",
@@ -231,7 +243,13 @@ export async function onPaymentReceived(args: {
     seq: scheduleRow.scheduleSeq,
     property: property.name,
   });
-  const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+  const sent = await notifyGuest({
+    email: guest.email,
+    phone: guest.phone,
+    subject: tpl.subject,
+    body: tpl.body,
+    context: { leaseId: lease.id, guestId: guest.id, kind: "PAYMENT_RECEIPT" },
+  });
   await storage.recordLifecycleEvent({
     leaseId: lease.id,
     eventType: "PAYMENT_RECEIPT",
@@ -263,7 +281,13 @@ export async function onDepositReceived(args: {
     room: roomNames,
     portalUrl: portalUrl(lease),
   });
-  const sent = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+  const sent = await notifyGuest({
+    email: guest.email,
+    phone: guest.phone,
+    subject: tpl.subject,
+    body: tpl.body,
+    context: { leaseId: lease.id, guestId: guest.id, kind: "DEPOSIT_RECEIPT" },
+  });
   await storage.recordLifecycleEvent({
     leaseId: lease.id,
     eventType: "DEPOSIT_RECEIPT",
@@ -323,7 +347,7 @@ export async function onBookingConfirmed(args: {
     !(await storage.hasLifecycleEvent({ bookingId: booking.id }, "BOOKING_CONFIRMED", null))
   ) {
     // Unset/any-other-value = ON. Only the literal "false" disables guest sends.
-    const autoSetting = await storage.getSetting("guest_auto_notifications");
+    const autoSetting = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
     const guestSendsOn = autoSetting?.value !== "false";
 
     if (guestSendsOn) {
@@ -430,7 +454,13 @@ export async function runLeaseEndingNotices(today: string = ymd(new Date())): Pr
       days: until,
       portalUrl: portalUrl(lease),
     });
-    const res = await notifyGuest({ email: guest.email, phone: guest.phone, subject: tpl.subject, body: tpl.body });
+    const res = await notifyGuest({
+      email: guest.email,
+      phone: guest.phone,
+      subject: tpl.subject,
+      body: tpl.body,
+      context: { leaseId: lease.id, guestId: guest.id, kind: "LEASE_ENDING_SOON" },
+    });
     await storage.recordLifecycleEvent({
       leaseId: lease.id,
       eventType: "LEASE_ENDING_SOON",

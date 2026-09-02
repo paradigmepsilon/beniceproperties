@@ -263,6 +263,31 @@ describe("confirmConflictBooking", () => {
     await expect(confirmConflictBooking("nope", "admin@bnp")).rejects.toMatchObject({ status: 404 });
   });
 
+  // The app-level gate and the UPDATE are not one transaction: another
+  // confirmation can take the dates in between. Postgres then rejects the row
+  // with 23P01, and the admin deserves the same 409 the gate would have given —
+  // not a 500 that looks like the app broke.
+  it("turns a Postgres exclusion violation on the UPDATE into a 409, not a 500", async () => {
+    mockStorage.getBooking.mockResolvedValue(booking());
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+    mockStorage.updateBooking.mockRejectedValue(
+      Object.assign(new Error("conflicting key value violates exclusion constraint"), { code: "23P01" }),
+    );
+
+    await expect(confirmConflictBooking("bk-1", "admin@bnp")).rejects.toBeInstanceOf(BookingError);
+    await expect(confirmConflictBooking("bk-1", "admin@bnp")).rejects.toMatchObject({ status: 409 });
+    // Nothing downstream ran: no room grabbed, no guest confirmation sent.
+    expect(mockStorage.updateRoom).not.toHaveBeenCalled();
+    expect(mockLifecycle.onBookingConfirmed).not.toHaveBeenCalled();
+  });
+
+  it("rethrows a non-exclusion UPDATE error untouched", async () => {
+    mockStorage.getBooking.mockResolvedValue(booking());
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+    mockStorage.updateBooking.mockRejectedValue(Object.assign(new Error("boom"), { code: "42P01" }));
+    await expect(confirmConflictBooking("bk-1", "admin@bnp")).rejects.toThrow("boom");
+  });
+
   // Only a CONFLICT booking is resolvable this way — otherwise this endpoint
   // would resurrect a CANCELLED (possibly refunded) booking into ACTIVE.
   it.each(["CANCELLED", "ACTIVE", "CONFIRMED", "COMPLETED", "PENDING_PAYMENT"])(

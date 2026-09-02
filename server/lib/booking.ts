@@ -25,6 +25,7 @@ import {
   isDirectCoLivingStay,
   requiresLease,
   ROOM_UNBOOKABLE_STATUSES,
+  NON_BLOCKING_BOOKING_STATUSES,
   type Property,
   type Room,
 } from "@shared/schema";
@@ -145,8 +146,7 @@ export async function strHasConflict(
       (b) =>
         b.propertyId === propertyId &&
         b.model === "STR" &&
-        b.status !== "CANCELLED" &&
-        b.status !== "CONFLICT" &&
+        !(NON_BLOCKING_BOOKING_STATUSES as readonly string[]).includes(b.status) &&
         b.id !== excludeBookingId &&
         b.checkOut,
     )

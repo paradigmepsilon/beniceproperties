@@ -152,6 +152,31 @@ async function repairExistingBooking(args: {
 }
 
 /**
+ * Body for a BOOKING_MATERIALIZE_FAILED admin alert. A paid PaymentIntent that
+ * cannot become a booking must NEVER just be logged — someone's money moved.
+ *
+ * PRIVACY: this is a broken-intent report, not a booking notice, and it fans out
+ * to Telegram as well as email. It carries the PI id, the amount, the property/
+ * room NAMES from the metadata, and the reason — never the guest's email or
+ * phone.
+ */
+function brokenIntentBody(
+  pi: import("stripe").Stripe.PaymentIntent,
+  m: Record<string, string>,
+  reason: string,
+): string {
+  const where = [m.property_name, m.room_name]
+    .filter((v) => v && v !== "null")
+    .join(" · ");
+  return (
+    `PaymentIntent ${pi.id}${m.reference && m.reference !== "null" ? ` for reference ${m.reference}` : ""} ` +
+    `($${m.quoted_total ?? m.amount ?? "?"}${where ? `, ${where}` : ""}) succeeded but ${reason}, ` +
+    `so no booking row could be written. The charge stands. Reconcile this manually in Stripe ` +
+    `and the admin console.`
+  );
+}
+
+/**
  * Materialize a short-stay booking from a succeeded PaymentIntent's metadata.
  * Idempotent across Stripe retries (keyed on `reference`).
  */
@@ -163,7 +188,20 @@ export async function materializeShortStayBooking(
   const m = pi.metadata ?? {};
   const reference = m.reference;
   if (!reference) {
-    log(`short-stay PI ${pi.id} has no reference — cannot materialize`, "stripe");
+    // No reference = no idempotency key and no way to name the booking. Nothing
+    // is writable, so page a human rather than letting a paid intent vanish into
+    // the log. Contact-free by design (see brokenIntentBody).
+    log(`short-stay PI ${pi.id} has no reference — cannot materialize, admin alerted`, "stripe");
+    await notifyAdmin({
+      subject: `⚠️ Paid booking could not be created — PaymentIntent ${pi.id}`,
+      body: brokenIntentBody(pi, m, "its metadata carries no `reference`"),
+      context: { kind: "BOOKING_MATERIALIZE_FAILED" },
+    });
+    posthog.capture({
+      distinctId: pi.id,
+      event: "booking_materialize_failed",
+      properties: { reference: null, missing: "reference" },
+    });
     return;
   }
 
@@ -184,8 +222,22 @@ export async function materializeShortStayBooking(
   const guestName = m.guest_name;
   const guestEmail = m.guest_email;
   if (!guestName || guestName === "null" || !guestEmail || guestEmail === "null") {
-    log(`short-stay PI ${pi.id} (${reference}) missing guest contact — NOT materializing`, "stripe");
-    posthog.capture({ distinctId: pi.id, event: "booking_intent_missing_contact", properties: { reference } });
+    const missingContact = [
+      (!guestName || guestName === "null") && "guest_name",
+      (!guestEmail || guestEmail === "null") && "guest_email",
+    ]
+      .filter(Boolean)
+      .join(", ");
+    log(
+      `short-stay PI ${pi.id} (${reference}) missing guest contact — NOT materializing, admin alerted`,
+      "stripe",
+    );
+    await notifyAdmin({
+      subject: `⚠️ Paid booking could not be created — ${reference}`,
+      body: brokenIntentBody(pi, m, `its metadata is missing ${missingContact}`),
+      context: { kind: "BOOKING_MATERIALIZE_FAILED" },
+    });
+    posthog.capture({ distinctId: pi.id, event: "booking_intent_missing_contact", properties: { reference, missing: missingContact } });
     return;
   }
 
@@ -208,10 +260,7 @@ export async function materializeShortStayBooking(
     );
     await notifyAdmin({
       subject: `⚠️ Paid booking could not be created — ${reference}`,
-      body:
-        `PaymentIntent ${pi.id} for reference ${reference} ($${m.quoted_total ?? m.amount ?? "?"}) ` +
-        `succeeded but its metadata is missing ${missing}, so no booking row could be written. ` +
-        `The charge stands. Reconcile this manually in Stripe and the admin console.`,
+      body: brokenIntentBody(pi, m, `its metadata is missing ${missing}`),
       context: { kind: "BOOKING_MATERIALIZE_FAILED" },
     });
     posthog.capture({

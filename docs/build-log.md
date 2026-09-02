@@ -2666,9 +2666,13 @@ each). Branch `feat/booking-deconfliction-and-messaging`, 12 commits
   is display-only, corrected by a daily `syncRoomOccupancyStatus` sweep from
   actual overlaps). A Postgres exclusion constraint
   (`bookings_room_no_overlap`, `btree_gist`) backstops the app-level checks for
-  short-stay bookings. All "today" calls (client and server) now go through
-  one `todayIso()` in `shared/dates.ts` (America/New_York calendar day) instead
-  of ad hoc UTC slicing. A paid short-stay booking that lands on taken dates is
+  short-stay bookings. Every "today" call that decides MONEY or AVAILABILITY —
+  client and server — goes through one `todayIso()` in `shared/dates.ts`
+  (America/New_York calendar day) instead of ad hoc UTC slicing. (The original
+  wording here said "all today calls", which was wrong: the dunning and
+  lease-payment sweeps still defaulted to a UTC day until the fix wave below,
+  and `lifecycle.ts`'s lease-ending window plus `kpiRollup.ts`'s snapshot stamp
+  deliberately still use a UTC slice — neither moves money or blocks a date.) A paid short-stay booking that lands on taken dates is
   no longer auto-refunded: it lands as a new `CONFLICT` status (blocks no
   dates, occupies no room), the payment records PAID, a HIGH `BOOKING_CONFLICT`
   escalation is raised, and an admin is paged; a human then force-confirms
@@ -2800,11 +2804,109 @@ full list):
   `raiseEscalationOnce` dedupe still ignores scope when `leaseId` is absent in
   one path Task 5 had to key around explicitly; three separate module-local
   `publicBaseUrl()` copies remain (lifecycle/dunning/verification) with the
-  same fallback instead of one shared helper; `getManualBlocks`/
-  `getMessageLog` are unbounded at the storage layer (route layer is expected
-  to pass a limit); the admin messages/calendar panels have no `isError`
-  states on their queries; UTC "today" still appears in a few dunning/
-  lifecycle/leasePayments/kpiRollup call sites the plan flagged but didn't
-  require touching this round.
+  same fallback instead of one shared helper; `getManualBlocks` is still
+  unbounded at the storage layer (route layer is expected to pass a limit —
+  `getMessageLog` was fixed in the fix wave below); the admin messages/calendar
+  panels have no `isError` states on their queries; UTC "today" remains in
+  `lifecycle.ts`'s lease-ending window and `kpiRollup.ts`'s snapshot stamp,
+  reviewed and ruled harmless (neither moves money or blocks a date) — the
+  dunning/leasePayments call sites were fixed in the fix wave below.
+
+### Fix wave — whole-branch review (2026-09-02, commit on top of `2e0eabd`)
+
+A review of the full branch approved the money-safety core and raised six
+Important findings plus several minors. All were fixed in one wave.
+
+- **Guest auto-notification toggle was inert.** `routes.ts` wrote/read
+  `guest_auto_notifications_enabled` while the send gate in `lifecycle.ts` and
+  the push script used `guest_auto_notifications` — flipping the toggle OFF in
+  the admin console changed nothing. One exported constant,
+  `GUEST_AUTO_NOTIFICATIONS_SETTING` in `shared/schema.ts`, is now the single
+  spelling in all three places. The push script is plain node and cannot import
+  TS, so `lifecycle.test.ts` cross-checks its SQL literal against the constant,
+  and the gate test's `getSetting` mock is key-sensitive — a wrong key fails
+  loudly instead of silently defaulting to "sends ON". The `putAutoNotify` log
+  line now tags admin vs UO from the actor prefix.
+- **A paid PaymentIntent could vanish silently.** Two `materializeShortStay
+  Booking` bail-outs — no `reference`, and missing guest contact — logged and
+  returned with nobody paged. Both now fire the same contact-free
+  `BOOKING_MATERIALIZE_FAILED` admin alert the property_id/check_in branch
+  already used (PI id, amount, property/room names from metadata, reason; never
+  the guest's email or phone, because the alert fans out to Telegram). Still no
+  refund path in this module.
+- **CONFLICT bookings still blocked STR dates.**
+  `getStrBookingsForProperty` and `getStrBookingsEndingOnOrAfter` filtered only
+  `CANCELLED`, so a paid-but-unresolved CONFLICT row — which by design blocks
+  nothing — greyed out its dates on the public calendar and painted a false
+  "Next opening" badge, disagreeing with `strHasConflict`. Both queries now
+  exclude the new shared `NON_BLOCKING_BOOKING_STATUSES` (`CANCELLED`,
+  `CONFLICT`), which `strHasConflict` and a defensive filter in
+  `buildStrAvailability`/`buildRoomAvailability` also use.
+- **Missing CHECK constraints + an unbounded log read.** The push script now
+  adds `guest_messages_scope_chk` and `lifecycle_events_scope_chk`
+  (`lease_id IS NOT NULL OR booking_id IS NOT NULL`) with the same
+  `DO $$ … IF NOT EXISTS (SELECT 1 FROM pg_constraint …)` idempotency guard as
+  the exclusion constraints — additive only. `storage.getMessageLog` is now
+  always bounded (default 200, cap 1000) and REFUSES an unscoped read unless the
+  caller passes `all: true` (only the admin/UO `/message-log` console view with
+  no filters does). `adminMessages.getThread` returns `deliveries: []` rather
+  than reading unscoped when a thread has neither id. The policy lives in a pure
+  `server/lib/messageLogQuery.ts` so it is unit-tested without a database.
+- **Manual block with `roomId: null` on a co-living property was inert.**
+  Co-living availability is decided per room, so a property-level block there
+  held nothing while the operator believed a room was off the market. The shared
+  `createBlock` handler now loads the property and rejects it (400 "Co-living
+  blocks must name a room"), and also rejects a room that belongs to a different
+  property. Logic extracted to a pure `server/lib/manualBlocks.ts`. (The admin
+  form already enforced this client-side; UO and direct API calls did not.)
+- **Money-timing "today" was UTC in the sweeps.** `runDunningSweep`,
+  `handleChargeFailure`, `runScheduledRentSweep`, and the first-week
+  due-now check defaulted to `new Date().toISOString().slice(0,10)`. Between
+  8pm and midnight ET that is tomorrow, which accrues a $25/day late fee a day
+  early and charges rent a day early. All now default to `todayIso()`; every
+  signature still accepts an explicit `today` for tests. `lifecycle.ts`'s
+  lease-ending window and `kpiRollup.ts` were reviewed and left as-is (neither
+  moves money).
+
+Minors folded into the same wave: the stale "refunded instead of overbooking"
+webhook comment now describes the CONFLICT behavior; `confirmConflictBooking`
+maps a Postgres `23P01` on the UPDATE to `BookingError(409)` instead of a 500
+(the gate and the UPDATE are not one transaction); every `notifyGuest` call in
+`lifecycle.ts` and `dunning.ts` now passes a `context`, so no guest send can
+skip `message_log`; UO `deleteBlock` and `calendarRefresh` identify and log
+their actor; the `syncRoomOccupancyStatus` "daily" comments corrected to "every
+sweep, idempotent"; and `getBookingsWithGuest` dropped `PENDING_PAYMENT` from
+its default statuses (abandoned checkouts were swamping the message-compose
+guest picker — a caller can still pass it explicitly).
+
+**Fix-wave verification.** `npm run check` (tsc) clean; `npm test` 39 files /
+489 tests passing (up from 36 / 449 — 40 new tests across
+`materialize`, `lifecycle`, `availability`, `nextOpening`, `adminMessages`,
+`bookingConflicts`, `dunning`, `leasePayments`, plus new
+`messageLogQuery`, `manualBlocks`, and `push-deconfliction-messaging` suites);
+`npm run build` succeeded.
+
+**Owner note before running `scripts/push-deconfliction-messaging.mjs`:** run an
+overlap query against the live database first. The exclusion constraints fail
+loudly on pre-existing overlapping live rows — by design, but the script exits
+on the first failure, so find and resolve any overlap before the run rather than
+during it. Example:
+
+```sql
+SELECT a.id, a.reference, b.id, b.reference, a.room_id, a.property_id
+FROM bookings a
+JOIN bookings b
+  ON a.id < b.id
+ AND daterange(a.check_in, a.check_out) && daterange(b.check_in, b.check_out)
+ AND ((a.room_id IS NOT NULL AND a.room_id = b.room_id)
+   OR (a.room_id IS NULL AND b.room_id IS NULL
+       AND a.model = 'STR' AND b.model = 'STR'
+       AND a.property_id = b.property_id))
+WHERE a.status NOT IN ('CANCELLED','CONFLICT')
+  AND b.status NOT IN ('CANCELLED','CONFLICT')
+  AND a.check_out IS NOT NULL AND b.check_out IS NOT NULL;
+```
+
+Zero rows = the constraints will install cleanly.
 
 DECONFLICTION-ALERTS-MESSAGING: COMPLETE — tests green

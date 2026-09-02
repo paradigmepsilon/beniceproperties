@@ -68,6 +68,20 @@ describe("buildStrAvailability", () => {
     expect(r.busy).toHaveLength(0);
   });
 
+  // A CONFLICT booking is paid but unresolved: it blocks no dates and holds no
+  // room (server/lib/materialize.ts). storage.getStrBookingsForProperty already
+  // filters it out; this pins the defensive filter in buildStrAvailability so
+  // the calendar can never disagree with strHasConflict / the "next opening"
+  // badge, whatever a caller hands it.
+  it.each(["CONFLICT", "CANCELLED"])("never shows a %s booking as busy", async (status) => {
+    store.strBookings = [
+      { checkIn: FUTURE_A, checkOut: FUTURE_B, status },
+      { checkIn: FUTURE_C, checkOut: FUTURE_D, status: "CONFIRMED" },
+    ];
+    const r = await buildStrAvailability("p1");
+    expect(r.busy).toEqual([{ start: FUTURE_C, end: FUTURE_D, source: "direct" }]);
+  });
+
   it("includes manual blocks as busy ranges (source manual), dropping past ones", async () => {
     mockStorage.getManualBlocksForProperty.mockResolvedValue([
       { startDate: FUTURE_A, endDate: FUTURE_B },
@@ -79,6 +93,12 @@ describe("buildStrAvailability", () => {
 });
 
 describe("buildRoomAvailability", () => {
+  it.each(["CONFLICT", "CANCELLED"])("never shows a %s co-living booking as busy", async (status) => {
+    store.roomBookings = [{ checkIn: FUTURE_A, checkOut: FUTURE_B, status }];
+    const r = await buildRoomAvailability("room1");
+    expect(r.busy).toHaveLength(0);
+  });
+
   it("normalizes inclusive lease end to exclusive (+1) and merges external blocks", async () => {
     store.leases = [{ startDate: FUTURE_A, endDate: FUTURE_B }]; // inclusive end
     store.roomBlocks = [{ startDate: FUTURE_C, endDate: FUTURE_D }];

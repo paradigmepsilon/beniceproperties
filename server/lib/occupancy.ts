@@ -1,10 +1,11 @@
 // server/lib/occupancy.ts
-// Daily room-occupancy sync. Room `status` (AVAILABLE/OCCUPIED) is a display
+// Room-occupancy sync. Room `status` (AVAILABLE/OCCUPIED) is a display
 // convenience derived from the same deconfliction source of truth used to
 // guard new bookings/leases (storage.getOccupiedRoomIdsOn — bookings, room-
-// blocking leases, external Airbnb blocks, and manual blocks). This job keeps
-// it in sync once a day so the room grid/inventory views don't drift from
-// reality between guard checks. HOLD/MAINTENANCE/INACTIVE rooms are never
+// blocking leases, external Airbnb blocks, and manual blocks). It runs on every
+// scheduler sweep and is idempotent (it writes only when a status actually
+// changes), so the room grid/inventory views don't drift from reality between
+// guard checks. HOLD/MAINTENANCE/INACTIVE rooms are never
 // touched — those are host-set unbookable states, not a computed occupancy
 // state, and must survive independent of whether the room happens to overlap
 // a block on `today`.

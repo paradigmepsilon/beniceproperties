@@ -39,7 +39,9 @@ function pi(metadata: Record<string, string> = {}) {
       guest_email: "jane@example.com",
       guest_phone: "+15551234567",
       property_id: "prop-1",
+      property_name: "Old Bill Cook",
       room_id: "r1",
+      room_name: "Room 2 — Garden",
       check_in: "2026-07-01",
       check_out: "2026-07-10",
       model: "COLIVING",
@@ -268,18 +270,51 @@ describe("materializeShortStayBooking — CONFLICT instead of auto-refund", () =
 });
 
 describe("materializeShortStayBooking — guards", () => {
-  it("does nothing without a reference", async () => {
+  // A paid PaymentIntent that cannot become a booking must never just be
+  // logged — money moved and nobody would know. Every bail-out branch pages.
+  it("pages an admin (contact-free) when the intent carries no reference", async () => {
     const deps = makeDeps();
-    await run({ id: "pi_1", metadata: {} } as unknown as import("stripe").Stripe.PaymentIntent, deps);
-    expect(deps.storage.createBooking).not.toHaveBeenCalled();
-  });
-
-  it("does not materialize a booking with no guest contact", async () => {
-    const deps = makeDeps();
-    await run(pi({ guest_email: "null" }), deps);
+    await run(
+      {
+        id: "pi_1",
+        metadata: { guest_email: "jane@example.com", guest_phone: "+15551234567", property_name: "Old Bill Cook" },
+      } as unknown as import("stripe").Stripe.PaymentIntent,
+      deps,
+    );
     expect(deps.storage.createBooking).not.toHaveBeenCalled();
     expect(mockStripe.refundPaymentIntent).not.toHaveBeenCalled();
+
+    expect(deps.notifyAdmin).toHaveBeenCalledTimes(1);
+    const alert = deps.notifyAdmin.mock.calls[0][0];
+    expect(alert.context).toMatchObject({ kind: "BOOKING_MATERIALIZE_FAILED" });
+    expect(alert.body).toContain("pi_1");
+    expect(alert.body).toContain("reference");
+    expect(alert.body).toContain("Old Bill Cook");
+    expect(alert.body).not.toContain("jane@example.com");
+    expect(alert.body).not.toContain("+15551234567");
   });
+
+  it.each(["guest_email", "guest_name"])(
+    "pages an admin (contact-free) when %s is missing",
+    async (field) => {
+      const deps = makeDeps();
+      await run(pi({ [field]: "null" }), deps);
+      expect(deps.storage.createBooking).not.toHaveBeenCalled();
+      expect(mockStripe.refundPaymentIntent).not.toHaveBeenCalled();
+
+      expect(deps.notifyAdmin).toHaveBeenCalledTimes(1);
+      const alert = deps.notifyAdmin.mock.calls[0][0];
+      expect(alert.context).toMatchObject({ kind: "BOOKING_MATERIALIZE_FAILED" });
+      expect(alert.body).toContain("pi_123");
+      expect(alert.body).toContain("BNP-7QK4-2F9X");
+      expect(alert.body).toContain(field);
+      // The one contact field that IS present must not ride along.
+      expect(alert.body).not.toContain("jane@example.com");
+      expect(alert.body).not.toContain("+15551234567");
+      // …but the operator still gets enough to find it: listing names.
+      expect(alert.body).toContain("Old Bill Cook");
+    },
+  );
 
   it.each(["property_id", "check_in"])(
     "refuses to write a booking with no %s and pages an admin instead",

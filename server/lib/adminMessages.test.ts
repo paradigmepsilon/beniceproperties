@@ -330,6 +330,27 @@ describe("getThread", () => {
     expect(result.deliveries.map((d) => d.id)).toEqual(["log-1", "log-2"]);
   });
 
+  it("scopes the delivery-trail read to the thread's booking id", async () => {
+    mockStorage.getMessagesByThread.mockResolvedValue([
+      { id: "t1", threadId: "t1", bookingId: "b1", leaseId: null, guestId: "g1", status: "OPEN" },
+    ]);
+    mockStorage.getMessageLog.mockResolvedValue([]);
+    await getThread("t1");
+    expect(mockStorage.getMessageLog).toHaveBeenCalledWith({ bookingId: "b1" });
+  });
+
+  // storage.getMessageLog returns [] for a scope-less read, but this module must
+  // not even ask: an unscoped read would splice another guest's sends into this
+  // thread's delivery trail the day someone adds an `all` default.
+  it("never reads the message log for a thread with neither a lease nor a booking", async () => {
+    mockStorage.getMessagesByThread.mockResolvedValue([
+      { id: "t1", threadId: "t1", bookingId: null, leaseId: null, guestId: "g1", status: "OPEN" },
+    ]);
+    const result = await getThread("t1");
+    expect(mockStorage.getMessageLog).not.toHaveBeenCalled();
+    expect(result.deliveries).toEqual([]);
+  });
+
   it("404s an unknown thread", async () => {
     mockStorage.getMessagesByThread.mockResolvedValue([]);
     await expect(getThread("nope")).rejects.toBeInstanceOf(LeaseError);

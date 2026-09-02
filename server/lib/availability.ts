@@ -18,7 +18,12 @@ import { addDays, format, parseISO } from "date-fns";
 import { storage } from "../storage";
 import type { AvailabilityResponse, BusyRange } from "@shared/api-types";
 import { todayIso } from "@shared/dates";
-import { ROOM_UNBOOKABLE_STATUSES, type Room } from "@shared/schema";
+import { ROOM_UNBOOKABLE_STATUSES, NON_BLOCKING_BOOKING_STATUSES, type Room } from "@shared/schema";
+
+/** CANCELLED / CONFLICT — paid or not, these rows occupy no dates. */
+function isNonBlocking(status: string): boolean {
+  return (NON_BLOCKING_BOOKING_STATUSES as readonly string[]).includes(status);
+}
 
 /** Inclusive end date → exclusive (first-free) end date. */
 function exclusiveEnd(inclusiveEnd: string): string {
@@ -64,7 +69,8 @@ export async function roomAvailableForDates(
 }
 
 /**
- * STR whole-property availability: non-cancelled direct bookings (half-open)
+ * STR whole-property availability: date-blocking direct bookings (half-open;
+ * CANCELLED/CONFLICT excluded)
  * ∪ external iCal blocks (room_id IS NULL) ∪ manual property-level blocks.
  * Only ranges ending today or later.
  */
@@ -73,6 +79,10 @@ export async function buildStrAvailability(propertyId: string): Promise<Availabi
 
   const bookings = await storage.getStrBookingsForProperty(propertyId);
   const directRanges: BusyRange[] = bookings
+    // The storage query already excludes CANCELLED/CONFLICT; re-filtering here
+    // mirrors the co-living path and keeps the calendar honest even if a caller
+    // hands this a wider list. A CONFLICT booking blocks no dates.
+    .filter((b) => !isNonBlocking(b.status))
     .filter((b) => b.checkOut && b.checkOut >= today) // future/current only; open-ended dropped
     .map((b) => ({ start: b.checkIn, end: b.checkOut as string, source: "direct" as const }));
 
@@ -91,7 +101,7 @@ export async function buildStrAvailability(propertyId: string): Promise<Availabi
 
 /**
  * Co-living room availability: room-blocking leases (inclusive end → normalized
- * to exclusive) ∪ non-cancelled direct co-living bookings (half-open) ∪ external
+ * to exclusive) ∪ date-blocking direct co-living bookings (half-open) ∪ external
  * iCal blocks for the room ∪ manual room-level blocks. Only ranges ending today
  * or later.
  *
@@ -114,6 +124,7 @@ export async function buildRoomAvailability(roomId: string): Promise<Availabilit
   // getColivingBookingsForRoom + isRoomAvailableForRange). Open-ended dropped.
   const bookings = await storage.getColivingBookingsForRoom(roomId);
   const bookingRanges: BusyRange[] = bookings
+    .filter((b) => !isNonBlocking(b.status))
     .filter((b) => b.checkOut && b.checkOut >= today)
     .map((b) => ({ start: b.checkIn, end: b.checkOut as string, source: "direct" as const }));
 

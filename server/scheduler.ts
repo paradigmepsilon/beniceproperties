@@ -96,8 +96,9 @@ class BackgroundScheduler {
   }
 
   private async occupancySyncRun(): Promise<void> {
-    // Daily room-occupancy status sync, driven off the same deconfliction
-    // source of truth used to guard new bookings/leases. Never throws.
+    // Room-occupancy status sync, driven off the same deconfliction source of
+    // truth used to guard new bookings/leases. Runs on every sweep and is
+    // idempotent (writes only on an actual status change). Never throws.
     try {
       const result = await syncRoomOccupancyStatus();
       if (result.changed > 0) {

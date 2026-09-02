@@ -54,6 +54,22 @@ const statements = [
   `ALTER TABLE "uo_escalations" ALTER COLUMN "lease_id" DROP NOT NULL`,
   `ALTER TABLE "uo_escalations" ADD COLUMN IF NOT EXISTS "booking_id" varchar`,
   `CREATE INDEX IF NOT EXISTS uo_escalations_booking_idx ON uo_escalations(booking_id)`,
+  // Scope CHECKs: a guest message / lifecycle event must hang off SOMETHING —
+  // a lease or a booking. Both columns became nullable above (booking-scoped
+  // short stays have no lease), which would otherwise allow an orphan row that
+  // no thread, portal, or dedupe lookup can ever find again.
+  `DO $$ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'guest_messages_scope_chk') THEN
+       ALTER TABLE guest_messages ADD CONSTRAINT guest_messages_scope_chk
+         CHECK (lease_id IS NOT NULL OR booking_id IS NOT NULL);
+     END IF;
+   END $$`,
+  `DO $$ BEGIN
+     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'lifecycle_events_scope_chk') THEN
+       ALTER TABLE lifecycle_events ADD CONSTRAINT lifecycle_events_scope_chk
+         CHECK (lease_id IS NOT NULL OR booking_id IS NOT NULL);
+     END IF;
+   END $$`,
   // Exclusion constraints: two live bookings can never overlap on one room /
   // one whole-property STR. CONFLICT and CANCELLED rows are exempt.
   `DO $$ BEGIN
@@ -71,6 +87,8 @@ const statements = [
      END IF;
    END $$`,
   `INSERT INTO app_settings (key, value) VALUES ('ical_honor_host_blocks', 'true') ON CONFLICT (key) DO NOTHING`,
+  // Key must match shared/schema.ts GUEST_AUTO_NOTIFICATIONS_SETTING — the app
+  // reads and writes it by that constant.
   `INSERT INTO app_settings (key, value) VALUES ('guest_auto_notifications', 'true') ON CONFLICT (key) DO NOTHING`,
 ];
 

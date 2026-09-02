@@ -253,9 +253,17 @@ export async function getThread(threadId: string): Promise<ThreadDetail> {
   const root = messages.find((m) => m.id === threadId);
   if (!root) throw new LeaseError("Thread not found", 404);
 
-  const logs = await storage.getMessageLog(
-    root.leaseId ? { leaseId: root.leaseId } : { bookingId: root.bookingId ?? undefined },
-  );
+  // A thread with neither id has no delivery trail to show. Never fall through
+  // to an unscoped getMessageLog — that would render another guest's sends
+  // inside this thread.
+  const scope = root.leaseId
+    ? { leaseId: root.leaseId }
+    : root.bookingId
+      ? { bookingId: root.bookingId }
+      : null;
+  if (!scope) return { root, messages, deliveries: [] };
+
+  const logs = await storage.getMessageLog(scope);
   const deliveries = logs
     .filter((l) => l.kind === "MANUAL")
     .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());

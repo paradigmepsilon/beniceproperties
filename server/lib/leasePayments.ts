@@ -39,6 +39,7 @@ import { LeaseError } from "./lease";
 import { handleChargeFailure, billAccruedLateFees } from "./dunning";
 import { onLeaseActivated, onPaymentReceived, onDepositReceived } from "./lifecycle";
 import { notifyAdmin } from "./notifications";
+import { todayIso } from "@shared/dates";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow } from "@shared/schema";
 
@@ -455,7 +456,7 @@ export async function activateVerifiedLease(leaseId: string): Promise<void> {
   }
 
   // First week's rent — charge now only if move-in is today/past; else defer.
-  const dueNow = first && first.status !== "PAID" && first.dueDate <= todayYmd();
+  const dueNow = first && first.status !== "PAID" && first.dueDate <= todayIso();
   if (dueNow && savedPaymentMethodId) {
     await chargeFirstWeekOffSession(lease.id, savedPaymentMethodId).catch((err) => {
       log(`first-week charge on activation failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
@@ -599,7 +600,7 @@ export interface RentSweepResult {
  * chargeable. `today` is injectable for tests. Returns counts. Never throws on a
  * single decline — it records FAILED and moves on.
  */
-export async function runScheduledRentSweep(today: string = todayYmd()): Promise<RentSweepResult> {
+export async function runScheduledRentSweep(today: string = todayIso()): Promise<RentSweepResult> {
   const result: RentSweepResult = { considered: 0, charged: 0, failed: 0, skipped: 0 };
 
   // Only ACTIVE leases have ongoing rent. (PENDING_FIRST_PAYMENT seq 1 is handled
@@ -730,6 +731,3 @@ async function chargeInstallment(
   }
 }
 
-function todayYmd(): string {
-  return new Date().toISOString().slice(0, 10);
-}

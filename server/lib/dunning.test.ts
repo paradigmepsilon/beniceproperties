@@ -34,6 +34,8 @@ vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./notifications", () => mockNotify);
 vi.mock("./stripe", () => mockStripe);
 
+import { readFileSync } from "node:fs";
+import { todayIso } from "@shared/dates";
 import {
   runDunningSweep,
   handleChargeFailure,
@@ -220,6 +222,23 @@ describe("handleChargeFailure", () => {
     expect(alert.telegramText).not.toContain(GUEST.phone);
   });
 
+  // Money timing is a CALENDAR-day question: a failure at 8pm ET on the 9th is
+  // the 9th, not the 10th (which is what a UTC day would call it). The default
+  // must be the hotel-local day.
+  it("defaults `today` to the hotel-local calendar day, not the UTC one", async () => {
+    await handleChargeFailure({
+      lease: activeLease(),
+      guest: GUEST,
+      scheduleRow: row(2, "2026-07-10", { status: "DUE" }),
+    });
+    expect(mockStorage.hasNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ sendDate: todayIso() }),
+    );
+    expect(mockStorage.recordNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ sendDate: todayIso() }),
+    );
+  });
+
   it("does not re-page an admin when the escalation was already open (deduped)", async () => {
     mockStorage.raiseEscalationOnce.mockResolvedValue(null); // dedupe hit
     await handleChargeFailure({
@@ -275,5 +294,20 @@ describe("billAccruedLateFees", () => {
     });
     expect(res.billed).toBe(false);
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+});
+
+// The two modules that decide when money is due/late must never derive a
+// calendar day from a UTC ISO slice — near midnight ET that is tomorrow, which
+// accrues a $25 late fee a day early.
+describe("money-timing modules use the hotel-local calendar day", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it.each(["./dunning.ts", "./leasePayments.ts"])("%s has no UTC day slicing", (file) => {
+    const src = read(file);
+    expect(src).not.toMatch(/new Date\(\)\.toISOString\(\)\.slice\(0,\s*10\)/);
+    expect(src).not.toMatch(/toISOString\(\)\.slice\(0,\s*10\)/);
+    expect(src).toContain('from "@shared/dates"');
+    expect(src).toContain("todayIso()");
   });
 });

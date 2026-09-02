@@ -63,6 +63,15 @@ export const BOOKING_STATUSES = [
   // dates and never auto-notifies the guest. Admin resolves: confirm or cancel+refund.
   "CONFLICT",
 ] as const;
+/**
+ * Booking statuses that occupy NO dates and NO room. CANCELLED is self-evident;
+ * CONFLICT is paid-but-unresolved and deliberately non-blocking (see
+ * server/lib/materialize.ts). Every availability source — the storage queries,
+ * `strHasConflict`, `buildStrAvailability`, and the Postgres exclusion
+ * constraints in scripts/push-deconfliction-messaging.mjs — must exempt exactly
+ * this set, or the calendar and the booking gate disagree.
+ */
+export const NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT"] as const;
 export const PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"] as const;
 export const PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"] as const;
 export const PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED"] as const;
@@ -1060,6 +1069,16 @@ export const appSettings = pgTable("app_settings", {
 });
 
 export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ updatedAt: true });
+
+/**
+ * Setting keys shared across the server (route handlers, the send layer, and
+ * the push script). They live here so a key can never be spelled one way where
+ * it is WRITTEN and another where it is READ — the bug that once made the guest
+ * auto-notification toggle inert. Any new key that more than one module touches
+ * belongs in this block.
+ */
+/** Master opt-OUT for automated guest sends. Absent/any-other-value = ON. */
+export const GUEST_AUTO_NOTIFICATIONS_SETTING = "guest_auto_notifications";
 
 export type AppSetting = typeof appSettings.$inferSelect;
 export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;

@@ -31,6 +31,7 @@ import {
   insertManualBlockSchema,
   US_STATE_CODES,
   COLIVING_MIN_DAYS,
+  GUEST_AUTO_NOTIFICATIONS_SETTING,
   type PropertyListItem,
   type RoomWithAvailability,
   type JournalBlock,
@@ -86,6 +87,8 @@ import {
 import { requireServiceToken } from "./lib/serviceAuth";
 import * as uo from "./lib/uoApi";
 import * as adminMessages from "./lib/adminMessages";
+import { validateManualBlockInput } from "./lib/manualBlocks";
+import { boundedMessageLogLimit } from "./lib/messageLogQuery";
 import { refreshExternalCalendars } from "./lib/icalSync";
 import { buildReconciliationReport } from "./lib/reconciliation";
 import {
@@ -1617,6 +1620,11 @@ export async function registerRoutes(app: Express): Promise<void> {
     return `uo:${raw}`;
   }
 
+  /** Log tag for an actor string: "uo:<name>" → "uo", anything else → "admin". */
+  function actorLogTag(actor: string): string {
+    return actor.startsWith("uo:") ? "uo" : "admin";
+  }
+
   const newThreadBodySchema = z.object({
     bookingId: z.string().optional(),
     leaseId: z.string().optional(),
@@ -1630,7 +1638,6 @@ export async function registerRoutes(app: Express): Promise<void> {
   });
   const createBlockBodySchema = insertManualBlockSchema.omit({ source: true, createdBy: true });
   const autoNotifyBodySchema = z.object({ enabled: z.boolean() });
-  const GUEST_AUTO_NOTIFY_KEY = "guest_auto_notifications_enabled";
 
   function messageHandlers(source: "ADMIN" | "UO", actorFrom: (req: express.Request) => string) {
     return {
@@ -1680,12 +1687,15 @@ export async function registerRoutes(app: Express): Promise<void> {
         try {
           const bookingId = typeof req.query.bookingId === "string" ? req.query.bookingId : undefined;
           const leaseId = typeof req.query.leaseId === "string" ? req.query.leaseId : undefined;
-          let limit = 200;
-          if (typeof req.query.limit === "string") {
-            const n = parseInt(req.query.limit, 10);
-            if (Number.isFinite(n)) limit = Math.min(Math.max(n, 1), 1000);
-          }
-          res.json({ log: await storage.getMessageLog({ bookingId, leaseId, limit }) });
+          const guestId = typeof req.query.guestId === "string" ? req.query.guestId : undefined;
+          const limit =
+            typeof req.query.limit === "string"
+              ? boundedMessageLogLimit(parseInt(req.query.limit, 10))
+              : undefined;
+          // This console view is the ONE place allowed to read the log unscoped;
+          // storage returns [] for any other scope-less caller.
+          const all = !bookingId && !leaseId && !guestId;
+          res.json({ log: await storage.getMessageLog({ bookingId, leaseId, guestId, limit, all }) });
         } catch (e) {
           messagingErr(e, res, next);
         }
@@ -1705,6 +1715,20 @@ export async function registerRoutes(app: Express): Promise<void> {
           if (parsed.data.endDate <= parsed.data.startDate) {
             return res.status(400).json({ message: "endDate must be after startDate" });
           }
+          // A property-level block on a co-living listing is inert (availability
+          // there is per-room), and a room from another property would block the
+          // wrong listing. Both are operator mistakes worth a 400, not a silent
+          // no-op row.
+          const [blockProperty, blockRoom] = await Promise.all([
+            storage.getProperty(parsed.data.propertyId),
+            parsed.data.roomId ? storage.getRoom(parsed.data.roomId) : Promise.resolve(undefined),
+          ]);
+          const check = validateManualBlockInput({
+            property: blockProperty,
+            room: blockRoom,
+            roomId: parsed.data.roomId,
+          });
+          if (!check.ok) return res.status(400).json({ message: check.message });
           const actor = actorFrom(req);
           const block = await storage.createManualBlock({ ...parsed.data, source, createdBy: actor });
           res.json(block);
@@ -1714,15 +1738,20 @@ export async function registerRoutes(app: Express): Promise<void> {
       },
       deleteBlock: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
+          // Deleting a block re-opens dates for sale — name whoever did it.
+          const actor = actorFrom(req);
           const deleted = await storage.deleteManualBlock(req.params.id);
           if (!deleted) return res.status(404).json({ message: "Block not found" });
+          log(`manual block ${req.params.id} deleted by ${actor}`, actorLogTag(actor));
           res.json({ ok: true });
         } catch (e) {
           messagingErr(e, res, next);
         }
       },
-      calendarRefresh: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+      calendarRefresh: async (req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
+          const actor = actorFrom(req);
+          log(`calendar refresh triggered by ${actor}`, actorLogTag(actor));
           res.json(await refreshExternalCalendars());
         } catch (e) {
           messagingErr(e, res, next);
@@ -1790,7 +1819,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       },
       getAutoNotify: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
-          const row = await storage.getSetting(GUEST_AUTO_NOTIFY_KEY);
+          const row = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
           // Default ON: absent a setting, guests keep getting the automated
           // lifecycle/dunning sends that already exist — this toggle is an
           // opt-OUT switch, not an opt-in one.
@@ -1804,8 +1833,13 @@ export async function registerRoutes(app: Express): Promise<void> {
           const parsed = autoNotifyBodySchema.safeParse(req.body);
           if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
           const actor = actorFrom(req);
-          await storage.setSetting(GUEST_AUTO_NOTIFY_KEY, parsed.data.enabled ? "true" : "false");
-          log(`guest_auto_notifications set to ${parsed.data.enabled} by ${actor}`, "admin");
+          await storage.setSetting(GUEST_AUTO_NOTIFICATIONS_SETTING, parsed.data.enabled ? "true" : "false");
+          // Tag the line with the surface the write came from, not a hard-coded
+          // "admin": the UO variant of this handler writes the same setting.
+          log(
+            `${GUEST_AUTO_NOTIFICATIONS_SETTING} set to ${parsed.data.enabled} by ${actor}`,
+            actorLogTag(actor),
+          );
           res.json({ enabled: parsed.data.enabled });
         } catch (e) {
           messagingErr(e, res, next);
@@ -2248,7 +2282,9 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
         // co-living reservation), payment-first: NO booking row existed before
         // now. MATERIALIZE the booking from the PI metadata. Idempotent across
         // Stripe retries (keyed on `reference`); re-checks availability so a rare
-        // concurrent double-book is refunded instead of overbooking.
+        // concurrent double-book lands as a non-blocking CONFLICT booking (paid,
+        // escalated, admin paged) instead of overbooking. NOTHING here refunds —
+        // a refund is always a deliberate human action from the admin console.
         await materializeShortStayBooking(pi);
       } else if (kind === "BOOKING_DEPOSIT" && hasLease) {
         // Co-living deposit succeeded → secure the room(s) + charge first week.

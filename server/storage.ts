@@ -9,11 +9,13 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, sql } from "drizzle-orm";
 import { db } from "./db";
 import { overlapsRange } from "./lib/ranges";
+import { planMessageLogQuery } from "./lib/messageLogQuery";
 import { escalationDedupeMatch } from "./lib/escalationDedupe";
 import {
+  NON_BLOCKING_BOOKING_STATUSES,
   properties,
   rooms,
   guests,
@@ -155,16 +157,18 @@ export interface IStorage {
   /** Batched by-id lookup (e.g. thread-list enrichment) — one query, not N. */
   getBookingsByIds(ids: string[]): Promise<Booking[]>;
   /**
-   * Non-cancelled STR bookings with a checkOut on/after `date`, for the given
+   * Date-BLOCKING STR bookings with a checkOut on/after `date`, for the given
    * properties, ordered by checkIn — the inputs to the "next opening" chain
    * walk (server/lib/nextOpening.ts). One batched query, never per-property.
+   * CANCELLED and CONFLICT rows are excluded (NON_BLOCKING_BOOKING_STATUSES).
    */
   getStrBookingsEndingOnOrAfter(propertyIds: string[], date: string): Promise<Booking[]>;
   createBooking(data: InsertBooking): Promise<Booking>;
   updateBooking(id: string, updates: Partial<InsertBooking>): Promise<Booking | undefined>;
   /**
    * Bookings joined to their guest/property/room for admin/UO listing views.
-   * Default statuses exclude CANCELLED and COMPLETED. `from`, when given,
+   * Default statuses are CONFIRMED / ACTIVE / CONFLICT — no CANCELLED,
+   * COMPLETED, or PENDING_PAYMENT. `from`, when given,
    * keeps only bookings that haven't fully checked out (`checkOut >= from`
    * OR `checkOut IS NULL` for open-ended stays).
    */
@@ -256,11 +260,22 @@ export interface IStorage {
 
   // --- Message log (append-only audit trail of every send/receive, any channel) ---
   createMessageLog(data: InsertMessageLog): Promise<MessageLogRow>;
+  /**
+   * Delivery trail, newest first. ALWAYS bounded: `limit` defaults to
+   * MESSAGE_LOG_DEFAULT_LIMIT and is capped at MESSAGE_LOG_MAX_LIMIT, so no
+   * caller can pull the whole table.
+   *
+   * A scope (bookingId / leaseId / guestId) is REQUIRED. Without one this
+   * returns `[]` unless `all: true` is passed — the unscoped firehose is for the
+   * admin/UO `/message-log` console view only, never for a per-thread read that
+   * lost its ids.
+   */
   getMessageLog(opts: {
     bookingId?: string;
     leaseId?: string;
     guestId?: string;
     limit?: number;
+    all?: boolean;
   }): Promise<MessageLogRow[]>;
 
   // --- Lifecycle events (idempotent send log) ---
@@ -370,7 +385,10 @@ export interface IStorage {
   deleteExternalBooking(id: string): Promise<void>;
 
   // --- Direct-booking / lease reads used by iCal dedup + availability merge ---
-  /** Non-cancelled STR bookings for a property (external dedup + STR availability). */
+  /**
+   * Date-BLOCKING STR bookings for a property (external dedup + STR
+   * availability). Excludes NON_BLOCKING_BOOKING_STATUSES (CANCELLED, CONFLICT).
+   */
   getStrBookingsForProperty(propertyId: string): Promise<Booking[]>;
   /** Room-blocking leases that include a given room (external dedup + reused by isRoomAvailableForRange). */
   getRoomBlockingLeasesForRoom(roomId: string): Promise<Lease[]>;
@@ -565,7 +583,11 @@ class Storage implements IStorage {
         and(
           inArray(bookings.propertyId, propertyIds),
           eq(bookings.model, "STR"),
-          ne(bookings.status, "CANCELLED"),
+          // CONFLICT rows are paid-but-unresolved: they block no dates and hold
+          // no room (see server/lib/materialize.ts), so they must not appear in
+          // availability or "next opening" either. Same exemption the exclusion
+          // constraint and strHasConflict use.
+          notInArray(bookings.status, [...NON_BLOCKING_BOOKING_STATUSES]),
           // SQL null comparison also drops open-ended stays (null checkOut).
           gte(bookings.checkOut, date),
         ),
@@ -591,7 +613,12 @@ class Storage implements IStorage {
     statuses?: string[];
     from?: string;
   }): Promise<Array<Booking & { guest: Guest; property: Property; room: Room | null }>> {
-    const statuses = opts?.statuses ?? ["CONFIRMED", "ACTIVE", "CONFLICT", "PENDING_PAYMENT"];
+    // Default = bookings a staff member can actually act on: live stays plus
+    // paid-but-unresolved CONFLICTs. PENDING_PAYMENT is deliberately NOT here —
+    // those are abandoned checkouts with no money and often no real guest, and
+    // they swamped the message-compose guest picker. A caller that wants them
+    // passes `statuses` explicitly.
+    const statuses = opts?.statuses ?? ["CONFIRMED", "ACTIVE", "CONFLICT"];
     const filters = [inArray(bookings.status, statuses)];
     if (opts?.from) {
       filters.push(sql`(${bookings.checkOut} >= ${opts.from} OR ${bookings.checkOut} IS NULL)`);
@@ -1004,14 +1031,20 @@ class Storage implements IStorage {
     leaseId?: string;
     guestId?: string;
     limit?: number;
+    all?: boolean;
   }): Promise<MessageLogRow[]> {
     const filters = [];
     if (opts.bookingId) filters.push(eq(messageLog.bookingId, opts.bookingId));
     if (opts.leaseId) filters.push(eq(messageLog.leaseId, opts.leaseId));
     if (opts.guestId) filters.push(eq(messageLog.guestId, opts.guestId));
+    // No scope + no explicit `all` = a caller that lost its ids. Returning the
+    // newest N rows of EVERY guest's traffic would leak one guest's messages
+    // into another's thread view, so refuse instead.
+    const plan = planMessageLogQuery(opts);
+    if (plan.refuse) return [];
     const q = db.select().from(messageLog).orderBy(desc(messageLog.createdAt));
     const filtered = filters.length ? q.where(and(...filters)) : q;
-    return opts.limit ? filtered.limit(opts.limit) : filtered;
+    return filtered.limit(plan.limit);
   }
 
   // --- Lifecycle events ---
@@ -1512,7 +1545,9 @@ class Storage implements IStorage {
         and(
           eq(bookings.propertyId, propertyId),
           eq(bookings.model, "STR"),
-          ne(bookings.status, "CANCELLED"),
+          // CANCELLED and CONFLICT rows block nothing — see
+          // NON_BLOCKING_BOOKING_STATUSES.
+          notInArray(bookings.status, [...NON_BLOCKING_BOOKING_STATUSES]),
         ),
       )
       .orderBy(asc(bookings.checkIn));

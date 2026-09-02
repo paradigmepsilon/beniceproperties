@@ -35,13 +35,12 @@ import {
   OVERDUE_MESSAGE_DAYS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS,
 } from "@shared/schema";
+import { todayIso } from "@shared/dates";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow, Guest } from "@shared/schema";
 
 const SETTING_DEFAULT_THRESHOLD = "defaulted_threshold_days";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 /** Whole days `dueDate` is in the past relative to `today` (negative = future). */
 export function daysPastDue(dueDate: string, today: string): number {
@@ -63,7 +62,7 @@ export interface DunningResult {
 // Daily sweep
 // ---------------------------------------------------------------------------
 
-export async function runDunningSweep(today: string = ymd(new Date())): Promise<DunningResult> {
+export async function runDunningSweep(today: string = todayIso()): Promise<DunningResult> {
   const result: DunningResult = {
     remindersSent: 0,
     overdueMessages: 0,
@@ -137,6 +136,7 @@ async function maybeSendReminder(
   const sent = await notifyGuest({
     email: guest.email,
     phone: guest.phone,
+    context: { leaseId: lease.id, guestId: guest.id, kind },
     subject: `Rent reminder — payment due ${when}`,
     body:
       `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} ` +
@@ -197,6 +197,7 @@ async function handleOverdue(
       const sent = await notifyGuest({
         email: guest.email,
         phone: guest.phone,
+        context: { leaseId: lease.id, guestId: guest.id, kind },
         subject: `Payment overdue — installment #${row.scheduleSeq}`,
         body:
           `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, ` +
@@ -264,6 +265,7 @@ async function handleOverdue(
         const sent = await notifyGuest({
           email: guest.email,
           phone: guest.phone,
+          context: { leaseId: lease.id, guestId: guest.id, kind: "DEFAULTED" },
           subject: "Your lease is in default",
           body:
             `Hi ${guest.name}, your lease at ${property.name} is now in default due to an unpaid ` +
@@ -294,7 +296,7 @@ export async function handleChargeFailure(args: {
   reason?: string;
   today?: string;
 }): Promise<void> {
-  const today = args.today ?? ymd(new Date());
+  const today = args.today ?? todayIso();
   // Row is already marked FAILED by the charge path; ensure it here too.
   if (args.scheduleRow.status !== "FAILED") {
     await storage.updateScheduleRow(args.scheduleRow.id, { status: "FAILED" });
@@ -338,6 +340,7 @@ export async function handleChargeFailure(args: {
     const sent = await notifyGuest({
       email: args.guest.email,
       phone: args.guest.phone,
+      context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "PAYMENT_FAILED" },
       subject: "Action needed — your rent payment failed",
       body:
         `Hi ${args.guest.name}, we couldn't process your rent payment for installment ` +

@@ -25,6 +25,9 @@ import { todayIso } from "@shared/dates";
 import { log } from "../server-log";
 import type { Booking } from "@shared/schema";
 
+/** Postgres `exclusion_violation` — the range-overlap constraint rejected the row. */
+const PG_EXCLUSION_VIOLATION = "23P01";
+
 /** Close any OPEN BOOKING_CONFLICT escalation attached to this booking. */
 async function resolveConflictEscalations(bookingId: string, actor: string): Promise<number> {
   const open = await storage.getEscalations({ status: "OPEN", bookingId });
@@ -88,7 +91,23 @@ export async function confirmConflictBooking(bookingId: string, actor: string): 
   }
 
   const status = booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
-  const updated = (await storage.updateBooking(booking.id, { status })) ?? { ...booking, status };
+  // The gate above is a read-then-write race window: another confirmation (or a
+  // fresh paid booking) can take the dates between the check and this UPDATE. The
+  // Postgres exclusion constraint is the real arbiter, and it raises 23P01 —
+  // surface that as the same 409 the gate would have returned rather than a 500.
+  let updated: Booking;
+  try {
+    updated = (await storage.updateBooking(booking.id, { status })) ?? { ...booking, status };
+  } catch (err) {
+    if ((err as { code?: string }).code === PG_EXCLUSION_VIOLATION) {
+      log(
+        `booking ${booking.reference} (${booking.id}) confirm rejected by exclusion constraint`,
+        "admin",
+      );
+      throw new BookingError("Those dates were just taken — cannot confirm", 409);
+    }
+    throw err;
+  }
   if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
   await resolveConflictEscalations(booking.id, actor);
 

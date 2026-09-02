@@ -49,6 +49,7 @@ import {
   runScheduledRentSweep,
 } from "./leasePayments";
 import { LeaseError } from "./lease";
+import { todayIso, addDaysIso } from "@shared/dates";
 
 const PROP = { id: "prop-1", name: "Old Bill Cook", type: "COLIVING", entity: "BNP", location: "Atlanta" };
 const ROOMS = [{ roomId: "r1", roomNameSnapshot: "Room 1", roomNumberSnapshot: "1" }];
@@ -449,6 +450,22 @@ describe("runScheduledRentSweep", () => {
       "row-2",
       expect.objectContaining({ status: "PAID", stripePaymentIntentId: "pi_rent_2" }),
     );
+  });
+
+  // The sweep's `today` decides whether rent is due. A UTC day would treat the
+  // hours after 8pm ET as tomorrow and charge a day early.
+  it("defaults `today` to the hotel-local calendar day, not the UTC one", async () => {
+    const today = todayIso();
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      schedRow(2, { dueDate: today }), // due exactly today → chargeable
+      schedRow(3, { dueDate: addDaysIso(today, 1) }), // tomorrow → not yet
+    ]);
+    mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_rent_2", status: "succeeded" });
+
+    const res = await runScheduledRentSweep();
+
+    expect(res.charged).toBe(1);
+    expect(mockStripe.chargeSavedCard.mock.calls[0][0].metadata.schedule_seq).toBe("2");
   });
 
   it("does NOT charge: future rows, manual rows, paid rows, or rows already carrying a PI", async () => {

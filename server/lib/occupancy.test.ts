@@ -1,5 +1,6 @@
 // server/lib/occupancy.test.ts
-// Daily room-occupancy sync: sets each bookable room's status from the
+// Room-occupancy sync (every sweep, idempotent): sets each bookable room's
+// status from the
 // deconfliction source of truth (storage.getOccupiedRoomIdsOn), leaving
 // HOLD/MAINTENANCE/INACTIVE rooms untouched, and only calls updateRoom when
 // the status actually changes.

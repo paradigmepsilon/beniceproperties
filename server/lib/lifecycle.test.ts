@@ -23,6 +23,8 @@ const mockNotify = vi.hoisted(() => ({
 vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./notifications", () => mockNotify);
 
+import { GUEST_AUTO_NOTIFICATIONS_SETTING } from "@shared/schema";
+import { readFileSync } from "node:fs";
 import {
   onLeaseActivated,
   onPaymentReceived,
@@ -166,7 +168,15 @@ describe("onBookingConfirmed", () => {
   });
 
   it("skips the guest send when guest_auto_notifications is disabled, but still alerts admin", async () => {
-    mockStorage.getSetting.mockResolvedValue({ key: "guest_auto_notifications", value: "false" });
+    // KEY-SENSITIVE on purpose: the "false" row is only returned for the exact
+    // shared constant. If onBookingConfirmed ever reads a differently-spelled
+    // key again (the bug that made this toggle inert), it gets `undefined`,
+    // guest sends stay ON, and this test fails.
+    mockStorage.getSetting.mockImplementation(async (key: string) =>
+      key === GUEST_AUTO_NOTIFICATIONS_SETTING
+        ? { key: GUEST_AUTO_NOTIFICATIONS_SETTING, value: "false" }
+        : undefined,
+    );
 
     await onBookingConfirmed({ booking: BOOKING, property: PROP, room: ROOM, guest: GUEST });
 
@@ -242,5 +252,34 @@ describe("runLeaseEndingNotices", () => {
     mockStorage.hasLifecycleEvent.mockResolvedValue(true);
     const sent = await runLeaseEndingNotices("2026-07-20");
     expect(sent).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The auto-notification toggle spans three files that cannot import each other
+// (a route module, this send gate, and a plain-node push script). The constant
+// is the contract; these assertions are what keep the three spellings identical.
+// ---------------------------------------------------------------------------
+describe("guest_auto_notifications setting key", () => {
+  const read = (rel: string) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("is the literal the push script seeds into app_settings", () => {
+    expect(GUEST_AUTO_NOTIFICATIONS_SETTING).toBe("guest_auto_notifications");
+    const script = read("../../scripts/push-deconfliction-messaging.mjs");
+    expect(script).toContain(`VALUES ('${GUEST_AUTO_NOTIFICATIONS_SETTING}', 'true')`);
+  });
+
+  it("is read and written by routes.ts through the shared constant, not a literal", () => {
+    const routes = read("../routes.ts");
+    expect(routes).toContain("storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING)");
+    expect(routes).toContain("storage.setSetting(GUEST_AUTO_NOTIFICATIONS_SETTING,");
+    // No stale hand-spelled key left anywhere in the route layer.
+    expect(routes).not.toContain("guest_auto_notifications_enabled");
+  });
+
+  it("is read by the lifecycle send gate through the same constant", () => {
+    const gate = read("./lifecycle.ts");
+    expect(gate).toContain("storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING)");
+    expect(gate).not.toContain('getSetting("guest_auto_notifications');
   });
 });
