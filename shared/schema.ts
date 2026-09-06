@@ -1462,3 +1462,43 @@ export const insertMessageLogSchema = createInsertSchema(messageLog, {
 }).omit({ id: true, createdAt: true });
 export type MessageLogRow = typeof messageLog.$inferSelect;
 export type InsertMessageLog = z.infer<typeof insertMessageLogSchema>;
+
+// =============================================================================
+// booking_intents — every checkout a guest STARTED. The payment-first model
+// writes no booking row until Stripe confirms, so without this table an
+// abandoned checkout is invisible. One row per PaymentIntent, written when the
+// intent is created and updated when the guest attaches contact details.
+// Matched to a booking by `reference` (bookings.reference is unique). Read by
+// UO for the guest's website activity ("started checkout, did they book?").
+// Never authoritative for money — Stripe + bookings/payments are.
+// =============================================================================
+export const bookingIntents = pgTable(
+  "booking_intents",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    reference: text("reference").notNull().unique(),
+    stripePaymentIntentId: text("stripe_payment_intent_id").notNull(),
+    propertyId: varchar("property_id").notNull(),
+    roomId: varchar("room_id"),
+    model: text("model").notNull(), // STR | COLIVING
+    checkIn: date("check_in").notNull(),
+    checkOut: date("check_out"),
+    quotedTotal: decimal("quoted_total", { precision: 10, scale: 2 }).notNull(),
+    guestName: text("guest_name"),
+    guestEmail: text("guest_email"),
+    guestPhone: text("guest_phone"),
+    contactAttachedAt: timestamp("contact_attached_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    piIdx: index("booking_intents_pi_idx").on(table.stripePaymentIntentId),
+    emailIdx: index("booking_intents_email_idx").on(table.guestEmail),
+    createdIdx: index("booking_intents_created_idx").on(table.createdAt),
+  }),
+);
+export const insertBookingIntentSchema = createInsertSchema(bookingIntents, {
+  model: z.enum(BOOKING_MODELS),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+export type BookingIntent = typeof bookingIntents.$inferSelect;
+export type InsertBookingIntent = z.infer<typeof insertBookingIntentSchema>;

@@ -79,3 +79,15 @@ export function track(
   if (!started) return;
   posthog.capture(event, properties);
 }
+
+/**
+ * Tie the anonymous browsing session to the guest once they identify
+ * themselves (checkout contact step). Lets the PostHog person timeline show
+ * what this guest did on the site before booking. Email only — no name/phone.
+ */
+export function identify(email: string): void {
+  if (!started) return;
+  const e = email.trim().toLowerCase();
+  if (!e) return;
+  posthog.identify(e);
+}

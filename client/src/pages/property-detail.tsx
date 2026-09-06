@@ -5,6 +5,7 @@
 
 import { useState } from "react";
 import { Link, useParams, useLocation, useSearch } from "wouter";
+import { visibleRooms } from "@/lib/visibility";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
 import { todayIso } from "@shared/dates";
@@ -124,6 +125,10 @@ export default function PropertyDetail() {
   const datesQuery = datedSearch
     ? `?${new URLSearchParams({ checkIn, checkOut }).toString()}`
     : "";
+  // Rooms the guest may see (visibility.ts): off-market rooms never; during a
+  // dated search, only rooms free for the range.
+  const shownRooms = visibleRooms(rooms, datedSearch);
+  const hiddenRoomCount = datedSearch ? rooms.length - shownRooms.length : 0;
   const busy = avail?.busy ?? [];
   const disabledDays = busyToDisabledMatchers(busy, {
     minDate: avail?.minDate ?? today,
@@ -246,8 +251,21 @@ export default function PropertyDetail() {
                 <h2 className="font-display text-xl font-semibold">Available rooms</h2>
                 {/* Stacked on mobile, then a capped grid so rooms wrap instead of
                     shrinking into one cramped row when a property has many rooms. */}
+                {/* Guests only see rooms they can actually reserve: off-market
+                    rooms never render, and during a dated search rooms not free
+                    for those dates are dropped (see client/src/lib/visibility.ts). */}
+                {hiddenRoomCount > 0 && (
+                  <p className="mt-2 text-sm text-muted-foreground" data-testid="text-rooms-hidden">
+                    {hiddenRoomCount} room{hiddenRoomCount === 1 ? " is" : "s are"} not available for your dates.
+                  </p>
+                )}
+                {shownRooms.length === 0 && (
+                  <p className="mt-4 text-sm text-muted-foreground" data-testid="text-no-rooms">
+                    {datedSearch ? "No rooms are free for those dates — try a different move-in or move-out." : "No rooms are open right now."}
+                  </p>
+                )}
                 <div className="mt-4 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
-                  {rooms.map((room) => {
+                  {shownRooms.map((room) => {
                     // Blocked for the SELECTED dates (Airbnb/lease/manual/direct)
                     // though its manual status may still allow booking — only
                     // meaningful when a range is chosen (server returns

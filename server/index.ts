@@ -7,9 +7,9 @@
 // serverless function and Vercel Cron drives the scheduler (api/cron/sweep.ts).
 
 import "dotenv/config";
-import express, { type Request, type Response, type NextFunction } from "express";
+import express from "express";
 import { createServer } from "http";
-import { applyBaseMiddleware } from "./app";
+import { applyBaseMiddleware, applyErrorHandler } from "./app";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic } from "./vite";
 import { log } from "./server-log";
@@ -24,12 +24,9 @@ applyBaseMiddleware(app);
   await registerRoutes(app);
   const server = createServer(app);
 
-  // Centralized error handler.
-  app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-    const status = err.status || err.statusCode || 500;
-    res.status(status).json({ message: err.message || "Internal Server Error" });
-    console.error(err);
-  });
+  // Centralized error handler (shared with the Vercel handler — never echoes a
+  // 5xx internal message to the client outside dev).
+  applyErrorHandler(app);
 
   if (isDev) {
     await setupVite(app, server);

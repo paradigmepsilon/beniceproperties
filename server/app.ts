@@ -13,6 +13,7 @@ import helmet from "helmet";
 import { registerRoutes } from "./routes";
 import { log } from "./server-log";
 import { posthog } from "./lib/posthog";
+import { clientErrorMessage } from "./lib/errorResponse";
 
 const isDev = process.env.NODE_ENV !== "production";
 
@@ -94,7 +95,7 @@ export function applyErrorHandler(app: Express): void {
       const user = req.user as { email?: string } | undefined;
       posthog.captureException(err, user?.email ?? "anonymous");
     }
-    res.status(status).json({ message: err.message || "Internal Server Error" });
+    res.status(status).json({ message: clientErrorMessage(err, status, isDev) });
     console.error(err);
   });
 }

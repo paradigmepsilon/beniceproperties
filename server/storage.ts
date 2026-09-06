@@ -42,6 +42,7 @@ import {
   partnerInquiries,
   manualBlocks,
   messageLog,
+  bookingIntents,
   MAX_LEASE_DAYS,
   type Property,
   type InsertProperty,
@@ -90,6 +91,8 @@ import {
   type InsertPartnerInquiry,
   type ManualBlock,
   type InsertManualBlock,
+  type BookingIntent,
+  type InsertBookingIntent,
   type MessageLogRow,
   type InsertMessageLog,
 } from "@shared/schema";
@@ -368,6 +371,15 @@ export interface IStorage {
   createManualBlock(data: InsertManualBlock): Promise<ManualBlock>;
   /** Returns true if a row was actually deleted (false when the id didn't exist). */
   deleteManualBlock(id: string): Promise<boolean>;
+
+  // --- Booking intents (checkouts started; see shared/schema.ts) ---
+  createBookingIntent(data: InsertBookingIntent): Promise<BookingIntent>;
+  attachBookingIntentContact(
+    stripePaymentIntentId: string,
+    contact: { name: string; email: string; phone?: string | null },
+  ): Promise<BookingIntent | undefined>;
+  /** Newest first, always bounded (default 100, cap 500). */
+  getBookingIntents(opts?: { guestEmail?: string; since?: Date; limit?: number }): Promise<BookingIntent[]>;
 
   // --- Airbnb iCal listings + synced blocks (URL lives on properties/rooms) ---
   /** Active listings with a non-null airbnb_ical_url — the sync work-list.
@@ -1438,6 +1450,45 @@ class Storage implements IStorage {
   async deleteManualBlock(id: string): Promise<boolean> {
     const deleted = await db.delete(manualBlocks).where(eq(manualBlocks.id, id)).returning();
     return deleted.length > 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Booking intents — a row per checkout started (payment-first leaves no
+  // booking row until Stripe confirms). Written by /api/booking-intent, read by
+  // UO for guest website activity. A write failure here must never break a
+  // checkout, so callers wrap these in try/catch.
+  // ---------------------------------------------------------------------------
+
+  async createBookingIntent(data: InsertBookingIntent): Promise<BookingIntent> {
+    const [row] = await db.insert(bookingIntents).values(data).returning();
+    return row;
+  }
+
+  async attachBookingIntentContact(
+    stripePaymentIntentId: string,
+    contact: { name: string; email: string; phone?: string | null },
+  ): Promise<BookingIntent | undefined> {
+    const [row] = await db
+      .update(bookingIntents)
+      .set({
+        guestName: contact.name,
+        guestEmail: contact.email.trim().toLowerCase(),
+        guestPhone: contact.phone || null,
+        contactAttachedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(bookingIntents.stripePaymentIntentId, stripePaymentIntentId))
+      .returning();
+    return row;
+  }
+
+  async getBookingIntents(opts?: { guestEmail?: string; since?: Date; limit?: number }): Promise<BookingIntent[]> {
+    const filters = [];
+    if (opts?.guestEmail) filters.push(eq(bookingIntents.guestEmail, opts.guestEmail.trim().toLowerCase()));
+    if (opts?.since) filters.push(gte(bookingIntents.createdAt, opts.since));
+    const limit = Math.min(Math.max(1, opts?.limit ?? 100), 500);
+    const q = db.select().from(bookingIntents).orderBy(desc(bookingIntents.createdAt)).limit(limit);
+    return filters.length ? q.where(and(...filters)) : q;
   }
 
   // ---------------------------------------------------------------------------

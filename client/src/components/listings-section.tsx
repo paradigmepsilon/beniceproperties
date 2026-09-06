@@ -15,6 +15,7 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { PropertyListItem } from "@shared/schema";
 import { PropertyCard, cardUnavailable } from "@/components/property-card";
+import { visibleProperties } from "@/lib/visibility";
 import { SearchBar } from "@/components/search-bar";
 import { ColivingSearchBar } from "@/components/coliving-search-bar";
 import { cityOf } from "@/lib/format";
@@ -101,7 +102,9 @@ export function ListingsSection({
 
   const filtered = useMemo(() => {
     const cap = budget === "ALL" ? Infinity : Number(budget);
-    const matches = ofType.filter((p) => {
+    // During a dated search a guest only sees listings free for those dates
+    // (client/src/lib/visibility.ts); undated browsing keeps "Next opening" cards.
+    const matches = visibleProperties(ofType, datedSearch).filter((p) => {
       if (city !== "ALL" && cityOf(p.location) !== city) return false;
       // Budget filter (co-living only): drop rooms whose "from" weekly rent
       // exceeds the cap. Properties with no rent shown are kept (nothing to compare).
@@ -114,7 +117,7 @@ export function ListingsSection({
     // Available inventory first; unavailable cards demoted to the tail (stable).
     const unavail = (p: PropertyListItem) => Number(cardUnavailable(p, checkIn, checkOut));
     return [...matches].sort((a, b) => unavail(a) - unavail(b));
-  }, [ofType, city, budget, enableColivingSearch, checkIn, checkOut]);
+  }, [ofType, city, budget, enableColivingSearch, checkIn, checkOut, datedSearch]);
 
   function scrollToStays() {
     if (id) document.getElementById(id)?.scrollIntoView({ behavior: "smooth" });
@@ -206,7 +209,16 @@ export function ListingsSection({
         {isLoading && <GridSkeleton />}
         {error && <p className="text-destructive">Could not load inventory.</p>}
         {data && filtered.length === 0 && (
-          <p className="py-12 text-center text-muted-foreground">Nothing listed here yet. Check back soon.</p>
+          <p className="py-12 text-center text-muted-foreground" data-testid="text-no-listings">
+            {datedSearch
+              ? "Nothing is available for those dates. Try different dates."
+              : "Nothing listed here yet. Check back soon."}
+          </p>
+        )}
+        {data && datedSearch && filtered.length > 0 && filtered.length < ofType.length && (
+          <p className="mb-4 text-sm text-muted-foreground" data-testid="text-listings-hidden">
+            Showing only what is available for your dates.
+          </p>
         )}
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
           {filtered.map((p) => (

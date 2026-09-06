@@ -19,6 +19,8 @@ import { Strategy as LocalStrategy } from "passport-local";
 import { storage } from "./storage";
 import { posthog } from "./lib/posthog";
 import type { AdminUser } from "@shared/schema";
+import { resolveSessionSecret } from "./lib/sessionSecret";
+import { rateLimit } from "./lib/rateLimit";
 
 const scryptAsync = promisify(scrypt);
 
@@ -72,7 +74,9 @@ export async function setupAuth(app: Express) {
   app.set("trust proxy", 1);
   app.use(
     session({
-      secret: process.env.SESSION_SECRET || "bnp-dev-only-secret",
+      // Fails closed in production: no env secret → boot error, never the dev
+      // fallback (a known secret would let anyone forge an admin session).
+      secret: resolveSessionSecret(process.env),
       store: sessionStore,
       resave: false,
       saveUninitialized: false,
@@ -123,7 +127,14 @@ export async function setupAuth(app: Express) {
   );
 
   // --- Auth routes ---
-  app.post("/api/admin/login", passport.authenticate("local"), (req, res) => {
+  // Credential-stuffing brake: 10 attempts per IP per 15 minutes. The failed
+  // attempts are what count — a successful login is the last hit either way.
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 10,
+    message: "Too many login attempts — try again in a few minutes.",
+  });
+  app.post("/api/admin/login", loginLimiter, passport.authenticate("local"), (req, res) => {
     const admin = req.user as SessionAdmin | undefined;
     if (admin) {
       posthog.identify({ distinctId: admin.email, properties: { name: admin.name, role: "admin" } });

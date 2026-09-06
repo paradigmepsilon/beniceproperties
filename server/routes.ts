@@ -17,10 +17,8 @@ import { setupAuth, requireAdmin } from "./auth";
 import { storage } from "./storage";
 import {
   quoteRequestSchema,
-  createBookingSchema,
   bookingIntentSchema,
   leaseQuoteRequestSchema,
-  type CreateBookingResponse,
 } from "@shared/api-types";
 import {
   insertPropertySchema,
@@ -74,7 +72,6 @@ import {
   replyToThread,
   getThread,
 } from "./lib/portal";
-import { buildManualInstructions } from "./lib/manualPayment";
 import {
   uploadLicense,
   saveVehicle,
@@ -85,6 +82,11 @@ import {
   type UploadedFile,
 } from "./lib/verification";
 import { requireServiceToken } from "./lib/serviceAuth";
+import { rateLimit } from "./lib/rateLimit";
+import { roomPubliclyVisible } from "./lib/publicInventory";
+import { isOpenShortStayIntent } from "./lib/bookingIntentGuard";
+import { bookingIntentStatus } from "./lib/bookingIntents";
+import { settleManualBookingPayment } from "./lib/manualSettle";
 import * as uo from "./lib/uoApi";
 import * as adminMessages from "./lib/adminMessages";
 import { validateManualBlockInput } from "./lib/manualBlocks";
@@ -101,6 +103,7 @@ import {
   createCheckoutSession,
   createOneTimePaymentIntent,
   updatePaymentIntentContact,
+  retrievePaymentIntent,
   createWeeklySubscriptionCheckout,
   constructWebhookEvent,
 } from "./lib/stripe";
@@ -121,6 +124,13 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 12 * 1024 * 1024 },
 });
+
+// Brakes on the unauthenticated write routes. Per-instance in-memory (see
+// server/lib/rateLimit.ts) — a slowdown for abuse, not the safety mechanism.
+//   checkout: each hit creates a Stripe PaymentIntent in the shared LIVE account.
+//   leases:   each draft holds a room until it is signed/paid or an admin acts.
+const checkoutLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 20 });
+const leaseCreateLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10 });
 
 /** Normalize a multer file into the verification service's UploadedFile. */
 function toUploadedFile(f: Express.Multer.File | undefined): UploadedFile | undefined {
@@ -386,6 +396,7 @@ export async function registerRoutes(app: Express): Promise<void> {
         if (p.type === "COLIVING") {
           const rooms = await storage.getRoomsByProperty(p.id);
           for (const r of rooms) {
+            if (!roomPubliclyVisible(r, p)) continue;
             entries.push({ path: `/room/${r.id}`, changefreq: "weekly", priority: "0.7" });
           }
         }
@@ -662,11 +673,15 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // A room is public only while its property is active AND the room is on the
+  // market (HOLD/MAINTENANCE/INACTIVE 404 here, same as an inactive property).
   app.get("/api/rooms/:id", async (req, res, next) => {
     try {
       const room = await storage.getRoom(req.params.id);
-      if (!room) return res.status(404).json({ message: "Room not found" });
-      const property = await storage.getProperty(room.propertyId);
+      const property = room ? await storage.getProperty(room.propertyId) : undefined;
+      if (!room || !roomPubliclyVisible(room, property)) {
+        return res.status(404).json({ message: "Room not found" });
+      }
       res.json({ room, property });
     } catch (err) {
       next(err);
@@ -696,7 +711,10 @@ export async function registerRoutes(app: Express): Promise<void> {
   app.get("/api/rooms/:id/availability", async (req, res, next) => {
     try {
       const room = await storage.getRoom(req.params.id);
-      if (!room) return res.status(404).json({ message: "Room not found" });
+      const property = room ? await storage.getProperty(room.propertyId) : undefined;
+      if (!room || !roomPubliclyVisible(room, property)) {
+        return res.status(404).json({ message: "Room not found" });
+      }
       res.json(await buildRoomAvailability(room.id));
     } catch (err) {
       next(err);
@@ -730,7 +748,7 @@ export async function registerRoutes(app: Express): Promise<void> {
   //   Guest contact is optional here (Element mounts on load) and attached later
   //   via /api/booking-intent/:id/contact before the guest confirms payment.
   // =========================================================================
-  app.post("/api/booking-intent", async (req, res, next) => {
+  app.post("/api/booking-intent", checkoutLimiter, async (req, res, next) => {
     try {
       const parsed = bookingIntentSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -772,6 +790,27 @@ export async function registerRoutes(app: Express): Promise<void> {
         idempotencyKey: `intent:${reference}`,
       });
 
+      // Record the started checkout (UO guest activity). Best-effort: a write
+      // failure here must never fail the checkout the guest is looking at.
+      try {
+        await storage.createBookingIntent({
+          reference,
+          stripePaymentIntentId: paymentIntent.id,
+          propertyId: resolved.property.id,
+          roomId: resolved.room?.id ?? null,
+          model: resolved.model,
+          checkIn: resolved.checkIn,
+          checkOut: resolved.checkOut ?? null,
+          quotedTotal: String(dueNow),
+          guestName: guest?.name ?? null,
+          guestEmail: guest?.email ? guest.email.trim().toLowerCase() : null,
+          guestPhone: guest?.phone ?? null,
+          contactAttachedAt: guest?.email ? new Date() : null,
+        });
+      } catch (recErr) {
+        log(`booking_intents write failed for ${reference}: ${(recErr as Error).message}`, "checkout");
+      }
+
       res.json({
         reference,
         clientSecret: paymentIntent.client_secret,
@@ -802,12 +841,29 @@ export async function registerRoutes(app: Express): Promise<void> {
       if (!isStripeConfigured()) {
         return res.status(503).json({ message: "Card payments aren't enabled yet." });
       }
+      // Only an OPEN short-stay intent this app created may be rewritten — never
+      // a lease/rent charge, a paid intent, or an unrelated PI in the shared
+      // Stripe account. Unknown ids read as 404 too (Stripe throws on them).
+      let pi;
+      try {
+        pi = await retrievePaymentIntent(req.params.id);
+      } catch {
+        return res.status(404).json({ message: "Checkout not found" });
+      }
+      if (!isOpenShortStayIntent(pi)) {
+        return res.status(404).json({ message: "Checkout not found" });
+      }
       await updatePaymentIntentContact({
-        paymentIntentId: req.params.id,
+        paymentIntentId: pi.id,
         name: parsed.data.name,
         email: parsed.data.email,
         phone: parsed.data.phone,
       });
+      try {
+        await storage.attachBookingIntentContact(pi.id, parsed.data);
+      } catch (recErr) {
+        log(`booking_intents contact update failed for ${pi.id}: ${(recErr as Error).message}`, "checkout");
+      }
       res.json({ ok: true });
     } catch (err) {
       next(err);
@@ -856,7 +912,7 @@ export async function registerRoutes(app: Express): Promise<void> {
 
   // Create the DRAFT (→ PENDING_SIGNATURE) lease + persisted schedule, and
   // return the agreement rendered for review.
-  app.post("/api/leases", async (req, res, next) => {
+  app.post("/api/leases", leaseCreateLimiter, async (req, res, next) => {
     try {
       const parsed = createDraftLeaseSchema.safeParse(req.body);
       if (!parsed.success) {
@@ -1367,104 +1423,18 @@ export async function registerRoutes(app: Express): Promise<void> {
   app.get("/api/admin/reconciliation-report", requireAdmin, reconciliationHandler);
 
   // =========================================================================
-  // PUBLIC — create booking (MANUAL only: CashApp / Zelle)
-  //   Card (STRIPE) short stays no longer go through here — they are payment-first
-  //   via /api/booking-intent, and the booking is materialized by the webhook
-  //   after payment. Only the manual path creates a PENDING_PAYMENT booking up
-  //   front (settled later via UO "Mark Paid").
+  // RETIRED — POST /api/bookings (public manual CashApp/Zelle short stays).
+  //   Nothing on the site calls it (short stays are card-only, payment-first via
+  //   /api/booking-intent; manual pay exists only for lease installments in the
+  //   portal). Left open, it let anyone create an unpaid PENDING_PAYMENT booking
+  //   that BLOCKED the dates indefinitely with no throttle and no expiry — a
+  //   denial-of-inventory hole. It now answers 410. Existing PENDING_PAYMENT
+  //   rows are still settled through the admin mark-paid path (or cancelled).
   // =========================================================================
-  app.post("/api/bookings", async (req, res, next) => {
-    try {
-      const parsed = createBookingSchema.safeParse(req.body);
-      if (!parsed.success) {
-        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid booking" });
-      }
-      const { propertyId, roomId, checkIn, checkOut, paymentMethod, guest } = parsed.data;
-
-      // Card payments are payment-first now — route them to /api/booking-intent so
-      // no pending row (and no date hold) is created before the guest actually pays.
-      if (paymentMethod === "STRIPE") {
-        return res.status(400).json({
-          message: "Card payments use /api/booking-intent (payment-first).",
-        });
-      }
-
-      // resolveBooking applies the lease-vs-booking gate: STR whole-property
-      // stays and SHORT co-living stays (7–28 nights, paid in full upfront, no
-      // lease) resolve here; a co-living stay over 28 nights is rejected with a
-      // 409 pointing back to the lease flow, and under 7 nights is rejected as
-      // below the co-living minimum. So anything that resolves is bookable here.
-      const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-
-      const quote = buildQuote(resolved, paymentMethod);
-      const reference = generateReference();
-      const dueNow = quote.dueNow.total;
-
-      // Manual (CashApp/Zelle): create the guest + a PENDING_PAYMENT booking + a
-      // PENDING payment row. Settled later via UO "Mark Paid".
-      const guestRow = await storage.upsertGuestByEmail(guest);
-      const booking = await storage.createBooking({
-        propertyId: resolved.property.id,
-        roomId: resolved.room?.id ?? null,
-        guestId: guestRow.id,
-        model: resolved.model,
-        checkIn: resolved.checkIn,
-        checkOut: resolved.checkOut,
-        status: "PENDING_PAYMENT",
-        paymentMethod,
-        reference,
-        quotedTotal: String(dueNow),
-      });
-
-      const response: CreateBookingResponse = {
-        reference,
-        bookingId: booking.id,
-        paymentMethod,
-        quote,
-      };
-
-      // CASHAPP / ZELLE — manual, no surcharge, pending until admin confirms.
-      await storage.createPayment({
-        bookingId: booking.id,
-        type: "ONE_TIME",
-        method: paymentMethod,
-        amount: String(dueNow),
-        surcharge: "0",
-        status: "PENDING",
-        stripeRef: null,
-        confirmedBy: null,
-        paidAt: null,
-      });
-      response.manualInstructions = buildManualInstructions({
-        method: paymentMethod,
-        amount: dueNow,
-        memo: reference,
-      });
-
-      posthog.identify({
-        distinctId: guest.email,
-        properties: { name: guest.name, email: guest.email, phone: guest.phone ?? undefined },
-      });
-      posthog.capture({
-        distinctId: guest.email,
-        event: "booking_created",
-        properties: {
-          reference,
-          property_id: resolved.property.id,
-          property_name: resolved.property.name,
-          property_type: resolved.model,
-          room_id: resolved.room?.id ?? null,
-          check_in: resolved.checkIn,
-          check_out: resolved.checkOut,
-          payment_method: paymentMethod,
-          quoted_total: dueNow,
-        },
-      });
-      res.status(201).json(response);
-    } catch (err) {
-      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
-      next(err);
-    }
+  app.post("/api/bookings", (_req, res) => {
+    res.status(410).json({
+      message: "Manual booking is no longer offered here. Card payments use /api/booking-intent (payment-first).",
+    });
   });
 
   // =========================================================================
@@ -1537,6 +1507,37 @@ export async function registerRoutes(app: Express): Promise<void> {
   // with the richer, batched, shared listThreads view (guest/property/booking
   // context) — it supersedes the old lease-only per-thread-lookup version that
   // used to live here (removed with its uoApi.listGuestMessageThreads backer).
+  // Website activity: checkouts started on the site (booking_intents) with a
+  // derived status — PAID when a booking exists for the reference, otherwise
+  // STARTED / CONTACT_ADDED / ABANDONED by age. `?email=` narrows to one guest;
+  // `?days=` bounds the window (default 30). Guest contact IS included — this
+  // is an authenticated operator surface, not a Telegram fan-out.
+  const bookingIntentsHandler = async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try {
+      const email = typeof req.query.email === "string" ? req.query.email : undefined;
+      const days = typeof req.query.days === "string" ? parseInt(req.query.days, 10) : 30;
+      const since = new Date(Date.now() - (Number.isFinite(days) && days > 0 ? Math.min(days, 365) : 30) * 86_400_000);
+      const intents = await storage.getBookingIntents({ guestEmail: email, since, limit: 200 });
+      const now = new Date();
+      const rows = await Promise.all(
+        intents.map(async (i) => {
+          const booking = await storage.getBookingByReference(i.reference);
+          return {
+            ...i,
+            status: bookingIntentStatus(i, { hasBooking: Boolean(booking), now }),
+            bookingId: booking?.id ?? null,
+            bookingStatus: booking?.status ?? null,
+          };
+        }),
+      );
+      res.json({ intents: rows });
+    } catch (e) {
+      next(e);
+    }
+  };
+  app.get("/api/uo/booking-intents", requireServiceToken, bookingIntentsHandler);
+  app.get("/api/admin/booking-intents", requireAdmin, bookingIntentsHandler);
+
   app.get("/api/uo/escalations", requireServiceToken, async (req, res, next) => {
     try {
       const status = typeof req.query.status === "string" ? req.query.status : undefined;
@@ -1979,27 +1980,17 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
-  // Mark a manual payment paid → confirm booking + record who/when.
+  // Mark a manual payment paid → re-check availability, confirm booking, occupy
+  // the room, confirm to the guest + alert admin. Logic in server/lib/manualSettle.ts.
   app.post("/api/admin/payments/:id/mark-paid", requireAdmin, async (req, res, next) => {
     try {
-      const payment = await storage.getPayment(req.params.id);
-      if (!payment) return res.status(404).json({ message: "Payment not found" });
-      if (payment.method === "STRIPE") {
-        return res.status(400).json({ message: "Stripe payments are confirmed by webhook, not manually" });
-      }
       const adminId = (req.user as { id: string }).id;
-      const updated = await storage.updatePayment(payment.id, {
-        status: "PAID",
-        confirmedBy: adminId,
-        paidAt: new Date(),
+      const { payment, booking } = await settleManualBookingPayment({
+        paymentId: req.params.id,
+        adminId,
+        actor: adminActor(req),
       });
-      // Confirm the booking; activate co-living + occupy the room.
-      const booking = await storage.getBooking(payment.bookingId);
       if (booking) {
-        await storage.updateBooking(booking.id, {
-          status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
-        });
-        if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
         const manualGuest = await storage.getGuest(booking.guestId);
         if (manualGuest) {
           posthog.capture({
@@ -2015,30 +2006,11 @@ export async function registerRoutes(app: Express): Promise<void> {
               confirmed_by: adminActor(req),
             },
           });
-          // Admin alert: an off-band payment just settled a booking.
-          const settledTail =
-            `marked PAID by ${adminActor(req)}. Booking is now ` +
-            `${booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"}.`;
-          await notifyAdmin({
-            subject: `Manual payment marked paid — ${booking.reference}`,
-            body:
-              `${payment.method} payment of $${payment.amount} for ${booking.reference} ` +
-              `(${manualGuest.name}, ${manualGuest.email}) ${settledTail}`,
-            // Telegram: name only, no contact details (third-party channel).
-            telegramText:
-              `${payment.method} payment of $${payment.amount} for ${booking.reference} ` +
-              `(${manualGuest.name}) ${settledTail}`,
-            context: {
-              bookingId: booking.id,
-              guestId: manualGuest.id,
-              kind: "MANUAL_PAYMENT_CONFIRMED",
-              sentBy: adminActor(req),
-            },
-          });
         }
       }
-      res.json({ payment: updated });
+      res.json({ payment });
     } catch (err) {
+      if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
       next(err);
     }
   });

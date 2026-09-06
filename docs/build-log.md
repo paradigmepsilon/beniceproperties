@@ -2910,3 +2910,143 @@ WHERE a.status NOT IN ('CANCELLED','CONFLICT')
 Zero rows = the constraints will install cleanly.
 
 DECONFLICTION-ALERTS-MESSAGING: COMPLETE — tests green
+
+---
+
+## Security + booking-flow audit (2026-09-05, on `feat/booking-deconfliction-and-messaging`)
+
+Full-surface review of the public site, the admin API, and the UO management
+path, followed by fixes. Everything below is TDD'd (test written and watched to
+fail before the implementation) unless marked otherwise.
+
+### Vulnerabilities and bugs fixed (BNP)
+
+- **Denial-of-inventory via `POST /api/bookings`.** The public manual
+  (CashApp/Zelle) short-stay endpoint created a `PENDING_PAYMENT` booking that
+  BLOCKED its dates (only CANCELLED/CONFLICT are non-blocking), with no auth, no
+  throttle and no expiry — and nothing on the site calls it (short stays are
+  card-only, payment-first; manual pay exists only for lease installments in the
+  portal). Retired: now answers 410. Legacy `PENDING_PAYMENT` rows still settle
+  through admin mark-paid or cancel. (Route deletion — no unit test.)
+- **Hard-coded session-secret fallback.** `SESSION_SECRET` unset in production
+  silently signed admin cookies with `bnp-dev-only-secret`. `server/lib/
+  sessionSecret.ts` now throws at boot in production; dev keeps the fallback.
+- **No brute-force brake on `/api/admin/login`**, and no throttle on the two
+  unauthenticated writes that create real objects — `/api/booking-intent` (a
+  Stripe PaymentIntent in the shared LIVE account per hit) and `POST /api/leases`
+  (each draft holds a room). `server/lib/rateLimit.ts`: fixed-window in-memory
+  limiter, keyed on the first X-Forwarded-For hop; login 10/15 min, checkout
+  20/10 min, lease create 10/h. Per-instance on Vercel — a brake, not the
+  safety mechanism.
+- **Off-market rooms were publicly viewable.** `GET /api/rooms/:id` and its
+  availability endpoint served rooms on inactive properties and rooms in
+  HOLD/MAINTENANCE/INACTIVE. `server/lib/publicInventory.ts` gates both (404)
+  and the sitemap.
+- **`POST /api/booking-intent/:id/contact` rewrote ANY PaymentIntent by id**
+  (metadata + receipt_email) — including lease deposits, rent charges, paid
+  intents, or an unrelated PI in the shared account. `server/lib/
+  bookingIntentGuard.ts`: the PI is retrieved first and must be an OPEN
+  short-stay intent of this app (entity BNP/TRAD, BOOKING_DEPOSIT, no lease,
+  has reference); anything else is a 404.
+- **Admin mark-paid confirmed a booking without re-checking availability and
+  never confirmed to the guest.** Extracted to `server/lib/manualSettle.ts`:
+  re-runs the room/STR gate excluding the booking itself (409, nothing written,
+  when the dates were taken meanwhile), then PAID → ACTIVE/CONFIRMED → room
+  OCCUPIED → `onBookingConfirmed` (guest confirmation, deduped) + the existing
+  admin alert. Idempotent on an already-PAID row.
+- **5xx bodies echoed the internal error** — a failed Drizzle query put the
+  full SQL + bound params in the JSON response (seen live: the prod DB has no
+  `manual_blocks` table yet, so dated search returned the query text). `server/
+  lib/errorResponse.ts`: outside dev a 5xx is "Internal Server Error"; the real
+  error is still logged + captured. `server/index.ts` now shares
+  `applyErrorHandler` instead of its own copy.
+
+### Guest search → leave → return → book
+
+- **Guests only see what they can book.** `client/src/lib/visibility.ts`: the
+  property page never lists HOLD/MAINTENANCE/INACTIVE rooms; during a dated
+  search, rooms and listings not free for the range are DROPPED (with a
+  "N rooms are not available for your dates" / "Showing only what is available
+  for your dates" note) instead of greyed. Undated browsing keeps full houses
+  with their "Next opening" badge, and OCCUPIED rooms stay listed because a room
+  with a guest today is still bookable for a future free range — the date gate,
+  not the status flag, decides.
+- Dates already carry through the flow (`?checkIn=&checkOut=` on card links →
+  property → room → checkout), so a guest who leaves and comes back re-searches
+  and lands on the same room with the same dates. Verified read-only against
+  the live DB: undated inventory, room lists, 410 on the retired endpoint, 429
+  on the 11th login attempt, 404 on the contact-guard for a foreign PI.
+  **Dated search could not be exercised end-to-end locally** — the live DB has
+  no `manual_blocks` yet (owner step: `scripts/push-deconfliction-messaging.mjs`).
+- Checkout now calls `posthog.identify(email)` + a `checkout_contact_attached`
+  event once the guest enters their details, so the PostHog person timeline
+  links their anonymous browsing to the booking.
+
+### UO: see what a guest did, get told, get the prep task
+
+- **`booking_intents` (new table, additive).** Payment-first left NO trace of a
+  checkout that never paid. `/api/booking-intent` now records one row per
+  checkout (listing, dates, amount) and the contact step fills in the guest.
+  Status is derived, never stored: PAID when a `bookings` row exists for the
+  reference, else STARTED / CONTACT_ADDED, or ABANDONED after 24h
+  (`server/lib/bookingIntents.ts`). Best-effort writes — a failure never fails
+  the guest's checkout. Read via `GET /api/uo/booking-intents` +
+  `/api/admin/booking-intents`, and directly by UO. Push with
+  `scripts/push-booking-intents.mjs` (CREATE TABLE IF NOT EXISTS; idempotent).
+- **UO (`feat/bnp-date-fix-and-management`):**
+  - Bookings page: a "Website checkouts · last 30 days" panel
+    (`bnp-website-checkouts.tsx`, `GET /api/bnp-admin/website-activity`) — every
+    checkout started, who, which listing/dates/amount, and whether it booked.
+  - CRM contact sheet → Stays tab: a "Website activity" timeline per guest —
+    checkouts (with derived status) merged with every message the site sent
+    them (`src/lib/bnp/website-activity.ts`, pure + tested).
+  - **Prep task on every booking.** The 15-minute `ops-task-autogen` sweep gains
+    a fourth rule (`sweepBnpBookingPrep`, mapping in
+    `src/lib/ops-tasks/bnp-booking-prep.ts`): each CONFIRMED/ACTIVE direct
+    booking arriving yesterday-or-later becomes an OpsTask "Prepare <listing>
+    for <first name> — arrives <date>", HIGH inside 3 days, due 09:00 ET on
+    arrival, linked back to the booking. Idempotent via `@@unique(source,
+    sourceId)` with the new `OpsTaskSource.BNP_DIRECT_BOOKING` (Prisma
+    migration `20260905000000_add_bnp_direct_booking_ops_task_source`, additive
+    `ALTER TYPE … ADD VALUE`). Skips (reported, not thrown) when
+    `BNP_DATABASE_URL` is unset.
+  - Admin notification itself was already in place (`onBookingConfirmed` →
+    email + Telegram + `message_log`); the manual-payment path now goes through
+    it too.
+
+### Verification
+
+- BNP: `tsc` clean; `vitest` 47 files / 523 tests (was 39 / 489); `vite build`
+  + `build:api` OK.
+- UO: `tsc` clean; `vitest` 251 files / 4473 tests (was 248 / 4444); eslint
+  clean on every touched file; `prisma generate` OK.
+- Read-only local pass (scheduler-free server against the live DB, GET only):
+  see above.
+
+### Reviewed and deliberately left alone
+
+- `GET /api/leases/:id`, `/sign`, `/document`, `/deposit`, `/first-payment` are
+  keyed by lease UUID only (no guest secret). UUIDs are unguessable and the id
+  is only handed to the guest who created the draft, but anyone holding a lease
+  id (it appears in admin/UO views) could sign or start a deposit. Recommend a
+  per-lease token (like `portalToken`) in a follow-up.
+- DRAFT / PENDING_SIGNATURE / PENDING_FIRST_PAYMENT leases hold their room
+  indefinitely. UO also creates DRAFT leases for admin-arranged tenants, so an
+  automatic expiry would release rooms the operator meant to hold — left as-is,
+  now rate-limited on the public path. Consider a `source` column + expiry for
+  guest-created drafts.
+- `/api/rooms/:id` still returns rooms on active properties that are OCCUPIED
+  (intended: bookable for future ranges).
+
+### Owner steps (production), in order
+
+1. Stripe webhook events + the four env/secret steps already listed in the
+   2026-09-02 entry (unchanged).
+2. `node scripts/push-deconfliction-messaging.mjs` (after the overlap query), then
+   `node scripts/push-booking-intents.mjs`.
+3. Deploy BNP; confirm `SESSION_SECRET` is set in Vercel Production (the app now
+   refuses to boot without it).
+4. UO: `prisma migrate deploy` (adds the enum value), ensure `BNP_DATABASE_URL`
+   is set where the cron runs, deploy UO.
+
+SECURITY-AUDIT-2026-09-05: COMPLETE — tests green

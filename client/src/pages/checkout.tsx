@@ -31,6 +31,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
+import { identify, track } from "@/lib/analytics";
 
 // Short stays are card-only (Stripe), mirroring TRAD. The 3.5% card surcharge
 // still shows as a line item in the quote below.
@@ -311,6 +312,9 @@ function PayForm({
       setSubmitting(false);
       return;
     }
+    // Link this browsing session to the guest for the PostHog person timeline.
+    identify(email);
+    track("checkout_contact_attached", { reference });
 
     const { error, paymentIntent } = await stripe.confirmPayment({
       elements,
