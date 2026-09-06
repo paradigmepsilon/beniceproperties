@@ -3050,3 +3050,55 @@ fail before the implementation) unless marked otherwise.
    is set where the cron runs, deploy UO.
 
 SECURITY-AUDIT-2026-09-05: COMPLETE — tests green
+
+## 2026-09-06 — PRODUCTION MIGRATION: deconfliction + messaging schema applied
+
+Owner step 2 from the 2026-09-05 audit entry, executed against the live BNP Neon
+database (`ep-dawn-grass-a6k2t53o-pooler`, `neondb`). No code change — this entry
+records the production DDL so the log stops reporting the migration as pending.
+
+### Pre-flight
+
+- `vitest run scripts/push-deconfliction-messaging.test.ts` — 5/5 green (pins the
+  DDL as additive + idempotent, and asserts it never drops/truncates/deletes).
+- Backup floor (CLAUDE.md #1) satisfied *before* any DDL:
+  `node scripts/backup-tables.mjs bookings guest_messages lifecycle_events uo_escalations app_settings`
+  → `docs/migration-backups/2026-09-06-*.json` (bookings 11 rows, app_settings 2,
+  the other three 0). Folder is gitignored — it holds unmasked guest rows.
+- Read-only pre-checks against live data, all zero, so no constraint could fail
+  on existing rows:
+  - overlapping room bookings (would block `bookings_room_no_overlap`): 0
+  - overlapping STR bookings (would block `bookings_str_no_overlap`): 0
+  - `guest_messages` / `lifecycle_events` rows with both ids null: 0 / 0
+
+### Applied
+
+`node scripts/push-deconfliction-messaging.mjs` — 24/24 statements OK.
+
+### Verified after (independent read-only probe, not the script's own output)
+
+- New tables: `manual_blocks`, `message_log`.
+- `guest_messages` / `lifecycle_events` / `uo_escalations`: `lease_id` now
+  nullable, `booking_id` added (nullable varchar) on all three.
+- Constraints present: `bookings_room_no_overlap`, `bookings_str_no_overlap`,
+  `guest_messages_scope_chk`, `lifecycle_events_scope_chk`,
+  `manual_blocks_range_chk`.
+- `btree_gist` extension INSTALLED.
+- `app_settings`: `ical_honor_host_blocks=true`, `guest_auto_notifications=true`.
+- Row counts unchanged (bookings 11) — nothing lost.
+
+Double-booking a room or a whole-property STR is now structurally impossible at
+the database level; `CANCELLED` and `CONFLICT` rows stay exempt by design.
+
+### Still pending (owner step, NOT applied)
+
+- `node scripts/push-booking-intents.mjs` — `booking_intents` confirmed MISSING
+  in production. Purely additive (one table + 3 indexes, `IF NOT EXISTS`
+  throughout, nothing existing altered). The booking-intents tracking added in
+  `fa678ac` needs it. Run before deploying that code.
+- Remaining steps 1, 3, 4 from the 2026-09-05 entry are unchanged, except UO's
+  `prisma migrate deploy` (step 4): the enum migration
+  `20260905000000_add_bnp_direct_booking_ops_task_source` is already applied to
+  the UO Neon database.
+
+MIGRATION-2026-09-06: COMPLETE — deconfliction + messaging live; booking_intents deferred
