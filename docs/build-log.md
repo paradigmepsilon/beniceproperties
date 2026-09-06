@@ -3090,15 +3090,27 @@ records the production DDL so the log stops reporting the migration as pending.
 Double-booking a room or a whole-property STR is now structurally impossible at
 the database level; `CANCELLED` and `CONFLICT` rows stay exempt by design.
 
-### Still pending (owner step, NOT applied)
+### Also applied — `booking_intents` (owner-run, same day)
 
-- `node scripts/push-booking-intents.mjs` — `booking_intents` confirmed MISSING
-  in production. Purely additive (one table + 3 indexes, `IF NOT EXISTS`
-  throughout, nothing existing altered). The booking-intents tracking added in
-  `fa678ac` needs it. Run before deploying that code.
-- Remaining steps 1, 3, 4 from the 2026-09-05 entry are unchanged, except UO's
-  `prisma migrate deploy` (step 4): the enum migration
+`node scripts/push-booking-intents.mjs`, run by the owner, completing owner
+step 2. Purely additive: one table + 3 indexes, `IF NOT EXISTS` throughout,
+nothing existing altered. Backs the booking-intents tracking added in `fa678ac`.
+
+Verified after by read-only probe: `booking_intents` EXISTS with all 15 columns
+as specified (`reference` NOT NULL UNIQUE, `stripe_payment_intent_id` NOT NULL,
+`room_id` / `check_out` / the three guest fields / `contact_attached_at`
+nullable), indexes `booking_intents_pi_idx`, `booking_intents_email_idx`,
+`booking_intents_created_idx` plus `booking_intents_pkey` and
+`booking_intents_reference_key`. 0 rows (new table).
+
+### Still pending (owner steps)
+
+- Steps 1 and 3 from the 2026-09-05 entry are unchanged: Stripe webhook events
+  + the four env/secret steps, then deploy BNP and confirm `SESSION_SECRET` is
+  set in Vercel Production (the app refuses to boot without it).
+- Step 4 (UO) is partly done: the enum migration
   `20260905000000_add_bnp_direct_booking_ops_task_source` is already applied to
-  the UO Neon database.
+  the UO Neon database. Still to do there — ensure `BNP_DATABASE_URL` is set
+  where the cron runs, then deploy UO.
 
-MIGRATION-2026-09-06: COMPLETE — deconfliction + messaging live; booking_intents deferred
+MIGRATION-2026-09-06: COMPLETE — deconfliction + messaging + booking_intents live
