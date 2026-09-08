@@ -261,6 +261,10 @@ describe("updateProperty / updateRoom write-backs", () => {
   it("rejects a bad room status", async () => {
     await expect(updateRoom({ roomId: "r1", patch: { status: "ON_FIRE" }, actor: "a" })).rejects.toMatchObject({ status: 400 });
   });
+  it("404s when the room does not exist", async () => {
+    mockStorage.updateRoom.mockResolvedValue(undefined);
+    await expect(updateRoom({ roomId: "nope", patch: { name: "X" }, actor: "a" })).rejects.toMatchObject({ status: 404 });
+  });
 });
 
 describe("createProperty / createRoom write-backs", () => {
@@ -269,13 +273,14 @@ describe("createProperty / createRoom write-backs", () => {
     const out = await createProperty({ property: { name: "Third House", location: "Atlanta", type: "COLIVING" }, actor: "a" });
     expect(out).toMatchObject({ id: "new", name: "Third House" });
   });
+  // Parity: insertRoomSchema requires status (drizzle-zod drops the DB-default optionality); UO must send it exactly as POST /api/admin/rooms does.
   it("creates a room only under a COLIVING parent", async () => {
     mockStorage.getProperty.mockResolvedValue({ ...PROP, type: "STR" });
-    await expect(createRoom({ propertyId: "prop-1", room: { name: "R", weeklyRent: "300", depositAmount: "300" }, actor: "a" })).rejects.toMatchObject({ status: 400 });
+    await expect(createRoom({ propertyId: "prop-1", room: { name: "R", weeklyRent: "300", depositAmount: "300", status: "AVAILABLE" }, actor: "a" })).rejects.toMatchObject({ status: 400 });
     mockStorage.getProperty.mockResolvedValue({ ...PROP, type: "COLIVING" });
     mockStorage.createRoom.mockImplementation(async (r: Record<string, unknown>) => ({ id: "r9", ...r }));
-    const out = await createRoom({ propertyId: "prop-1", room: { name: "R", weeklyRent: "300", depositAmount: "300" }, actor: "a" });
-    expect(mockStorage.createRoom).toHaveBeenCalledWith(expect.objectContaining({ propertyId: "prop-1", name: "R" }));
+    const out = await createRoom({ propertyId: "prop-1", room: { name: "R", weeklyRent: "300", depositAmount: "300", status: "AVAILABLE" }, actor: "a" });
+    expect(mockStorage.createRoom).toHaveBeenCalledWith(expect.objectContaining({ propertyId: "prop-1", name: "R", status: "AVAILABLE" }));
     expect(out.id).toBe("r9");
   });
 });

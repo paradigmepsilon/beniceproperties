@@ -352,12 +352,7 @@ export async function createRoom(args: { propertyId: string; room: unknown; acto
   const parent = await storage.getProperty(args.propertyId);
   if (!parent) throw new LeaseError("Property not found", 404);
   if (parent.type !== "COLIVING") throw new LeaseError("Rooms can only be added to COLIVING properties", 400);
-  // insertRoomSchema's `status: z.enum(ROOM_STATUSES)` refinement (needed for
-  // the enum) replaces drizzle-zod's inferred-from-default optionality, so a
-  // status-less create would otherwise 400 on a field the DB itself defaults
-  // to AVAILABLE. Seed it here so createRoom mirrors the DB default; an
-  // explicit status in the payload still wins (spread order).
-  const parsed = insertRoomSchema.safeParse({ status: "AVAILABLE", ...(args.room as object), propertyId: args.propertyId });
+  const parsed = insertRoomSchema.safeParse({ ...(args.room as object), propertyId: args.propertyId });
   if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid room"), 400);
   const created = await storage.createRoom(parsed.data);
   log(`room ${created.id} created under ${args.propertyId} by uo:${actor}`, "uo");
