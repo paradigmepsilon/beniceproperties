@@ -88,6 +88,7 @@ import { isOpenShortStayIntent } from "./lib/bookingIntentGuard";
 import { bookingIntentStatus } from "./lib/bookingIntents";
 import { settleManualBookingPayment } from "./lib/manualSettle";
 import * as uo from "./lib/uoApi";
+import { getPricingSettings, updatePricingSettings, getCardSurchargeRate } from "./lib/pricingSettings";
 import * as adminMessages from "./lib/adminMessages";
 import { validateManualBlockInput } from "./lib/manualBlocks";
 import { boundedMessageLogLimit } from "./lib/messageLogQuery";
@@ -1277,11 +1278,17 @@ export async function registerRoutes(app: Express): Promise<void> {
   });
 
   // Expose whether card payments are live (drives the client payment UI).
-  app.get("/api/payments/config", (_req, res) => {
-    res.json({
-      stripeEnabled: isStripeConfigured() && stripePublishableConfigured(),
-      publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY ?? null,
-    });
+  app.get("/api/payments/config", async (_req, res, next) => {
+    try {
+      res.json({
+        stripeEnabled: isStripeConfigured() && stripePublishableConfigured(),
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY ?? null,
+        // Live card surcharge so the client renders the real percentage.
+        cardSurchargeRate: await getCardSurchargeRate(),
+      });
+    } catch (err) {
+      next(err);
+    }
   });
 
   // Admin: read/update the DEFAULTED threshold (days unpaid → lease DEFAULTED).
@@ -1591,6 +1598,39 @@ export async function registerRoutes(app: Express): Promise<void> {
       res.json(await uo.waiveLateFees({ leaseId: req.params.id, ...parsed.data }));
     } catch (e) { uoErr(e, res, next); }
   });
+
+  // --- Pricing settings (late fee $/day, card surcharge rate) ---
+  // One handler pair, mounted for UO (service token) and admin (session).
+  // Reads fall back to the defaults; writes validate ranges and log the actor.
+  const pricingSettingsBody = z.object({
+    lateFeePerDay: z.number().optional(),
+    cardSurchargeRate: z.number().optional(),
+    actor: z.string().optional(),
+  });
+  const getPricingSettingsHandler = async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
+    try { res.json(await getPricingSettings()); } catch (e) { uoErr(e, res, next); }
+  };
+  const putPricingSettingsHandler = (actorFrom: (req: express.Request) => string) =>
+    async (req: express.Request, res: express.Response, next: express.NextFunction) => {
+      try {
+        const parsed = pricingSettingsBody.safeParse(req.body);
+        if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+        const { actor: _ignored, ...values } = parsed.data;
+        res.json(await updatePricingSettings(values, actorFrom(req)));
+      } catch (e) { uoErr(e, res, next); }
+    };
+  app.get("/api/uo/settings/pricing", requireServiceToken, getPricingSettingsHandler);
+  app.put(
+    "/api/uo/settings/pricing",
+    requireServiceToken,
+    putPricingSettingsHandler((req) => `uo:${typeof req.body?.actor === "string" && req.body.actor.trim() ? req.body.actor.trim() : "unknown"}`),
+  );
+  app.get("/api/admin/settings/pricing", requireAdmin, getPricingSettingsHandler);
+  app.put(
+    "/api/admin/settings/pricing",
+    requireAdmin,
+    putPricingSettingsHandler((req) => adminActor(req)),
+  );
 
   // =========================================================================
   // TASK 6 — staff messaging (guest_messages threads), manual blocks
