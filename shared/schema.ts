@@ -880,6 +880,13 @@ export const leases = pgTable(
     cleaningFeeStatus: text("cleaning_fee_status").notNull().default("PENDING"),
     cleaningFeeStripePaymentIntentId: text("cleaning_fee_stripe_payment_intent_id"),
     cleaningFeePaidAt: timestamp("cleaning_fee_paid_at"),
+    // --- Pricing terms frozen at creation (added 2026-09-08). The late fee and
+    // card surcharge are admin-editable settings now; these snapshots keep every
+    // signed lease on the terms its agreement states. Null on pre-2026-09-08
+    // leases → resolvers fall back to the current setting (== the old constants
+    // until someone changes them). Additive, nullable. ---
+    lateFeePerDaySnapshot: decimal("late_fee_per_day_snapshot", { precision: 10, scale: 2 }),
+    cardSurchargeRateSnapshot: decimal("card_surcharge_rate_snapshot", { precision: 6, scale: 4 }),
     // --- Tenant identity verification (driver's license review). The tenant
     // uploads a license from the portal; an admin reviews it against signedName
     // and APPROVES to activate the lease. The license image lives in R2 (private);

@@ -22,6 +22,7 @@ const mockStorage = vi.hoisted(() => ({
   getLeaseRooms: vi.fn(),
   getScheduleByLease: vi.fn(),
   updateLease: vi.fn(),
+  getSettingNumber: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
@@ -38,6 +39,7 @@ beforeEach(() => {
   // blocks; default to none so the flow tests exercise the happy path.
   mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
   mockStorage.getManualBlocksForRoom.mockResolvedValue([]);
+  mockStorage.getSettingNumber.mockImplementation(async (_k: string, fb: number) => fb);
 });
 
 describe("createDraftLease", () => {
@@ -68,6 +70,30 @@ describe("createDraftLease", () => {
     expect(passed.schedule.every((s: { paymentMethod: string }) => s.paymentMethod === "CARD_ON_FILE")).toBe(true);
     expect(passed.lease.weeklyRateSnapshot).toBe("250");
     expect(documentHtml).toContain("Room Rental Agreement");
+  });
+
+  it("snapshots the late fee and card surcharge in force at creation", async () => {
+    mockStorage.getProperty.mockResolvedValue(PROP);
+    mockStorage.getRoom.mockResolvedValue(ROOM);
+    mockStorage.upsertGuestByEmail.mockResolvedValue({ id: "g1", name: "Jane", email: "jane@example.com" });
+    mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+      k === "late_fee_per_day" ? 30 : k === "card_surcharge_rate" ? 0.03 : fb,
+    );
+    mockStorage.createLeaseWithSchedule.mockImplementation(async (args: { lease: Record<string, unknown> }) => ({
+      id: "lease-1",
+      ...args.lease,
+    }));
+    await createDraftLease({
+      propertyId: "prop-1",
+      roomIds: ["r1"],
+      startDate: "2026-10-01",
+      endDate: "2026-10-30",
+      cadence: "WEEKLY",
+      guest: { name: "Jane", email: "jane@example.com" },
+    });
+    const lease = mockStorage.createLeaseWithSchedule.mock.calls[0][0].lease;
+    expect(lease.lateFeePerDaySnapshot).toBe("30");
+    expect(lease.cardSurchargeRateSnapshot).toBe("0.03");
   });
 });
 

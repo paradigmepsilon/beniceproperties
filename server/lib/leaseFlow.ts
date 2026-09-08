@@ -26,6 +26,7 @@ import {
   type LeaseDocData,
 } from "./leaseDocument";
 import { storage } from "../storage";
+import { getPricingSettings } from "./pricingSettings";
 
 // Unguessable guest-portal token (URL-safe, 32 chars). The guest's self-serve
 // link is /portal/<token>.
@@ -129,6 +130,10 @@ export async function createDraftLease(input: CreateDraftLeaseInput): Promise<Cr
     phone: input.guest.phone ?? null,
   });
 
+  // Freeze the pricing terms the agreement will state. Editing the settings
+  // later changes new leases only.
+  const pricing = await getPricingSettings();
+
   const lease = await storage.createLeaseWithSchedule({
     lease: {
       propertyId: property.id,
@@ -147,6 +152,8 @@ export async function createDraftLease(input: CreateDraftLeaseInput): Promise<Cr
       // its own PaymentIntent at move-in). "0" when no room carries a fee.
       cleaningFeeSnapshot: String(quote.cleaningFeeTotal),
       cleaningFeeStatus: "PENDING",
+      lateFeePerDaySnapshot: String(pricing.lateFeePerDay),
+      cardSurchargeRateSnapshot: String(pricing.cardSurchargeRate),
       status: "PENDING_SIGNATURE",
       portalToken: portalTokenGen(),
     },
