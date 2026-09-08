@@ -67,6 +67,10 @@ export async function getPortalView(token: string) {
       signedAt: lease.signedAt,
       signedPdfUrl: lease.signedPdfUrl,
       hasSavedCard: Boolean(lease.stripeCustomerId && lease.stripePaymentMethodId),
+      // The lease's own snapshotted rate, not the live setting — a portal guest
+      // must be quoted the same rate payInstallmentNow actually charges. See
+      // chargeTotalFor below, which uses the identical leaseCardSurchargeRate call.
+      cardSurchargeRate: leaseCardSurchargeRate(lease, await getCardSurchargeRate()),
     },
     // Identity verification (driver's license review) state. The image itself is
     // never exposed here — only whether one is on file and the review status.

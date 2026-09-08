@@ -5094,7 +5094,11 @@ async function getPortalView(token) {
       prorationNote: lease.prorationNote,
       signedAt: lease.signedAt,
       signedPdfUrl: lease.signedPdfUrl,
-      hasSavedCard: Boolean(lease.stripeCustomerId && lease.stripePaymentMethodId)
+      hasSavedCard: Boolean(lease.stripeCustomerId && lease.stripePaymentMethodId),
+      // The lease's own snapshotted rate, not the live setting — a portal guest
+      // must be quoted the same rate payInstallmentNow actually charges. See
+      // chargeTotalFor below, which uses the identical leaseCardSurchargeRate call.
+      cardSurchargeRate: leaseCardSurchargeRate(lease, await getCardSurchargeRate())
     },
     // Identity verification (driver's license review) state. The image itself is
     // never exposed here — only whether one is on file and the review status.
@@ -7710,11 +7714,12 @@ ${parts.join("\n")}
       uoErr(e, res, next);
     }
   });
-  const pricingSettingsBody = z4.object({
+  const actorBody = z4.string().min(1, "actor is required");
+  const pricingValuesSchema = z4.object({
     lateFeePerDay: z4.number().optional(),
-    cardSurchargeRate: z4.number().optional(),
-    actor: z4.string().optional()
+    cardSurchargeRate: z4.number().optional()
   });
+  const uoPricingSettingsBody = pricingValuesSchema.extend({ actor: actorBody });
   const getPricingSettingsHandler = async (_req, res, next) => {
     try {
       res.json(await getPricingSettings());
@@ -7722,12 +7727,12 @@ ${parts.join("\n")}
       uoErr(e, res, next);
     }
   };
-  const putPricingSettingsHandler = (actorFrom) => async (req, res, next) => {
+  const putPricingSettingsHandler = (bodySchema, actorFrom) => async (req, res, next) => {
     try {
-      const parsed = pricingSettingsBody.safeParse(req.body);
+      const parsed = bodySchema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
-      const { actor: _ignored, ...values } = parsed.data;
-      res.json(await updatePricingSettings(values, actorFrom(req)));
+      const { lateFeePerDay, cardSurchargeRate } = parsed.data;
+      res.json(await updatePricingSettings({ lateFeePerDay, cardSurchargeRate }, actorFrom(req, parsed.data)));
     } catch (e) {
       uoErr(e, res, next);
     }
@@ -7736,15 +7741,14 @@ ${parts.join("\n")}
   app.put(
     "/api/uo/settings/pricing",
     requireServiceToken,
-    putPricingSettingsHandler((req) => `uo:${typeof req.body?.actor === "string" && req.body.actor.trim() ? req.body.actor.trim() : "unknown"}`)
+    putPricingSettingsHandler(uoPricingSettingsBody, (_req, parsed) => `uo:${parsed.actor}`)
   );
   app.get("/api/admin/settings/pricing", requireAdmin, getPricingSettingsHandler);
   app.put(
     "/api/admin/settings/pricing",
     requireAdmin,
-    putPricingSettingsHandler((req) => adminActor(req))
+    putPricingSettingsHandler(pricingValuesSchema, (req) => adminActor(req))
   );
-  const actorBody = z4.string().min(1, "actor is required");
   app.patch("/api/uo/properties/:id", requireServiceToken, async (req, res, next) => {
     try {
       const schema = z4.object({ actor: actorBody, patch: z4.record(z4.unknown()) });

@@ -3596,7 +3596,10 @@ Plus this task's own changes: `.env.example` (+2 doc comment), `docs/build-log.m
 `npm run build` 0 · `npm run build:api` 0.
 
 **Owner steps (in order)**
-1. `node scripts/push-pricing-snapshots.mjs` against production (additive; re-runnable).
+1. `node scripts/push-pricing-snapshots.mjs` against production **before merging to main** —
+   merging triggers the production deploy via Vercel Git integration, and `storage.ts` reads
+   `leases` with an explicit column list, so if this code lands first every lease read (portal,
+   dunning, rent sweep, admin, `/api/uo`) fails until the two columns exist. Additive; re-runnable.
 2. Deploy BNP.
 3. Deploy UO (companion branch `feat/uo-pricing-writeback` in the Unified-Ops repo).
 4. Verify: edit a room's biweekly rate in UO → BNP quote for 14 nights on that room reflects it.

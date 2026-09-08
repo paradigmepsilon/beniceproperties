@@ -1599,41 +1599,49 @@ export async function registerRoutes(app: Express): Promise<void> {
     } catch (e) { uoErr(e, res, next); }
   });
 
+  // --- Property / room write-backs (UO is the primary inventory + price editor) ---
+  const actorBody = z.string().min(1, "actor is required");
+
   // --- Pricing settings (late fee $/day, card surcharge rate) ---
   // One handler pair, mounted for UO (service token) and admin (session).
   // Reads fall back to the defaults; writes validate ranges and log the actor.
-  const pricingSettingsBody = z.object({
+  // The UO mount requires a non-empty `actor` in the body (attributed as
+  // `uo:<actor>`) — same actorBody schema as the property/room write-backs
+  // below, so a missing actor 400s instead of silently landing as "uo:unknown".
+  // The admin mount derives its actor from the session and takes no body actor.
+  const pricingValuesSchema = z.object({
     lateFeePerDay: z.number().optional(),
     cardSurchargeRate: z.number().optional(),
-    actor: z.string().optional(),
   });
+  const uoPricingSettingsBody = pricingValuesSchema.extend({ actor: actorBody });
   const getPricingSettingsHandler = async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
     try { res.json(await getPricingSettings()); } catch (e) { uoErr(e, res, next); }
   };
-  const putPricingSettingsHandler = (actorFrom: (req: express.Request) => string) =>
+  const putPricingSettingsHandler = <T extends { lateFeePerDay?: number; cardSurchargeRate?: number }>(
+    bodySchema: z.ZodType<T>,
+    actorFrom: (req: express.Request, parsed: T) => string,
+  ) =>
     async (req: express.Request, res: express.Response, next: express.NextFunction) => {
       try {
-        const parsed = pricingSettingsBody.safeParse(req.body);
+        const parsed = bodySchema.safeParse(req.body);
         if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
-        const { actor: _ignored, ...values } = parsed.data;
-        res.json(await updatePricingSettings(values, actorFrom(req)));
+        const { lateFeePerDay, cardSurchargeRate } = parsed.data;
+        res.json(await updatePricingSettings({ lateFeePerDay, cardSurchargeRate }, actorFrom(req, parsed.data)));
       } catch (e) { uoErr(e, res, next); }
     };
   app.get("/api/uo/settings/pricing", requireServiceToken, getPricingSettingsHandler);
   app.put(
     "/api/uo/settings/pricing",
     requireServiceToken,
-    putPricingSettingsHandler((req) => `uo:${typeof req.body?.actor === "string" && req.body.actor.trim() ? req.body.actor.trim() : "unknown"}`),
+    putPricingSettingsHandler(uoPricingSettingsBody, (_req, parsed) => `uo:${parsed.actor}`),
   );
   app.get("/api/admin/settings/pricing", requireAdmin, getPricingSettingsHandler);
   app.put(
     "/api/admin/settings/pricing",
     requireAdmin,
-    putPricingSettingsHandler((req) => adminActor(req)),
+    putPricingSettingsHandler(pricingValuesSchema, (req) => adminActor(req)),
   );
 
-  // --- Property / room write-backs (UO is the primary inventory + price editor) ---
-  const actorBody = z.string().min(1, "actor is required");
   app.patch("/api/uo/properties/:id", requireServiceToken, async (req, res, next) => {
     try {
       const schema = z.object({ actor: actorBody, patch: z.record(z.unknown()) });

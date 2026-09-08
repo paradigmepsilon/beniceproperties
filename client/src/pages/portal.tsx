@@ -22,7 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
 import { todayIso } from "@shared/dates";
-import { usePricingConfig } from "@/lib/usePricingConfig";
+import { formatSurchargePct } from "@shared/pricing";
 
 /** Mirrors OPEN_FOR_PAY in server/lib/portal.ts. Keep the two in sync. */
 const OPEN_FOR_PAY = new Set(["SCHEDULED", "DUE", "LATE", "FAILED"]);
@@ -49,6 +49,7 @@ interface PortalView {
     signedAt: string | null;
     signedPdfUrl: string | null;
     hasSavedCard: boolean;
+    cardSurchargeRate: number;
   };
   verification: {
     status: string; // NOT_SUBMITTED | PENDING_REVIEW | APPROVED | REJECTED
@@ -129,7 +130,6 @@ export default function Portal() {
   const { token } = useParams();
   const { toast } = useToast();
   const qc = useQueryClient();
-  const { surchargePct } = usePricingConfig();
   const key = ["/api/portal", token!];
 
   const { data, isLoading, error } = useQuery<PortalView>({
@@ -490,7 +490,7 @@ export default function Portal() {
               <p className="pt-2 text-xs text-muted-foreground">{lease.prorationNote}</p>
             )}
             <p className="pt-1 text-xs text-muted-foreground">
-              Card payments include a {surchargePct} processing fee. CashApp/Zelle has no fee. Your payment is
+              Card payments include a {formatSurchargePct(lease.cardSurchargeRate)} processing fee. CashApp/Zelle has no fee. Your payment is
               held pending until we confirm it.
             </p>
           </CardContent>

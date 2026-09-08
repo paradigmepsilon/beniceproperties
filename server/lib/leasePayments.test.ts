@@ -485,6 +485,29 @@ describe("runScheduledRentSweep", () => {
     );
   });
 
+  it("charges the lease's snapshotted surcharge, not the current setting", async () => {
+    mockStorage.getLeases.mockResolvedValue([
+      lease({
+        status: "ACTIVE",
+        stripeCustomerId: "cus_123",
+        stripePaymentMethodId: "pm_saved_1",
+        cardSurchargeRateSnapshot: "0.0300",
+      }),
+    ]);
+    mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+      k === "card_surcharge_rate" ? 0.05 : fb,
+    );
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      schedRow(2, { dueDate: "2026-07-08" }),
+    ]);
+    mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_rent_2", status: "succeeded" });
+
+    await runScheduledRentSweep("2026-07-10");
+
+    const args = mockStripe.chargeSavedCard.mock.calls[0][0];
+    expect(args.amount).toBe(257.5); // 250 + 3% snapshot, not 250 + 5% live setting (262.5)
+  });
+
   // The sweep's `today` decides whether rent is due. A UTC day would treat the
   // hours after 8pm ET as tomorrow and charge a day early.
   it("defaults `today` to the hotel-local calendar day, not the UTC one", async () => {

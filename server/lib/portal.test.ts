@@ -99,6 +99,17 @@ describe("getPortalView", () => {
     expect(view.schedule).toHaveLength(2);
     expect(view.lateFees.accruedTotal).toBe(50);
   });
+
+  it("reports the lease's snapshotted surcharge rate, not the live setting", async () => {
+    mockStorage.getLeaseByPortalToken.mockResolvedValue(lease({ cardSurchargeRateSnapshot: "0.0300" }));
+    mockStorage.getScheduleByLease.mockResolvedValue([]);
+    mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+      k === "card_surcharge_rate" ? 0.05 : fb,
+    );
+
+    const view = await getPortalView(TOKEN);
+    expect(view.lease.cardSurchargeRate).toBe(0.03);
+  });
 });
 
 describe("payInstallmentNow", () => {

@@ -161,6 +161,40 @@ describe("signLease", () => {
     expect(updates.signedPdfUrl).toBe("/api/leases/lease-1/document");
   });
 
+  it("a legacy lease with null snapshots signs with the current fallback settings", async () => {
+    mockStorage.getSettingNumber.mockImplementation(async (_k: string, fb: number) => fb);
+    mockStorage.getLease.mockResolvedValue(
+      signedLeaseFixture({ lateFeePerDaySnapshot: null, cardSurchargeRateSnapshot: null }),
+    );
+    await signLease({
+      leaseId: "lease-1",
+      signedName: "Jane Q. Resident",
+      affirmed: true,
+      ip: "203.0.113.9",
+      signedAt: new Date("2026-07-01T12:00:00Z"),
+    });
+    const html = mockStorage.updateLease.mock.calls[0][1].signedDocumentHtml as string;
+    expect(html).toContain("$25.00 per day");
+    expect(html).toContain("3.5% processing fee");
+  });
+
+  it("a lease with its own snapshotted late fee + surcharge signs with those, not the fallback", async () => {
+    mockStorage.getSettingNumber.mockImplementation(async (_k: string, fb: number) => fb);
+    mockStorage.getLease.mockResolvedValue(
+      signedLeaseFixture({ lateFeePerDaySnapshot: "20.00", cardSurchargeRateSnapshot: "0.0300" }),
+    );
+    await signLease({
+      leaseId: "lease-1",
+      signedName: "Jane Q. Resident",
+      affirmed: true,
+      ip: "203.0.113.9",
+      signedAt: new Date("2026-07-01T12:00:00Z"),
+    });
+    const html = mockStorage.updateLease.mock.calls[0][1].signedDocumentHtml as string;
+    expect(html).toContain("$20.00 per day");
+    expect(html).toContain("3% processing fee");
+  });
+
   it("rejects a missing/short name", async () => {
     mockStorage.getLease.mockResolvedValue(signedLeaseFixture());
     await expect(
