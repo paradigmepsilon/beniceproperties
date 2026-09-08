@@ -23,6 +23,7 @@ import { buildLeaseChargeMetadata } from "./paymentMetadata";
 import { billAccruedLateFees } from "./dunning";
 import { notifyAdmin } from "./notifications";
 import { calculateBreakdown } from "@shared/pricing";
+import { getCardSurchargeRate, leaseCardSurchargeRate } from "./pricingSettings";
 import { LeaseError } from "./lease";
 import { buildManualInstructions, type ManualMethod, type ManualInstructions } from "./manualPayment";
 import type { Lease } from "@shared/schema";
@@ -118,8 +119,9 @@ export async function getPortalView(token: string) {
 }
 
 /** Charge total for an installment = rent + card surcharge (consistent w/ quote). */
-function chargeTotalFor(rent: number): number {
-  return calculateBreakdown({ baseAmount: rent, paymentMethod: "STRIPE" }).total;
+async function chargeTotalFor(lease: Lease, base: number): Promise<number> {
+  const rate = leaseCardSurchargeRate(lease, await getCardSurchargeRate());
+  return calculateBreakdown({ baseAmount: base, paymentMethod: "STRIPE", surchargeRate: rate }).total;
 }
 
 export async function payInstallmentNow(
@@ -146,7 +148,7 @@ export async function payInstallmentNow(
   if (row.status === "WAIVED") throw new LeaseError("That installment was waived", 409);
   if (!OPEN_FOR_PAY.has(row.status)) throw new LeaseError("That installment can't be paid now", 409);
 
-  const amount = chargeTotalFor(parseFloat(row.amount));
+  const amount = await chargeTotalFor(lease, parseFloat(row.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,

@@ -24,6 +24,7 @@ const mockStorage = vi.hoisted(() => ({
   updateRoom: vi.fn(),
   hasLifecycleEvent: vi.fn(),
   recordLifecycleEvent: vi.fn(),
+  getSettingNumber: vi.fn(),
 }));
 const mockStripe = vi.hoisted(() => ({
   ensureCustomer: vi.fn(),
@@ -85,6 +86,7 @@ beforeEach(() => {
   // Rooms are free unless a test says otherwise (deposit-race guard).
   mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
   mockStorage.raiseEscalationOnce.mockResolvedValue({ id: "esc-1" });
+  mockStorage.getSettingNumber.mockImplementation(async (_k: string, fb: number) => fb);
 });
 
 describe("startFirstPayment", () => {

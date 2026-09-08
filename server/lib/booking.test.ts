@@ -94,6 +94,14 @@ describe("buildQuote — STR tier labelling + totals", () => {
     expect(q.dueNow.lines[0].label).not.toContain("rate");
     expect(q.dueNow.lines[0].label).toContain("3 nights");
   });
+
+  it("labels the card line with the surcharge rate it was given", () => {
+    const resolved = strResolved({ nights: 2, baseAmount: 200, cleaningFee: 0, rateTier: "DAILY" });
+    const q = buildQuote(resolved, "STRIPE", 0.03);
+    const card = q.dueNow.lines.find((l) => l.label.startsWith("Card processing"));
+    expect(card?.label).toBe("Card processing (3%)");
+    expect(q.dueNow.surcharge).toBe(6);
+  });
 });
 
 describe("strBaseTotal — per-weekday pricing (the DAILY tail of the cascade)", () => {

@@ -18,6 +18,7 @@ const mockStorage = vi.hoisted(() => ({
   createMessage: vi.fn(),
   updateMessage: vi.fn(),
   createMessageLog: vi.fn(),
+  getSettingNumber: vi.fn(),
 }));
 const mockStripe = vi.hoisted(() => ({ chargeSavedCard: vi.fn() }));
 const mockDunning = vi.hoisted(() => ({ billAccruedLateFees: vi.fn() }));
@@ -68,6 +69,7 @@ beforeEach(() => {
   mockStorage.getLateFeesByLease.mockResolvedValue([]);
   mockStorage.getMessageThreadsByLease.mockResolvedValue([]);
   mockStorage.getVehicleByLease.mockResolvedValue(undefined);
+  mockStorage.getSettingNumber.mockImplementation(async (_k: string, fb: number) => fb);
 });
 
 describe("token resolution", () => {
@@ -118,6 +120,21 @@ describe("payInstallmentNow", () => {
     expect(mockStripe.chargeSavedCard.mock.calls[0][0].idempotencyKey).toBe("lease-rent-lease-1-seq-2");
     expect(mockStorage.updateScheduleRow).toHaveBeenCalledWith("row-2", expect.objectContaining({ status: "PAID" }));
     expect(mockDunning.billAccruedLateFees).toHaveBeenCalled();
+  });
+
+  it("charges rent plus the lease's snapshotted surcharge, not the current setting", async () => {
+    mockStorage.getLeaseByPortalToken.mockResolvedValue(lease({ cardSurchargeRateSnapshot: "0.0300" }));
+    mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+      k === "card_surcharge_rate" ? 0.05 : fb,
+    );
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "row-2", scheduleSeq: 2, dueDate: "2026-07-08", amount: "250", status: "DUE", paymentMethod: "CARD_ON_FILE" },
+    ]);
+    mockStripe.chargeSavedCard.mockResolvedValue({ id: "pi_pay_2", status: "succeeded" });
+
+    await payInstallmentNow(TOKEN, 2);
+    const args = mockStripe.chargeSavedCard.mock.calls[0][0];
+    expect(args.amount).toBe(257.5);
   });
 
   it("refuses when there is no saved card", async () => {

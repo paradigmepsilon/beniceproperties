@@ -35,6 +35,7 @@ import {
 } from "./stripe";
 import { buildLeaseChargeMetadata } from "./paymentMetadata";
 import { calculateBreakdown } from "@shared/pricing";
+import { getCardSurchargeRate, leaseCardSurchargeRate } from "./pricingSettings";
 import { LeaseError } from "./lease";
 import { handleChargeFailure, billAccruedLateFees } from "./dunning";
 import { onLeaseActivated, onPaymentReceived, onDepositReceived } from "./lifecycle";
@@ -64,10 +65,12 @@ async function loadLeaseContext(leaseId: string): Promise<LeaseContext> {
 /**
  * The amount actually charged for an installment. Card-on-file charges carry the
  * Stripe surcharge (we pay Stripe per charge); the stored `amount` is rent only,
- * so the surcharge is added on at charge time via the canonical breakdown.
+ * so the surcharge is added at charge time via the canonical breakdown — at the
+ * rate this LEASE was created under (snapshot), falling back to the live setting.
  */
-function chargeTotalFor(rentAmount: number): number {
-  return calculateBreakdown({ baseAmount: rentAmount, paymentMethod: "STRIPE" }).total;
+async function chargeTotalFor(lease: Lease, base: number): Promise<number> {
+  const rate = leaseCardSurchargeRate(lease, await getCardSurchargeRate());
+  return calculateBreakdown({ baseAmount: base, paymentMethod: "STRIPE", surchargeRate: rate }).total;
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +111,7 @@ export async function startFirstPayment(leaseId: string): Promise<StartFirstPaym
     await storage.updateLease(lease.id, { stripeCustomerId: customerId });
   }
 
-  const amount = chargeTotalFor(parseFloat(first.amount));
+  const amount = await chargeTotalFor(lease, parseFloat(first.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
@@ -542,7 +545,7 @@ async function chargeFirstWeekOffSession(leaseId: string, paymentMethodId: strin
   if (!first) throw new LeaseError("Lease has no first installment", 500);
   if (first.status === "PAID") return;
 
-  const amount = chargeTotalFor(parseFloat(first.amount));
+  const amount = await chargeTotalFor(lease, parseFloat(first.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
@@ -597,7 +600,7 @@ async function chargeCleaningFeeOffSession(leaseId: string, paymentMethodId: str
   if (!(fee > 0)) return; // no cleaning fee on this lease
   if (lease.cleaningFeeStatus === "PAID") return; // already charged
 
-  const amount = chargeTotalFor(fee);
+  const amount = await chargeTotalFor(lease, fee);
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
@@ -688,7 +691,7 @@ async function chargeInstallment(
   row: PaymentScheduleRow,
   result: RentSweepResult,
 ): Promise<void> {
-  const amount = chargeTotalFor(parseFloat(row.amount));
+  const amount = await chargeTotalFor(lease, parseFloat(row.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,

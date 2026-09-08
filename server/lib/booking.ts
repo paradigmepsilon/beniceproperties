@@ -8,7 +8,7 @@
 
 import { customAlphabet } from "nanoid";
 import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns";
-import { calculateBreakdown, type PaymentMethod } from "@shared/pricing";
+import { calculateBreakdown, DEFAULT_CREDIT_CARD_RATE, formatSurchargePct, type PaymentMethod } from "@shared/pricing";
 import {
   hasAnyWeekdayRate,
   cascadeStayPrice,
@@ -315,12 +315,14 @@ export async function resolveBooking(input: {
 export function buildQuote(
   resolved: ResolvedBooking,
   paymentMethod: PaymentMethod,
+  surchargeRate: number = DEFAULT_CREDIT_CARD_RATE,
 ): QuoteResponse {
   if (resolved.model === "STR") {
     const b = calculateBreakdown({
       baseAmount: resolved.baseAmount,
       cleaningFee: resolved.cleaningFee,
       paymentMethod,
+      surchargeRate,
     });
     const tierLabel =
       resolved.rateTier === "MONTHLY" ? " @ monthly rate" : resolved.rateTier === "WEEKLY" ? " @ weekly rate" : "";
@@ -332,7 +334,7 @@ export function buildQuote(
     ];
     if (resolved.cleaningFee > 0) lines.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
     if (b.tax > 0) lines.push({ label: "Tax", amount: b.tax });
-    if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
+    if (b.surcharge > 0) lines.push({ label: `Card processing (${formatSurchargePct(surchargeRate)})`, amount: b.surcharge });
     return {
       model: "STR",
       nights: resolved.nights,
@@ -347,6 +349,7 @@ export function buildQuote(
     baseAmount: resolved.baseAmount,
     cleaningFee: resolved.cleaningFee,
     paymentMethod,
+    surchargeRate,
   });
   const ss = resolved.shortStay;
   const lines: QuoteResponse["dueNow"]["lines"] = [];
@@ -368,7 +371,7 @@ export function buildQuote(
     lines.push({ label: `Stay (${resolved.nights} nights)`, amount: resolved.baseAmount });
   }
   if (resolved.cleaningFee > 0) lines.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
-  if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
+  if (b.surcharge > 0) lines.push({ label: `Card processing (${formatSurchargePct(surchargeRate)})`, amount: b.surcharge });
   return {
     model: "COLIVING",
     nights: resolved.nights,

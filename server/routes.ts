@@ -734,7 +734,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       }
       const { propertyId, roomId, checkIn, checkOut, paymentMethod } = parsed.data;
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-      res.json(buildQuote(resolved, paymentMethod));
+      res.json(buildQuote(resolved, paymentMethod, await getCardSurchargeRate()));
     } catch (err) {
       if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -764,7 +764,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       // resolveBooking applies the same lease-vs-booking gate + availability check
       // as /api/quote; anything that resolves is bookable as a short stay.
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-      const quote = buildQuote(resolved, "STRIPE");
+      const quote = buildQuote(resolved, "STRIPE", await getCardSurchargeRate());
       const reference = generateReference();
       const dueNow = quote.dueNow.total;
       const surcharge = quote.dueNow.surcharge;

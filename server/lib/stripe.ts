@@ -11,7 +11,7 @@
 // =============================================================================
 
 import Stripe from "stripe";
-import { CREDIT_CARD_RATE } from "@shared/pricing";
+import { DEFAULT_CREDIT_CARD_RATE } from "@shared/pricing";
 import type { StripeChargeMetadata } from "./paymentMetadata";
 import { assertCompleteMetadata } from "./paymentMetadata";
 
@@ -97,10 +97,11 @@ export async function createWeeklySubscriptionCheckout(opts: {
   roomName: string;
   successUrl: string;
   cancelUrl: string;
+  surchargeRate?: number;
 }): Promise<Stripe.Checkout.Session> {
   const s = requireStripe();
   // Surcharge is applied to the weekly charge (Stripe takes its cut each week).
-  const weeklyTotal = opts.weeklyRent * (1 + CREDIT_CARD_RATE);
+  const weeklyTotal = opts.weeklyRent * (1 + (opts.surchargeRate ?? DEFAULT_CREDIT_CARD_RATE));
   return s.checkout.sessions.create({
     mode: "subscription",
     customer_email: opts.guestEmail,
