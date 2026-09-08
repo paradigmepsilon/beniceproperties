@@ -9,6 +9,8 @@ import "dotenv/config";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { refreshExternalCalendars, checkCalendarSyncHealth } from "../../server/lib/icalSync";
 import { log } from "../../server/server-log";
+import { runLeaseHoldExpiry } from "../../server/lib/leaseHolds";
+import { syncRoomOccupancyStatus } from "../../server/lib/occupancy";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const secret = process.env.CRON_SECRET;
@@ -23,6 +25,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         `calendar cron: ${result.totalListings} listing(s), ${result.created} new, ${result.removed} removed, ${result.failed} failed`,
         "cron",
       );
+    }
+
+    // Hourly, unlike the daily sweep: a hold that should lapse the day after
+    // move-in must not wait for 08:00 UTC. Freeing a room can change today's
+    // occupancy, and this handler has no occupancy sync of its own, so run one
+    // only when something was actually released.
+    try {
+      const released = await runLeaseHoldExpiry();
+      if (released.movedIn > 0 || released.abandoned > 0) {
+        await syncRoomOccupancyStatus();
+      }
+    } catch (err) {
+      log(`lease hold expiry failed: ${(err as Error).message}`, "cron");
     }
 
     // Runs hourly (unlike the daily sweep) so a stale/failed calendar sync

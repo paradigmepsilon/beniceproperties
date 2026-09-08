@@ -8,10 +8,13 @@
 // and charged. There is one implementation. Never generate a schedule any other
 // way.
 //
-// Cadence → schedule rules (spec PHASE 1):
-//   WEEKLY:   a payment every 7 days from start_date,  each = weeklyRate × 1 × rooms
-//   BIWEEKLY: every 14 days,                           each = weeklyRate × 2 × rooms
-//   MONTHLY:  every 28 days (4 weeks),                 each = weeklyRate × 4 × rooms
+// Cadence → schedule SHAPE (how due dates are spaced). The AMOUNT per period
+// comes from chooseLeaseRate() in shared/rateSelection.ts, where the guest's
+// cadence picks the rate (owner rule 2026-09-08) — a MONTHLY lease bills
+// monthly_rate, not weeklyRate × 4, whenever a monthly rate is set:
+//   WEEKLY:   a payment every 7 days from start_date
+//   BIWEEKLY: every 14 days
+//   MONTHLY:  every 28 days (4 weeks)
 //   All cadences: schedule_seq 1 is due on the BOOKING DATE (first payment due
 //   on booking). MONTHLY's first month is therefore due in full on booking.
 //
@@ -19,17 +22,15 @@
 //   The term is divided into back-to-back cadence periods starting at start_date.
 //   A trailing partial period (the lease ends mid-period) becomes a final
 //   installment prorated by DAYS: amount = perDayRate × daysInFinalPeriod, where
-//   perDayRate = (weeklyRate × rooms) / 7. The proration note records the count
+//   perDayRate = effectiveNightly. The proration note records the count
 //   of full installments + the prorated final amount and its day count.
 // =============================================================================
 
-import {
-  CADENCE_DAYS,
-  MAX_LEASE_DAYS,
-  type PAYMENT_CADENCES,
-} from "./schema";
+import { CADENCE_DAYS, MAX_LEASE_DAYS } from "./schema";
+import { cascadeStayPrice, type CascadeRates, type CascadeTier } from "./rateSelection";
 
-export type PaymentCadence = (typeof PAYMENT_CADENCES)[number];
+export type { PaymentCadence } from "./schema";
+import type { PaymentCadence } from "./schema";
 
 export interface ScheduleInput {
   /** YYYY-MM-DD lease start (also the booking date / first due date). */
@@ -137,13 +138,126 @@ export function generateSchedule(input: ScheduleInput): GeneratedSchedule {
 /**
  * Phase-3 tier-driven schedule: full installment = effectiveNightly × periodDays,
  * trailing partial = effectiveNightly × remainingDays. Used by the co-living lease
- * flow once the rate tier is chosen by stay length.
+ * flow once chooseLeaseRate() has turned the guest's cadence into a rate.
  */
 export function generateTierSchedule(input: TierScheduleInput): GeneratedSchedule {
   if (!(input.effectiveNightly > 0)) throw new ScheduleError("effectiveNightly must be positive");
   if (!(input.periodDays >= 1)) throw new ScheduleError("periodDays must be at least 1");
   return buildSchedule(input);
 }
+
+// =============================================================================
+// CASCADE SCHEDULE (owner rule, 2026-09-08) — the schedule a lease actually gets.
+//
+// Full periods at the guest's chosen cadence each become their own installment.
+// Everything the cascade steps DOWN to (weeks, then days) collapses into ONE
+// combined final payment, so a guest who picked MONTHLY still makes monthly
+// payments and never gets four charges in their last three weeks.
+//
+//   Sep 15 -> Nov 5, MONTHLY, wk 300 / mo 1200 / daily 43:
+//     #1  Sep 15   $1,200.00   28d   monthly
+//     #2  Oct 13   $1,029.00   24d   final (3 weeks + 3 days)
+//
+// The final payment's AMOUNT still cascades tier by tier — it is not a flat
+// per-night proration. There are no fractional days anywhere.
+// =============================================================================
+
+/** The cadence a guest picked, as a cascade starting tier. */
+const CADENCE_TOP_TIER: Record<PaymentCadence, CascadeTier> = {
+  WEEKLY: "WEEKLY",
+  BIWEEKLY: "BIWEEKLY",
+  MONTHLY: "MONTHLY",
+};
+
+export interface CascadeScheduleInput {
+  /** YYYY-MM-DD lease start (also the booking date / first due date). */
+  startDate: string;
+  /** YYYY-MM-DD lease end, INCLUSIVE. */
+  endDate: string;
+  /** The guest's billing cadence — sets both the rate and the payment rhythm. */
+  cadence: PaymentCadence;
+  /** Combined per-tier rates across every room on the lease. */
+  rates: CascadeRates;
+}
+
+/**
+ * Build the lease payment schedule by cascading whole periods down the tiers.
+ * Throws ScheduleError on bad dates or a term over the 90-day ceiling, and
+ * RateError (from cascadeStayPrice) when nothing is priced.
+ */
+export function generateCascadeSchedule(input: CascadeScheduleInput): GeneratedSchedule {
+  const { startDate, endDate, cadence, rates } = input;
+
+  if (parseYmd(endDate).getTime() < parseYmd(startDate).getTime()) {
+    throw new ScheduleError("endDate must be on or after startDate");
+  }
+  const totalDays = inclusiveDays(startDate, endDate);
+  if (totalDays > MAX_LEASE_DAYS) {
+    throw new ScheduleError(`Lease term ${totalDays} days exceeds the ${MAX_LEASE_DAYS}-day maximum`);
+  }
+
+  const topTier = CADENCE_TOP_TIER[cadence];
+  const priced = cascadeStayPrice({ days: totalDays, rates, topTier });
+
+  const installments: ScheduleInstallment[] = [];
+  let seq = 1;
+  let cursor = startDate; // installment 1 is due on the start/booking date
+
+  const head = priced.segments.find((seg) => seg.tier === topTier);
+  const tail = priced.segments.filter((seg) => seg.tier !== topTier);
+
+  // One installment per whole period of the chosen cadence.
+  if (head) {
+    for (let i = 0; i < head.units; i++) {
+      installments.push({
+        seq: seq++,
+        dueDate: cursor,
+        amount: roundCurrency(head.unitRate),
+        prorated: false,
+        daysCovered: head.unitDays,
+      });
+      cursor = addDays(cursor, head.unitDays);
+    }
+  }
+
+  // Everything below the cadence tier becomes ONE combined final payment.
+  if (tail.length > 0) {
+    installments.push({
+      seq: seq++,
+      dueDate: cursor,
+      amount: roundCurrency(tail.reduce((sum, seg) => sum + seg.amount, 0)),
+      prorated: true,
+      daysCovered: tail.reduce((sum, seg) => sum + seg.days, 0),
+    });
+  }
+
+  const fullCount = head?.units ?? 0;
+  const fullLabel = head ? `$${roundCurrency(head.unitRate).toFixed(2)}` : "";
+  const cadenceWord = cadence.toLowerCase();
+  const prorationNote = tail.length
+    ? `${fullCount} full ${cadenceWord} installment(s)${fullCount ? ` of ${fullLabel}` : ""}, plus a ` +
+      `final payment of $${installments[installments.length - 1].amount.toFixed(2)} covering ` +
+      `${installments[installments.length - 1].daysCovered} day(s) — billed as ` +
+      `${tail.map((seg) => `${seg.units} ${TIER_WORD[seg.tier]}${seg.units === 1 ? "" : "s"}`).join(" + ")}. ` +
+      `First payment due on the move-in date.`
+    : `${fullCount} ${cadenceWord} installment(s) of ${fullLabel}, no proration. ` +
+      `First payment due on the move-in date.`;
+
+  return {
+    installments,
+    totalLeaseValue: roundCurrency(installments.reduce((sum, i) => sum + i.amount, 0)),
+    prorationNote,
+    totalDays,
+  };
+}
+
+/** Human words for the cascade tiers, used in the proration note. */
+const TIER_WORD: Record<CascadeTier, string> = {
+  MONTHLY: "month",
+  BIWEEKLY: "two-week period",
+  WEEKLY: "week",
+  DAILY: "day",
+};
 
 /** Shared engine: lay out installments by period, prorate the trailing tail. */
 function buildSchedule(input: TierScheduleInput): GeneratedSchedule {

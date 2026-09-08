@@ -22,9 +22,9 @@ import { NeighborhoodBlock } from "@/components/neighborhood-block";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { cityOf, money } from "@/lib/format";
+import { cityOf, money, shortDate } from "@/lib/format";
 import { useRoomAvailability } from "@/hooks/use-availability";
-import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
+import { busyToDisabledMatchers, rangeHitsBusy, datesBookable, earliestValidCheckout } from "@/lib/availability";
 import { useSeo, SITE_URL, DEFAULT_OG_IMAGE } from "@/lib/seo";
 import { track } from "@/lib/analytics";
 
@@ -48,6 +48,12 @@ function quoteErrorMessage(err: unknown): string {
   }
   return "Those dates aren't available. Try another range.";
 }
+
+const CADENCE_LABELS: Record<string, string> = {
+  WEEKLY: "Weekly",
+  BIWEEKLY: "Bi-weekly",
+  MONTHLY: "Monthly",
+};
 
 export default function RoomDetail() {
   const { id } = useParams();
@@ -139,6 +145,15 @@ export default function RoomDetail() {
     !!endDate &&
     endDate >= startDate &&
     rangeHitsBusy(startDate, endDate, busy, true);
+
+  // Half-picked range: move-in chosen, move-out still open. The 7-night minimum
+  // routinely puts the first selectable move-out in the NEXT month, so without a
+  // date to aim for the guest just sees greyed days. null means no stay can start
+  // here at all — the minimum runs straight into the next booking.
+  const awaitingCheckOut = availReady && !!startDate && !endDate;
+  const earliestOut = awaitingCheckOut
+    ? earliestValidCheckout(startDate, COLIVING_MIN_DAYS, busy, true)
+    : null;
 
   // Term length (NIGHTS) decides the path — mirrors the server's shared gate and
   // the lease-booking page: <7 below minimum, 7–28 short direct booking, >28 lease.
@@ -321,6 +336,18 @@ export default function RoomDetail() {
                   </p>
                 ) : !availReady && (startDate || endDate) ? (
                   <p className="mt-2 text-xs text-muted-foreground">Checking availability…</p>
+                ) : awaitingCheckOut ? (
+                  earliestOut ? (
+                    <p className="mt-2 text-xs text-muted-foreground" data-testid="text-earliest-checkout">
+                      {COLIVING_MIN_DAYS}-night minimum — pick a move-out on or after{" "}
+                      <span className="font-semibold text-foreground">{shortDate(earliestOut)}</span>.
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-destructive" data-testid="text-no-valid-checkout">
+                      This room is booked again too soon after that date to fit a{" "}
+                      {COLIVING_MIN_DAYS}-night stay. Try an earlier move-in.
+                    </p>
+                  )
                 ) : isBelowMin ? (
                   <p className="mt-2 text-xs text-destructive" data-testid="text-below-min">
                     Co-living stays have a {COLIVING_MIN_DAYS}-night minimum. Extend your dates.
@@ -396,7 +423,9 @@ export default function RoomDetail() {
                   ) : (
                     <>
                       <div className="flex items-baseline justify-between">
-                        <span className="text-sm font-medium">Total lease value</span>
+                        <span className="text-sm font-medium">
+                          Total lease value ({CADENCE_LABELS[leaseQuote.cadence]?.toLowerCase() ?? "weekly"} payments)
+                        </span>
                         <span className="font-display text-2xl font-semibold" data-testid="text-lease-total">
                           {money(String(leaseQuote.totalLeaseValue))}
                         </span>
@@ -406,7 +435,7 @@ export default function RoomDetail() {
                         {leaseQuote.cleaningFeeTotal > 0
                           ? ` + ${money(String(leaseQuote.cleaningFeeTotal))} cleaning fee`
                           : ""}
-                        . Full payment schedule on the next step.
+                        . Pick a different payment schedule on the next step to see its rate.
                       </p>
                     </>
                   )}
@@ -417,7 +446,7 @@ export default function RoomDetail() {
                 {ctaLabel}
               </Button>
               <p className="mt-3 text-center text-xs text-muted-foreground">
-                {isShortStay ? "You won't be charged yet." : "Weekly billing starts after move-in."}
+                {isShortStay ? "You won't be charged yet." : "Billing starts after move-in."}
               </p>
             </div>
           </aside>

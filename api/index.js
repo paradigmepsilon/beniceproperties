@@ -15,8 +15,11 @@ __export(schema_exports, {
   BOOKING_STATUSES: () => BOOKING_STATUSES,
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
+  CHECKOUT_HOLD_LEASE_STATUSES: () => CHECKOUT_HOLD_LEASE_STATUSES,
+  CHECKOUT_HOLD_MINUTES: () => CHECKOUT_HOLD_MINUTES,
   COLIVING_MIN_DAYS: () => COLIVING_MIN_DAYS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
+  DEPOSIT_HELD_LEASE_STATUSES: () => DEPOSIT_HELD_LEASE_STATUSES,
   DEPOSIT_STATUSES: () => DEPOSIT_STATUSES,
   ESCALATION_KINDS: () => ESCALATION_KINDS,
   ESCALATION_SEVERITIES: () => ESCALATION_SEVERITIES,
@@ -93,6 +96,7 @@ __export(schema_exports, {
   journalPosts: () => journalPosts,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
+  leaseHoldsRoom: () => leaseHoldsRoom,
   leaseRooms: () => leaseRooms,
   leases: () => leases,
   lifecycleEvents: () => lifecycleEvents,
@@ -127,9 +131,17 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+function leaseHoldsRoom(lease, now = /* @__PURE__ */ new Date()) {
+  if (lease.depositStatus === "PAID" && DEPOSIT_HELD_LEASE_STATUSES.includes(lease.status)) {
+    return true;
+  }
+  if (!CHECKOUT_HOLD_LEASE_STATUSES.includes(lease.status)) return false;
+  if (!lease.createdAt) return false;
+  const created = lease.createdAt instanceof Date ? lease.createdAt : new Date(lease.createdAt);
+  return now.getTime() - created.getTime() < CHECKOUT_HOLD_MINUTES * 6e4;
+}
 function allowedCadencesForTerm(termDays) {
-  if (termDays >= 84) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
-  if (termDays >= 28) return ["WEEKLY", "MONTHLY"];
+  if (termDays >= 28) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
   return ["WEEKLY"];
 }
 function requiresLease(termDays) {
@@ -138,7 +150,7 @@ function requiresLease(termDays) {
 function isDirectCoLivingStay(termDays) {
   return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
-var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
+var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
 var init_schema = __esm({
   "shared/schema.ts"() {
     "use strict";
@@ -266,6 +278,13 @@ var init_schema = __esm({
       MONTHLY: 28
     };
     MAX_LEASE_DAYS = 90;
+    DEPOSIT_HELD_LEASE_STATUSES = ["PENDING_VERIFICATION", "ACTIVE"];
+    CHECKOUT_HOLD_LEASE_STATUSES = [
+      "DRAFT",
+      "PENDING_SIGNATURE",
+      "PENDING_FIRST_PAYMENT"
+    ];
+    CHECKOUT_HOLD_MINUTES = 30;
     COLIVING_MIN_DAYS = 7;
     LEASE_REQUIRED_ABOVE_DAYS = 28;
     LATE_FEE_PER_DAY = 25;
@@ -330,6 +349,8 @@ var init_schema = __esm({
       // basePrice for back-compat. See shared/rateSelection.ts.
       dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
       weeklyRate: decimal("weekly_rate", { precision: 10, scale: 2 }),
+      // Added 2026-09-08: biweekly is a priced tier in its own right, not 2 x weekly.
+      biweeklyRate: decimal("biweekly_rate", { precision: 10, scale: 2 }),
       monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
       // Per-night-by-weekday prices (added 2026-06-30, additive nullable). When a stay
       // resolves to the DAILY tier (<7 nights), each night is priced by the weekday it
@@ -407,6 +428,8 @@ var init_schema = __esm({
         // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
         // next shorter tier. See shared/rateSelection.ts.
         dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
+        // Added 2026-09-08: a priced tier in its own right, not 2 x weekly_rent.
+        biweeklyRate: decimal("biweekly_rate", { precision: 10, scale: 2 }),
         monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
         // "AVAILABLE" | "OCCUPIED" | "HOLD" | "MAINTENANCE" | "INACTIVE"
         status: text("status").notNull().default("AVAILABLE"),
@@ -950,8 +973,12 @@ var init_schema = __esm({
       // ~14 days before end_date
       "BOOKING_CONFIRMED",
       // short-stay booking materialized (guest)
-      "ADMIN_NEW_BOOKING"
+      "ADMIN_NEW_BOOKING",
       // short-stay booking materialized (admin)
+      "LEASE_HOLD_RELEASED",
+      // hold expired — room released back to inventory
+      "FIRST_PAYMENT_REMINDER"
+      // signed, deposit unpaid — nudge before the hold lapses
     ];
     LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"];
     LEASE_ENDING_NOTICE_DAYS = 14;
@@ -1265,6 +1292,152 @@ var init_escalationDedupe = __esm({
   }
 });
 
+// shared/rateSelection.ts
+import { addDays, getDay, parseISO } from "date-fns";
+function parseRate(v) {
+  if (v === null || v === void 0 || v === "") return null;
+  const n = typeof v === "number" ? v : parseFloat(v);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+function combineLeaseRates(rooms2) {
+  let daily = 0, weekly = 0, biweekly = 0, monthly = 0, any = false;
+  for (const r of rooms2) {
+    const wk = parseRate(r.weeklyRent);
+    if (wk === null) continue;
+    any = true;
+    weekly += wk;
+    daily += parseRate(r.dailyRate) ?? wk / 7;
+    biweekly += parseRate(r.biweeklyRate) ?? wk * 2;
+    monthly += parseRate(r.monthlyRate) ?? wk * 4;
+  }
+  if (!any) throw new RateError("No rate configured for this room \u2014 set a weekly rent.");
+  return { daily, weekly, biweekly, monthly };
+}
+function tierUnitRate(tier, rates) {
+  const weekly = parseRate(rates.weekly);
+  switch (tier) {
+    case "MONTHLY":
+      return parseRate(rates.monthly);
+    case "BIWEEKLY": {
+      const bi = parseRate(rates.biweekly);
+      if (bi !== null) return bi;
+      return weekly !== null ? weekly * 2 : null;
+    }
+    case "WEEKLY":
+      return weekly;
+    case "DAILY": {
+      const daily = parseRate(rates.daily);
+      if (daily !== null) return daily;
+      return weekly !== null ? weekly / 7 : null;
+    }
+  }
+}
+function cascadeStayPrice(input) {
+  if (!(input.days >= 1)) throw new RateError("Stay must be at least 1 day");
+  const segments = [];
+  let remaining = input.days;
+  let cursor = 0;
+  for (const tier of CASCADE_ORDER[input.topTier]) {
+    if (remaining <= 0) break;
+    const unitRate = tierUnitRate(tier, input.rates);
+    if (unitRate === null) continue;
+    const unitDays = CASCADE_TIER_DAYS[tier];
+    const units = Math.floor(remaining / unitDays);
+    if (units < 1) continue;
+    const days = units * unitDays;
+    segments.push({
+      tier,
+      units,
+      unitDays,
+      unitRate,
+      days,
+      amount: roundCurrency(units * unitRate),
+      startDay: cursor
+    });
+    remaining -= days;
+    cursor += days;
+  }
+  if (segments.length === 0) {
+    throw new RateError(
+      "No rate configured for this listing \u2014 set a daily, weekly, or monthly rate."
+    );
+  }
+  if (remaining > 0) {
+    throw new RateError(
+      `No daily rate configured to cover the final ${remaining} day(s) of this stay.`
+    );
+  }
+  return {
+    segments,
+    total: roundCurrency(segments.reduce((sum, seg) => sum + seg.amount, 0)),
+    days: input.days
+  };
+}
+function hasAnyWeekdayRate(rates) {
+  return WEEKDAY_FIELDS.some((f) => parseRate(rates[f]) !== null);
+}
+function averageWeekdayRate(rates) {
+  const set = WEEKDAY_FIELDS.map((f) => parseRate(rates[f])).filter(
+    (v) => v !== null
+  );
+  if (set.length === 0) return null;
+  return set.reduce((a, b) => a + b, 0) / set.length;
+}
+function weekdayStayTotal(input) {
+  const { checkIn, nights: nights2, weekdayRates, fallbackNightly } = input;
+  if (!(nights2 >= 1)) throw new RateError("Stay must be at least 1 night");
+  const start = parseISO(checkIn);
+  let total = 0;
+  for (let k = 0; k < nights2; k++) {
+    const day = getDay(addDays(start, k));
+    const wkPrice = parseRate(weekdayRates[WEEKDAY_FIELDS[day]]);
+    const nightly = wkPrice ?? fallbackNightly;
+    if (nightly === null) {
+      throw new RateError("No price for one or more nights of this stay.");
+    }
+    total += nightly;
+  }
+  return roundCurrency(total);
+}
+var RateError, roundCurrency, CASCADE_TIER_DAYS, CASCADE_ORDER, WEEKDAY_FIELDS;
+var init_rateSelection = __esm({
+  "shared/rateSelection.ts"() {
+    "use strict";
+    RateError = class extends Error {
+    };
+    roundCurrency = (v) => Math.round(v * 100) / 100;
+    CASCADE_TIER_DAYS = {
+      MONTHLY: 28,
+      BIWEEKLY: 14,
+      WEEKLY: 7,
+      DAILY: 1
+    };
+    CASCADE_ORDER = {
+      // Monthly steps to WEEKLY, not biweekly — the owner's rule, verbatim.
+      MONTHLY: ["MONTHLY", "WEEKLY", "DAILY"],
+      BIWEEKLY: ["BIWEEKLY", "WEEKLY", "DAILY"],
+      WEEKLY: ["WEEKLY", "DAILY"],
+      DAILY: ["DAILY"]
+    };
+    WEEKDAY_FIELDS = [
+      "sunPrice",
+      // 0
+      "monPrice",
+      // 1
+      "tuePrice",
+      // 2
+      "wedPrice",
+      // 3
+      "thuPrice",
+      // 4
+      "friPrice",
+      // 5
+      "satPrice"
+      // 6
+    ];
+  }
+});
+
 // shared/leaseSchedule.ts
 function parseYmd(ymd2) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd2);
@@ -1274,75 +1447,82 @@ function parseYmd(ymd2) {
 function toYmd(d) {
   return d.toISOString().slice(0, 10);
 }
-function addDays(ymd2, days) {
+function addDays2(ymd2, days) {
   return toYmd(new Date(parseYmd(ymd2).getTime() + days * MS_PER_DAY));
 }
 function inclusiveDays(startDate, endDate) {
   const diff = Math.round((parseYmd(endDate).getTime() - parseYmd(startDate).getTime()) / MS_PER_DAY);
   return diff + 1;
 }
-function generateTierSchedule(input) {
-  if (!(input.effectiveNightly > 0)) throw new ScheduleError("effectiveNightly must be positive");
-  if (!(input.periodDays >= 1)) throw new ScheduleError("periodDays must be at least 1");
-  return buildSchedule(input);
-}
-function buildSchedule(input) {
-  const { startDate, endDate, cadence, effectiveNightly, periodDays } = input;
-  const start = parseYmd(startDate);
-  const end = parseYmd(endDate);
-  if (end.getTime() < start.getTime()) {
+function generateCascadeSchedule(input) {
+  const { startDate, endDate, cadence, rates } = input;
+  if (parseYmd(endDate).getTime() < parseYmd(startDate).getTime()) {
     throw new ScheduleError("endDate must be on or after startDate");
   }
   const totalDays = inclusiveDays(startDate, endDate);
   if (totalDays > MAX_LEASE_DAYS) {
     throw new ScheduleError(`Lease term ${totalDays} days exceeds the ${MAX_LEASE_DAYS}-day maximum`);
   }
-  const fullPeriodAmount = roundCurrency(effectiveNightly * periodDays);
-  const perDayRate = effectiveNightly;
+  const topTier = CADENCE_TOP_TIER[cadence];
+  const priced = cascadeStayPrice({ days: totalDays, rates, topTier });
   const installments = [];
   let seq = 1;
   let cursor = startDate;
-  let remainingDays = totalDays;
-  while (remainingDays > 0) {
-    if (remainingDays >= periodDays) {
+  const head = priced.segments.find((seg) => seg.tier === topTier);
+  const tail = priced.segments.filter((seg) => seg.tier !== topTier);
+  if (head) {
+    for (let i = 0; i < head.units; i++) {
       installments.push({
-        seq,
+        seq: seq++,
         dueDate: cursor,
-        amount: fullPeriodAmount,
+        amount: roundCurrency2(head.unitRate),
         prorated: false,
-        daysCovered: periodDays
+        daysCovered: head.unitDays
       });
-      remainingDays -= periodDays;
-      cursor = addDays(cursor, periodDays);
-    } else {
-      installments.push({
-        seq,
-        dueDate: cursor,
-        amount: roundCurrency(perDayRate * remainingDays),
-        prorated: true,
-        daysCovered: remainingDays
-      });
-      remainingDays = 0;
+      cursor = addDays2(cursor, head.unitDays);
     }
-    seq += 1;
   }
-  const totalLeaseValue = roundCurrency(
-    installments.reduce((sum, i) => sum + i.amount, 0)
-  );
-  const fullCount = installments.filter((i) => !i.prorated).length;
-  const finalProrated = installments.find((i) => i.prorated);
-  const prorationNote = finalProrated ? `${fullCount} full ${cadence.toLowerCase()} installment(s) of $${fullPeriodAmount.toFixed(2)}, plus a final prorated installment of $${finalProrated.amount.toFixed(2)} covering ${finalProrated.daysCovered} day(s). First payment due on the move-in date.` : `${fullCount} ${cadence.toLowerCase()} installment(s) of $${fullPeriodAmount.toFixed(2)}, no proration. First payment due on the move-in date.`;
-  return { installments, totalLeaseValue, prorationNote, totalDays };
+  if (tail.length > 0) {
+    installments.push({
+      seq: seq++,
+      dueDate: cursor,
+      amount: roundCurrency2(tail.reduce((sum, seg) => sum + seg.amount, 0)),
+      prorated: true,
+      daysCovered: tail.reduce((sum, seg) => sum + seg.days, 0)
+    });
+  }
+  const fullCount = head?.units ?? 0;
+  const fullLabel = head ? `$${roundCurrency2(head.unitRate).toFixed(2)}` : "";
+  const cadenceWord = cadence.toLowerCase();
+  const prorationNote = tail.length ? `${fullCount} full ${cadenceWord} installment(s)${fullCount ? ` of ${fullLabel}` : ""}, plus a final payment of $${installments[installments.length - 1].amount.toFixed(2)} covering ${installments[installments.length - 1].daysCovered} day(s) \u2014 billed as ${tail.map((seg) => `${seg.units} ${TIER_WORD[seg.tier]}${seg.units === 1 ? "" : "s"}`).join(" + ")}. First payment due on the move-in date.` : `${fullCount} ${cadenceWord} installment(s) of ${fullLabel}, no proration. First payment due on the move-in date.`;
+  return {
+    installments,
+    totalLeaseValue: roundCurrency2(installments.reduce((sum, i) => sum + i.amount, 0)),
+    prorationNote,
+    totalDays
+  };
 }
-var ScheduleError, roundCurrency, MS_PER_DAY;
+var ScheduleError, roundCurrency2, MS_PER_DAY, CADENCE_TOP_TIER, TIER_WORD;
 var init_leaseSchedule = __esm({
   "shared/leaseSchedule.ts"() {
     "use strict";
     init_schema();
+    init_rateSelection();
     ScheduleError = class extends Error {
     };
-    roundCurrency = (v) => Math.round(v * 100) / 100;
+    roundCurrency2 = (v) => Math.round(v * 100) / 100;
     MS_PER_DAY = 24 * 60 * 60 * 1e3;
+    CADENCE_TOP_TIER = {
+      WEEKLY: "WEEKLY",
+      BIWEEKLY: "BIWEEKLY",
+      MONTHLY: "MONTHLY"
+    };
+    TIER_WORD = {
+      MONTHLY: "month",
+      BIWEEKLY: "two-week period",
+      WEEKLY: "week",
+      DAILY: "day"
+    };
   }
 });
 
@@ -1352,8 +1532,23 @@ __export(storage_exports, {
   StorageError: () => StorageError,
   storage: () => storage
 });
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, sql as sql3 } from "drizzle-orm";
-var ROOM_BLOCKING_LEASE_STATUSES, StorageError, Storage, storage;
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
+function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
+  const windowStart = new Date(now.getTime() - CHECKOUT_HOLD_MINUTES * 6e4);
+  return or(
+    // 1. Deposit paid — the real hold, for the whole term.
+    and(
+      eq(leases.depositStatus, "PAID"),
+      inArray(leases.status, [...DEPOSIT_HELD_LEASE_STATUSES])
+    ),
+    // 2. Unpaid, but still inside the checkout window.
+    and(
+      inArray(leases.status, [...CHECKOUT_HOLD_LEASE_STATUSES]),
+      gte(leases.createdAt, windowStart)
+    )
+  );
+}
+var NON_TERMINAL_LEASE_STATUSES, StorageError, Storage, storage;
 var init_storage = __esm({
   "server/storage.ts"() {
     "use strict";
@@ -1363,12 +1558,12 @@ var init_storage = __esm({
     init_escalationDedupe();
     init_schema();
     init_leaseSchedule();
-    ROOM_BLOCKING_LEASE_STATUSES = [
+    init_schema();
+    NON_TERMINAL_LEASE_STATUSES = [
       "DRAFT",
       "PENDING_SIGNATURE",
       "PENDING_FIRST_PAYMENT",
       "PENDING_VERIFICATION",
-      // deposit paid, room secured, awaiting ID approval
       "ACTIVE"
     ];
     StorageError = class extends Error {
@@ -1614,13 +1809,13 @@ var init_storage = __esm({
         return db.select().from(leases).where(inArray(leases.id, ids));
       }
       /**
-       * Non-terminal leases — ROOM_BLOCKING_LEASE_STATUSES is exactly "every
+       * Non-terminal leases — NON_TERMINAL_LEASE_STATUSES is exactly "every
        * status short of COMPLETED/TERMINATED/DEFAULTED" — joined to guest +
        * property in one query. Mirrors getBookingsWithGuest's join pattern; the
        * guest picker uses this instead of getLeases() + a per-row lookup loop.
        */
       async getActiveLeasesWithGuest() {
-        const rows = await db.select().from(leases).leftJoin(guests, eq(leases.guestId, guests.id)).leftJoin(properties, eq(leases.propertyId, properties.id)).where(inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES])).orderBy(desc(leases.createdAt));
+        const rows = await db.select().from(leases).leftJoin(guests, eq(leases.guestId, guests.id)).leftJoin(properties, eq(leases.propertyId, properties.id)).where(inArray(leases.status, [...NON_TERMINAL_LEASE_STATUSES])).orderBy(desc(leases.createdAt));
         return rows.filter((r) => r.guests !== null && r.properties !== null).map((r) => ({
           ...r.leases,
           guest: r.guests,
@@ -1950,7 +2145,7 @@ var init_storage = __esm({
         for (const r of bookingRows) if (r.roomId) occupied.add(r.roomId);
         const leaseRows = await db.select({ roomId: leaseRooms.roomId }).from(leaseRooms).innerJoin(leases, eq(leaseRooms.leaseId, leases.id)).where(
           and(
-            inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]),
+            roomHoldingLeaseCondition(),
             lte(leases.startDate, dateIso),
             gte(leases.endDate, dateIso)
           )
@@ -2097,7 +2292,7 @@ var init_storage = __esm({
         return db.select().from(leases).where(
           and(
             inArray(leases.id, leaseIds),
-            inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES])
+            roomHoldingLeaseCondition()
           )
         );
       }
@@ -2372,8 +2567,9 @@ var leaseQuoteRequestSchema = z2.object({
   roomIds: z2.array(z2.string().min(1)).min(1, "Select at least one room"),
   startDate: z2.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Start date is required"),
   endDate: z2.string().regex(/^\d{4}-\d{2}-\d{2}$/, "End date is required"),
-  // Deprecated: cadence is auto-derived server-side from stay length. Kept
-  // optional for back-compat with callers that still send it (value ignored).
+  // The guest's billing cadence. Must be one of allowedCadencesForTerm() when
+  // sent; omitted means the server uses the shortest allowed cadence so a first
+  // preview always renders. Cadence DRIVES THE RATE — it is not cosmetic.
   cadence: z2.enum(PAYMENT_CADENCES).optional()
 });
 var createDraftLeaseSchema = z2.object({
@@ -2401,13 +2597,13 @@ init_schema();
 
 // server/lib/booking.ts
 import { customAlphabet } from "nanoid";
-import { differenceInCalendarDays, parseISO as parseISO2 } from "date-fns";
+import { addDays as addDays3, differenceInCalendarDays, format, parseISO as parseISO2 } from "date-fns";
 
 // shared/pricing.ts
 var CREDIT_CARD_RATE = 0.035;
 var TAX_RATE = 0;
 var DEFAULT_CLEANING_FEE = 0;
-var roundCurrency2 = (v) => Math.round(v * 100) / 100;
+var roundCurrency3 = (v) => Math.round(v * 100) / 100;
 var calculateBreakdown = ({
   baseAmount,
   cleaningFee = DEFAULT_CLEANING_FEE,
@@ -2415,15 +2611,15 @@ var calculateBreakdown = ({
   promoDiscount = 0,
   paymentMethod
 }) => {
-  const cf = roundCurrency2(cleaningFee);
-  const extras = roundCurrency2(extrasTotal);
-  const discount = roundCurrency2(Math.max(0, promoDiscount));
-  const subtotal = roundCurrency2(Math.max(0, baseAmount + cf + extras - discount));
-  const tax = roundCurrency2(subtotal * TAX_RATE);
-  const surcharge = paymentMethod === "STRIPE" ? roundCurrency2((subtotal + tax) * CREDIT_CARD_RATE) : 0;
-  const total = roundCurrency2(subtotal + tax + surcharge);
+  const cf = roundCurrency3(cleaningFee);
+  const extras = roundCurrency3(extrasTotal);
+  const discount = roundCurrency3(Math.max(0, promoDiscount));
+  const subtotal = roundCurrency3(Math.max(0, baseAmount + cf + extras - discount));
+  const tax = roundCurrency3(subtotal * TAX_RATE);
+  const surcharge = paymentMethod === "STRIPE" ? roundCurrency3((subtotal + tax) * CREDIT_CARD_RATE) : 0;
+  const total = roundCurrency3(subtotal + tax + surcharge);
   return {
-    baseAmount: roundCurrency2(baseAmount),
+    baseAmount: roundCurrency3(baseAmount),
     cleaningFee: cf,
     extrasTotal: extras,
     discount,
@@ -2434,105 +2630,8 @@ var calculateBreakdown = ({
   };
 };
 
-// shared/rateSelection.ts
-import { addDays as addDays2, getDay, parseISO } from "date-fns";
-var TIER_DAYS = {
-  DAILY: 1,
-  WEEKLY: 7,
-  MONTHLY: 28
-};
-var MONTHLY_MIN_NIGHTS = 28;
-var WEEKLY_MIN_NIGHTS = 7;
-var RateError = class extends Error {
-};
-var roundCurrency3 = (v) => Math.round(v * 100) / 100;
-function parseRate(v) {
-  if (v === null || v === void 0 || v === "") return null;
-  const n = typeof v === "number" ? v : parseFloat(v);
-  return Number.isFinite(n) && n > 0 ? n : null;
-}
-function tierForNights(nights2) {
-  if (nights2 >= MONTHLY_MIN_NIGHTS) return "MONTHLY";
-  if (nights2 >= WEEKLY_MIN_NIGHTS) return "WEEKLY";
-  return "DAILY";
-}
-function chooseRate(input) {
-  const { nights: nights2 } = input;
-  if (!(nights2 >= 1)) throw new RateError("Stay must be at least 1 night");
-  const rates = {
-    DAILY: parseRate(input.daily),
-    WEEKLY: parseRate(input.weekly),
-    MONTHLY: parseRate(input.monthly)
-  };
-  const requestedTier = tierForNights(nights2);
-  const order = requestedTier === "MONTHLY" ? ["MONTHLY", "WEEKLY", "DAILY"] : requestedTier === "WEEKLY" ? ["WEEKLY", "DAILY"] : ["DAILY"];
-  for (const tier of order) {
-    const tierRate = rates[tier];
-    if (tierRate !== null) {
-      const tierDays = TIER_DAYS[tier];
-      return {
-        tier,
-        requestedTier,
-        tierRate,
-        tierDays,
-        effectiveNightly: tierRate / tierDays,
-        fellBack: tier !== requestedTier
-      };
-    }
-  }
-  throw new RateError(
-    "No rate configured for this listing \u2014 set a daily, weekly, or monthly rate."
-  );
-}
-function shortStayPrice(input) {
-  if (!(input.nights >= 1)) throw new RateError("Stay must be at least 1 night");
-  const weeklyRate = parseRate(input.weeklyRent);
-  if (weeklyRate === null) {
-    throw new RateError("Room has no weekly rent set \u2014 cannot price a short stay.");
-  }
-  const dailyRate = parseRate(input.dailyRate) ?? weeklyRate / 7;
-  const weeks = Math.floor(input.nights / 7);
-  const remainderDays = input.nights % 7;
-  const baseAmount = roundCurrency3(weeks * weeklyRate + remainderDays * dailyRate);
-  return { baseAmount, weeks, remainderDays, weeklyRate, dailyRate };
-}
-var WEEKDAY_FIELDS = [
-  "sunPrice",
-  // 0
-  "monPrice",
-  // 1
-  "tuePrice",
-  // 2
-  "wedPrice",
-  // 3
-  "thuPrice",
-  // 4
-  "friPrice",
-  // 5
-  "satPrice"
-  // 6
-];
-function hasAnyWeekdayRate(rates) {
-  return WEEKDAY_FIELDS.some((f) => parseRate(rates[f]) !== null);
-}
-function weekdayStayTotal(input) {
-  const { checkIn, nights: nights2, weekdayRates, fallbackNightly } = input;
-  if (!(nights2 >= 1)) throw new RateError("Stay must be at least 1 night");
-  const start = parseISO(checkIn);
-  let total = 0;
-  for (let k = 0; k < nights2; k++) {
-    const day = getDay(addDays2(start, k));
-    const wkPrice = parseRate(weekdayRates[WEEKDAY_FIELDS[day]]);
-    const nightly = wkPrice ?? fallbackNightly;
-    if (nightly === null) {
-      throw new RateError("No price for one or more nights of this stay.");
-    }
-    total += nightly;
-  }
-  return roundCurrency3(total);
-}
-
 // server/lib/booking.ts
+init_rateSelection();
 init_storage();
 init_schema();
 init_ranges();
@@ -2546,47 +2645,52 @@ function nights(checkIn, checkOut) {
   return Math.max(0, n);
 }
 function strBaseTotal(property, n, checkIn) {
-  const chosen = chooseRate({
-    nights: n,
-    // base_price is the legacy nightly; treat it as the daily-tier rate so a
-    // property with only base_price set keeps billing nightly × n.
-    daily: property.dailyRate ?? property.basePrice,
-    weekly: property.weeklyRate,
-    monthly: property.monthlyRate
+  const weekdayRates = {
+    monPrice: property.monPrice,
+    tuePrice: property.tuePrice,
+    wedPrice: property.wedPrice,
+    thuPrice: property.thuPrice,
+    friPrice: property.friPrice,
+    satPrice: property.satPrice,
+    sunPrice: property.sunPrice
+  };
+  const priced = cascadeStayPrice({
+    days: n,
+    rates: {
+      // base_price is the legacy nightly; treat it as the daily-tier rate so a
+      // property with only base_price set keeps billing nightly × n. A property
+      // that prices ONLY by weekday still has a priced daily tier — average the
+      // set weekdays so the cascade can size the tail and fall back on it.
+      daily: property.dailyRate ?? property.basePrice ?? averageWeekdayRate(weekdayRates),
+      weekly: property.weeklyRate,
+      biweekly: property.biweeklyRate,
+      monthly: property.monthlyRate
+    },
+    // Whole-property stays have no billing cadence, so they cascade from the
+    // top: months, then weeks, then days (biweekly is skipped, exactly as the
+    // MONTHLY cadence does on the lease side).
+    topTier: "MONTHLY"
   });
-  if (chosen.tier === "DAILY") {
-    const weekdayRates = {
-      monPrice: property.monPrice,
-      tuePrice: property.tuePrice,
-      wedPrice: property.wedPrice,
-      thuPrice: property.thuPrice,
-      friPrice: property.friPrice,
-      satPrice: property.satPrice,
-      sunPrice: property.sunPrice
-    };
-    if (hasAnyWeekdayRate(weekdayRates)) {
-      const baseAmount = weekdayStayTotal({
-        checkIn,
-        nights: n,
-        weekdayRates,
-        // chosen.effectiveNightly for DAILY == dailyRate ?? basePrice (tierDays 1).
-        fallbackNightly: chosen.effectiveNightly
-      });
-      return {
-        baseAmount,
-        tier: "DAILY",
-        // Nightly prices vary across the stay, so there is no single nightly rate.
-        // effectiveNightly is a DISPLAY average only — baseAmount is authoritative
-        // and is the value that flows to the charge. (Verified: nothing downstream
-        // uses effectiveNightly for STR money math.)
-        effectiveNightly: Math.round(baseAmount / n * 100) / 100
-      };
-    }
+  const dailySeg = priced.segments.find((seg) => seg.tier === "DAILY");
+  let baseAmount = priced.total;
+  if (dailySeg && hasAnyWeekdayRate(weekdayRates)) {
+    const weekdayAmount = weekdayStayTotal({
+      // The daily tail starts this many nights after check-in.
+      checkIn: format(addDays3(parseISO2(checkIn), dailySeg.startDay), "yyyy-MM-dd"),
+      nights: dailySeg.units,
+      weekdayRates,
+      fallbackNightly: dailySeg.unitRate
+    });
+    baseAmount = Math.round((priced.total - dailySeg.amount + weekdayAmount) * 100) / 100;
   }
+  const top = priced.segments[0].tier;
   return {
-    baseAmount: Math.round(chosen.effectiveNightly * n * 100) / 100,
-    tier: chosen.tier,
-    effectiveNightly: chosen.effectiveNightly
+    baseAmount,
+    tier: top === "BIWEEKLY" ? "WEEKLY" : top,
+    // Nightly prices vary across a cascaded stay, so there is no single nightly
+    // rate. This is a DISPLAY average only — baseAmount is authoritative and is
+    // the value that flows to the charge.
+    effectiveNightly: Math.round(baseAmount / n * 100) / 100
   };
 }
 var BookingError = class extends Error {
@@ -2645,30 +2749,37 @@ async function resolveBooking(input) {
     if (!free) throw new BookingError("Those dates are not available for this room", 409);
     let priced;
     try {
-      priced = shortStayPrice({
-        nights: n2,
-        weeklyRent: room.weeklyRent,
-        dailyRate: room.dailyRate
+      priced = cascadeStayPrice({
+        days: n2,
+        rates: {
+          daily: room.dailyRate,
+          weekly: room.weeklyRent,
+          biweekly: room.biweeklyRate,
+          monthly: room.monthlyRate
+        },
+        topTier: "MONTHLY"
       });
     } catch (err) {
       if (err instanceof RateError) throw new BookingError(err.message, 422);
       throw err;
     }
+    const weekSeg = priced.segments.find((seg) => seg.tier === "WEEKLY");
+    const daySeg = priced.segments.find((seg) => seg.tier === "DAILY");
     return {
       model: "COLIVING",
       property,
       room,
       checkIn: input.checkIn,
       checkOut: input.checkOut,
-      baseAmount: priced.baseAmount,
+      baseAmount: priced.total,
       // Per-room cleaning fee, folded into the upfront charge like STR. 0 if unset.
       cleaningFee: room.cleaningFee ? parseFloat(room.cleaningFee) : 0,
       nights: n2,
       shortStay: {
-        weeks: priced.weeks,
-        remainderDays: priced.remainderDays,
-        weeklyRate: priced.weeklyRate,
-        dailyRate: priced.dailyRate
+        weeks: weekSeg?.units ?? 0,
+        remainderDays: daySeg?.units ?? 0,
+        weeklyRate: weekSeg?.unitRate ?? parseFloat(room.weeklyRent),
+        dailyRate: daySeg?.unitRate ?? parseFloat(room.weeklyRent) / 7
       }
     };
   }
@@ -2756,14 +2867,11 @@ function money(n) {
 
 // server/lib/lease.ts
 init_leaseSchedule();
+init_rateSelection();
 init_schema();
 init_storage();
 init_ranges();
-var CADENCE_PERIOD_DAYS = {
-  WEEKLY: 7,
-  BIWEEKLY: 14,
-  MONTHLY: 28
-};
+var roundMoney = (v) => Math.round(v * 100) / 100;
 function sumRate(rooms2, pick) {
   let total = 0;
   let any = false;
@@ -2827,43 +2935,49 @@ async function buildLeaseQuote(input) {
     throw new LeaseError(`Lease term cannot exceed ${MAX_LEASE_DAYS} days`, 422);
   }
   const weeklyRateTotal = sumRate(rooms2, (r) => r.weeklyRent) ?? 0;
-  const dailyTotal = sumRate(rooms2, (r) => r.dailyRate);
-  const monthlyTotal = sumRate(rooms2, (r) => r.monthlyRate);
   const depositTotal = sumRate(rooms2, (r) => r.depositAmount) ?? 0;
   const cleaningFeeTotal = sumRate(rooms2, (r) => r.cleaningFee) ?? 0;
-  let chosen;
-  try {
-    chosen = chooseRate({
-      nights: termDays,
-      daily: dailyTotal,
-      weekly: weeklyRateTotal,
-      monthly: monthlyTotal
-    });
-  } catch (err) {
-    if (err instanceof RateError) throw new LeaseError(err.message, 422);
-    throw err;
-  }
   const allowed = allowedCadencesForTerm(termDays);
-  const cadence = input.cadence && allowed.includes(input.cadence) ? input.cadence : allowed[0];
   if (input.cadence && !allowed.includes(input.cadence)) {
     throw new LeaseError(
       `A ${input.cadence.toLowerCase()} schedule isn't available for a ${termDays}-day term`,
       422
     );
   }
+  const cadence = input.cadence ?? allowed[0];
+  let rates;
   let generated;
+  let priced;
   try {
-    generated = generateTierSchedule({
+    rates = combineLeaseRates(
+      rooms2.map((r) => ({
+        weeklyRent: r.weeklyRent,
+        dailyRate: r.dailyRate,
+        biweeklyRate: r.biweeklyRate,
+        monthlyRate: r.monthlyRate
+      }))
+    );
+    generated = generateCascadeSchedule({
       startDate: input.startDate,
       endDate: input.endDate,
       cadence,
-      effectiveNightly: chosen.effectiveNightly,
-      periodDays: CADENCE_PERIOD_DAYS[cadence]
+      rates
+    });
+    priced = cascadeStayPrice({
+      days: generated.totalDays,
+      rates,
+      topTier: cadence
     });
   } catch (err) {
+    if (err instanceof RateError) throw new LeaseError(err.message, 422);
     if (err instanceof ScheduleError) throw new LeaseError(err.message, 422);
     throw err;
   }
+  const head = priced.segments.find((seg) => seg.tier === cadence);
+  const rate = {
+    periodRate: roundMoney(head?.unitRate ?? generated.installments[0]?.amount ?? 0),
+    periodDays: head?.unitDays ?? CADENCE_DAYS[cadence]
+  };
   const schedule = generated.installments.map((i) => ({
     seq: i.seq,
     dueDate: i.dueDate,
@@ -2886,6 +3000,8 @@ async function buildLeaseQuote(input) {
     cadence,
     allowedCadences: allowed,
     weeklyRateTotal,
+    installmentAmount: rate.periodRate,
+    periodDays: rate.periodDays,
     depositTotal,
     cleaningFeeTotal,
     termDays: generated.totalDays,
@@ -2900,12 +3016,12 @@ async function buildLeaseQuote(input) {
 init_storage();
 init_dates();
 init_schema();
-import { addDays as addDays3, format, parseISO as parseISO3 } from "date-fns";
+import { addDays as addDays4, format as format2, parseISO as parseISO3 } from "date-fns";
 function isNonBlocking(status) {
   return NON_BLOCKING_BOOKING_STATUSES.includes(status);
 }
 function exclusiveEnd(inclusiveEnd) {
-  return format(addDays3(parseISO3(inclusiveEnd), 1), "yyyy-MM-dd");
+  return format2(addDays4(parseISO3(inclusiveEnd), 1), "yyyy-MM-dd");
 }
 function sortByStart(ranges) {
   return [...ranges].sort((a, b) => a.start < b.start ? -1 : a.start > b.start ? 1 : 0);
@@ -2953,10 +3069,10 @@ async function buildRoomAvailability(roomId) {
 init_dates();
 
 // server/lib/nextOpening.ts
-import { addDays as addDays4, parseISO as parseISO4 } from "date-fns";
+import { addDays as addDays5, parseISO as parseISO4 } from "date-fns";
 var ymd = (d) => d.toISOString().slice(0, 10);
 function dayAfter(isoDate) {
-  return ymd(addDays4(parseISO4(isoDate), 1));
+  return ymd(addDays5(parseISO4(isoDate), 1));
 }
 function strNextOpening(stays, today) {
   const spans = stays.filter((s) => s.checkOut != null).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
@@ -3103,7 +3219,7 @@ var DEFAULT_LEASE_TEMPLATE = {
     },
     {
       heading: "3. Rent & Payment Schedule",
-      body: "Rent is billed on a {{cadenceLabel}} basis at a combined rate of {{weeklyRateLabel}} per week across all rented room(s). The first payment is due on the start date (move-in) and includes the one-time cleaning fee described below. The complete schedule of payments and amounts appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}"
+      body: "Rent is billed on a {{cadenceLabel}} basis at {{installmentLabel}} per payment, each payment covering {{periodDaysLabel}} days across all rented room(s). The first payment is due on the start date (move-in). The complete schedule of payments and amounts appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}"
     },
     {
       heading: "4. Move-in Charges (Deposit & Cleaning Fee)",
@@ -3145,7 +3261,8 @@ function tokenMap(data) {
     endDate: data.endDate,
     termDays: String(inclusiveDays2(data.startDate, data.endDate)),
     cadenceLabel: CADENCE_LABEL[data.cadence],
-    weeklyRateLabel: fmtMoney(data.weeklyRateTotal),
+    installmentLabel: fmtMoney(data.installmentAmount),
+    periodDaysLabel: String(CADENCE_DAYS[data.cadence]),
     totalLeaseValue: fmtMoney(data.totalLeaseValue),
     depositTotal: fmtMoney(data.depositTotal),
     // Only state a cleaning fee when one applies; it is non-refundable.
@@ -3208,7 +3325,7 @@ function docDataFrom(leaseId, quote, guest, location) {
     startDate: quote.startDate,
     endDate: quote.endDate,
     cadence: quote.cadence,
-    weeklyRateTotal: quote.weeklyRateTotal,
+    installmentAmount: quote.installmentAmount,
     totalLeaseValue: quote.totalLeaseValue,
     depositTotal: quote.depositTotal,
     cleaningFeeTotal: quote.cleaningFeeTotal,
@@ -3311,6 +3428,7 @@ async function signLease(input) {
   const leaseRooms2 = await storage.getLeaseRooms(lease.id);
   const schedule = await storage.getScheduleByLease(lease.id);
   if (!property || !guest) throw new LeaseError("Lease data incomplete", 500);
+  const fullInstallment = parseFloat(schedule[0]?.amount ?? "0");
   const docData = {
     leaseId: lease.id,
     guestName: guest.name,
@@ -3326,7 +3444,7 @@ async function signLease(input) {
     startDate: lease.startDate,
     endDate: lease.endDate,
     cadence: lease.paymentCadence,
-    weeklyRateTotal: parseFloat(lease.weeklyRateSnapshot),
+    installmentAmount: fullInstallment,
     totalLeaseValue: parseFloat(lease.totalLeaseValue),
     depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
     cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
@@ -3335,7 +3453,10 @@ async function signLease(input) {
       seq: s.scheduleSeq,
       dueDate: s.dueDate,
       amount: parseFloat(s.amount),
-      prorated: false
+      // A row smaller than a full period IS the day-prorated tail. Previously
+      // hardcoded false, so the SIGNED doc never marked the tail even though the
+      // review render did.
+      prorated: parseFloat(s.amount) < fullInstallment
     }))
   };
   const signedAt = input.signedAt ?? /* @__PURE__ */ new Date();
@@ -3581,6 +3702,10 @@ async function getTransport() {
   }
   return transportPromise;
 }
+function textToHtml(text2) {
+  const esc2 = text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return `<p>${esc2.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>').replace(/\n/g, "<br>")}</p>`;
+}
 async function sendEmail(opts) {
   let result;
   if (!isEmailConfigured()) {
@@ -3594,7 +3719,7 @@ async function sendEmail(opts) {
         to: opts.to,
         subject: opts.subject,
         text: opts.text,
-        html: opts.html ?? `<p>${opts.text}</p>`
+        html: opts.html ?? textToHtml(opts.text)
       });
       log(`email sent to=${opts.to} subject="${opts.subject}"`, "notify");
       result = { sent: true, channel: "email" };
@@ -3655,7 +3780,7 @@ async function notifyGuest(opts) {
     sendEmail({ to: opts.email, subject: opts.subject, text: opts.body, html: opts.html, context: ctx }),
     // sendSms already returns/records "no-phone" as SKIPPED when `to` is empty,
     // so route both branches through it rather than short-circuiting here.
-    sendSms({ to: opts.phone ?? "", body: opts.body, context: ctx })
+    sendSms({ to: opts.phone ?? "", body: opts.smsBody ?? opts.body, context: ctx })
   ]);
   return { email, sms };
 }
@@ -3677,7 +3802,31 @@ ${opts.telegramText ?? opts.body}`,
 // server/lib/dunning.ts
 init_schema();
 init_dates();
+
+// server/lib/publicUrl.ts
+function publicBaseUrl() {
+  const explicit = process.env.PUBLIC_BASE_URL;
+  if (explicit) return explicit.replace(/\/+$/, "");
+  if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return "https://www.beniceproperties.com";
+}
+function lookupUrl() {
+  return `${publicBaseUrl()}/lookup`;
+}
+function portalUrl(lease) {
+  return lease.portalToken ? `${publicBaseUrl()}/portal/${lease.portalToken}` : lookupUrl();
+}
+
+// server/lib/dunning.ts
+var SETTING_SMS_LINKS = "sms_include_links";
 var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
+async function payLink(lease) {
+  const on = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
+  if (on === "false" || on === "0") return "";
+  return portalUrl(lease);
+}
 async function handleChargeFailure(args) {
   const today = args.today ?? todayIso();
   if (args.scheduleRow.status !== "FAILED") {
@@ -3707,13 +3856,19 @@ async function handleChargeFailure(args) {
     sendDate: today
   });
   if (!already) {
-    const fixUrl = `${publicBaseUrl()}/lease/pay?leaseId=${args.lease.id}`;
+    const fixUrl = portalUrl(args.lease);
+    const smsUrl = await payLink(args.lease);
     const sent = await notifyGuest({
       email: args.guest.email,
       phone: args.guest.phone,
       context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "PAYMENT_FAILED" },
       subject: "Action needed \u2014 your rent payment failed",
-      body: `Hi ${args.guest.name}, we couldn't process your rent payment for installment #${args.scheduleRow.scheduleSeq}. Please update your card / retry here: ${fixUrl}`
+      body: `Hi ${args.guest.name}, we couldn't process your rent payment for installment #${args.scheduleRow.scheduleSeq}.
+
+Retry it from your portal: ${fixUrl}
+
+If your card has changed, you can pay this installment by CashApp or Zelle from that same page \u2014 no card needed.`,
+      smsBody: `BNP: we could not process your rent payment for installment #${args.scheduleRow.scheduleSeq}.` + (smsUrl ? ` Retry: ${smsUrl}` : "")
     });
     await storage.recordNotification({
       leaseId: args.lease.id,
@@ -3754,9 +3909,6 @@ async function billAccruedLateFees(args) {
   log(`billed $${total} late fees for lease ${args.lease.id} seq ${args.scheduleSeq} (${pi.id})`, "scheduler");
   return { billed: true, amount: total, paymentIntentId: pi.id };
 }
-function publicBaseUrl() {
-  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
-}
 
 // server/lib/lifecycle.ts
 init_storage();
@@ -3767,7 +3919,12 @@ var CONFLICT_ADMIN_NOTE = (status) => status === "CONFLICT" ? "\n\nDATES WERE AL
 var LIFECYCLE_TEMPLATES = {
   welcome: (v) => ({
     subject: `Welcome to ${v.property} \u{1F389}`,
-    body: `Hi ${v.name}, welcome! Your lease at ${v.property} is active and your move-in date is ${v.start}. We're glad to have you. Your full payment schedule and signed lease are in your guest portal. Reach out anytime through the portal with questions or maintenance requests.`
+    body: `Hi ${v.name}, welcome! Your lease at ${v.property} is active and your move-in date is ${v.start}. We're glad to have you.
+
+Your guest portal \u2014 payment schedule, signed lease, every rent payment, and maintenance requests \u2014 is here: ${v.portalUrl}
+
+Save that link. It is how you pay and how you reach us.`,
+    smsBody: `BNP: welcome! Your lease is active (move-in ${v.start}). Save your portal link: ${v.portalUrl}`
   }),
   scheduleRecap: (v) => ({
     subject: "Your lease payment schedule",
@@ -3783,13 +3940,16 @@ Payments on a saved card are charged automatically on each due date. Manage ever
   }),
   paymentReceipt: (v) => ({
     subject: `Payment received \u2014 ${v.property}`,
-    body: `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ${v.property}. Thank you! A record is available in your portal.`
+    body: `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ${v.property}. Thank you!
+
+Your receipt and full payment schedule: ${v.portalUrl}`,
+    smsBody: `BNP: payment of ${v.amount} received (installment #${v.seq}). Thanks! ${v.portalUrl}`
   }),
   depositReceipt: (v) => ({
     subject: `Your room is secured \u2014 ${v.property} \u{1F512}`,
     body: `Hi ${v.name}, we received your refundable security deposit of ${v.amount} \u2014 your room (${v.room}) at ${v.property} is now secured and held for you. The deposit is returned at the end of your lease per the agreement.
 
-One last step to activate your lease: upload a photo of your driver's license from your portal so we can verify your identity. Once we approve it, your lease goes active and your first week's rent is charged. Upload here: ${v.portalUrl}`
+One last step to activate your lease: upload a photo of your driver's license from your portal so we can verify your identity. Once we approve it, your lease goes active and your first rent payment is charged. Upload here: ${v.portalUrl}`
   }),
   // --- Short-stay bookings (no lease: STR nightly, or a 7–28-night co-living stay) ---
   bookingConfirmed: (v) => ({
@@ -3808,9 +3968,6 @@ One last step to activate your lease: upload a photo of your driver's license fr
     body: `Hi ${v.name}, your lease at ${v.property} ends on ${v.end} (${v.days} days away). If you'd like to renew or extend, reply or reach out through your portal: ${v.portalUrl}. We'd love to have you stay.`
   })
 };
-function portalUrl(lease) {
-  return lease.portalToken ? `${publicBaseUrl2()}/portal/${lease.portalToken}` : `${publicBaseUrl2()}/lookup`;
-}
 async function onLeaseActivated(leaseId) {
   const lease = await storage.getLease(leaseId);
   if (!lease) return;
@@ -3821,12 +3978,18 @@ async function onLeaseActivated(leaseId) {
   ]);
   if (!property || !guest) return;
   if (!await storage.hasLifecycleEvent({ leaseId: lease.id }, "COLIVING_WELCOME", null)) {
-    const tpl = LIFECYCLE_TEMPLATES.welcome({ name: guest.name, property: property.name, start: lease.startDate });
+    const tpl = LIFECYCLE_TEMPLATES.welcome({
+      name: guest.name,
+      property: property.name,
+      start: lease.startDate,
+      portalUrl: portalUrl(lease)
+    });
     const sent = await notifyGuest({
       email: guest.email,
       phone: guest.phone,
       subject: tpl.subject,
       body: tpl.body,
+      smsBody: tpl.smsBody,
       context: { leaseId: lease.id, guestId: guest.id, kind: "COLIVING_WELCOME" }
     });
     await storage.recordLifecycleEvent({
@@ -3893,13 +4056,15 @@ async function onPaymentReceived(args) {
     name: guest.name,
     amount: fmtMoney2(parseFloat(scheduleRow.amount)),
     seq: scheduleRow.scheduleSeq,
-    property: property.name
+    property: property.name,
+    portalUrl: portalUrl(lease)
   });
   const sent = await notifyGuest({
     email: guest.email,
     phone: guest.phone,
     subject: tpl.subject,
     body: tpl.body,
+    smsBody: tpl.smsBody,
     context: { leaseId: lease.id, guestId: guest.id, kind: "PAYMENT_RECEIPT" }
   });
   await storage.recordLifecycleEvent({
@@ -3944,7 +4109,7 @@ function roomDisplayName(room) {
   return room.roomNumber ? `Room ${room.roomNumber} \u2014 ${room.name}` : room.name;
 }
 function bookingLookupUrl() {
-  return `${publicBaseUrl2()}/lookup`;
+  return lookupUrl();
 }
 async function onBookingConfirmed(args) {
   const { booking, property, room, guest } = args;
@@ -4027,9 +4192,6 @@ async function onBookingConfirmed(args) {
     });
   }
   log(`lifecycle: booking ${booking.reference} (${booking.status}) notifications processed`, "lifecycle");
-}
-function publicBaseUrl2() {
-  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
 }
 
 // server/lib/leasePayments.ts
@@ -4209,6 +4371,19 @@ async function finalizeDepositPayment(paymentIntentId) {
   } catch (err) {
     log(`could not read saved payment method for deposit ${paymentIntentId}: ${err.message}`, "stripe");
   }
+  const leaseRooms2 = await storage.getLeaseRooms(lease.id);
+  const conflicts = [];
+  for (const lr of leaseRooms2) {
+    const free = await storage.isRoomAvailableForRange({
+      roomId: lr.roomId,
+      startDate: lease.startDate,
+      endDate: lease.endDate,
+      endExclusive: false,
+      // lease endDate is INCLUSIVE
+      excludeLeaseId: lease.id
+    });
+    if (!free) conflicts.push(lr.roomNameSnapshot ?? lr.roomId);
+  }
   await storage.updateLease(lease.id, {
     depositStatus: "PAID",
     depositPaidAt: /* @__PURE__ */ new Date(),
@@ -4216,9 +4391,22 @@ async function finalizeDepositPayment(paymentIntentId) {
     stripePaymentMethodId: savedPaymentMethodId ?? void 0,
     status: "PENDING_VERIFICATION"
   });
-  const leaseRooms2 = await storage.getLeaseRooms(lease.id);
-  for (const lr of leaseRooms2) {
-    await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
+  if (conflicts.length > 0) {
+    log(
+      `lease ${lease.id} deposit PAID but room(s) ${conflicts.join(", ")} were taken first \u2014 NOT occupied`,
+      "stripe"
+    );
+    await storage.raiseEscalationOnce({
+      leaseId: lease.id,
+      scheduleSeq: null,
+      kind: "PAYMENT_FAILED",
+      severity: "HIGH",
+      detail: `Deposit ${paymentIntentId} was captured but ${conflicts.join(", ")} is already held for ${lease.startDate} \u2192 ${lease.endDate}. Room NOT occupied. Decide: rehouse the guest, or refund the deposit manually. Nothing was auto-refunded.`
+    });
+  } else {
+    for (const lr of leaseRooms2) {
+      await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
+    }
   }
   log(
     `lease ${lease.id} PENDING_VERIFICATION \u2014 deposit PAID via ${paymentIntentId}; room(s) secured, awaiting ID approval`,
@@ -4275,7 +4463,7 @@ async function activateVerifiedLease(leaseId) {
   const firstIsManual = first?.paymentMethod === "MANUAL";
   if (firstIsManual) {
     log(
-      `lease ${lease.id} first payment is MANUAL \u2014 cleaning fee + first week held for manual settlement (UO Mark Paid)`,
+      `lease ${lease.id} first payment is MANUAL \u2014 cleaning fee + first installment held for manual settlement (UO Mark Paid)`,
       "stripe"
     );
     return;
@@ -4291,7 +4479,7 @@ async function activateVerifiedLease(leaseId) {
       log(`first-week charge on activation failed lease ${lease.id}: ${err.message}`, "stripe");
     });
   } else if (first && !dueNow) {
-    log(`lease ${lease.id} first week (${first.dueDate}) deferred to move-in; rent sweep will charge it`, "stripe");
+    log(`lease ${lease.id} first installment (${first.dueDate}) deferred to move-in; rent sweep will charge it`, "stripe");
   }
 }
 async function findLeaseByDepositPaymentIntent(piId) {
@@ -4340,7 +4528,7 @@ async function chargeFirstWeekOffSession(leaseId, paymentMethodId) {
     paidAt: /* @__PURE__ */ new Date(),
     stripePaymentIntentId: pi.id
   });
-  log(`lease ${lease.id} first week charged off-session ${pi.id}`, "stripe");
+  log(`lease ${lease.id} first installment charged off-session ${pi.id}`, "stripe");
   try {
     const guest = await storage.getGuest(lease.guestId);
     if (guest) {
@@ -4883,6 +5071,9 @@ function chargeTotalFor2(rent) {
 }
 async function payInstallmentNow(token, scheduleSeq) {
   const lease = await resolvePortalLease(token);
+  if (lease.status === "COMPLETED" || lease.status === "TERMINATED") {
+    throw new LeaseError("This lease is closed", 409);
+  }
   if (!lease.stripeCustomerId || !lease.stripePaymentMethodId) {
     throw new LeaseError("No saved card on this lease; pay via your arranged method", 409);
   }
@@ -5088,9 +5279,6 @@ async function deleteObject(key) {
 
 // server/lib/verification.ts
 init_schema();
-function publicBaseUrl3() {
-  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
-}
 var EXT_BY_TYPE = {
   "image/jpeg": "jpg",
   "image/png": "png",
@@ -5261,7 +5449,7 @@ async function rejectVerification(leaseId, reason, actor) {
   try {
     const guest = await storage.getGuest(lease.guestId);
     if (guest) {
-      const link = lease.portalToken ? `${publicBaseUrl3()}/portal/${lease.portalToken}` : `${publicBaseUrl3()}/lookup`;
+      const link = portalUrl(lease);
       await notifyGuest({
         email: guest.email,
         phone: guest.phone,
@@ -6434,7 +6622,7 @@ async function registerRoutes(app) {
   });
   app.get("/sitemap.xml", async (_req, res, next) => {
     try {
-      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
+      const origin = publicBaseUrl();
       const [ltrFlag, journalFlag, properties2, posts] = await Promise.all([
         storage.getSetting("page_ltr_visible"),
         storage.getSetting("page_journal_visible"),
@@ -6495,7 +6683,7 @@ ${parts.join("\n")}
   });
   app.get("/feed.xml", async (_req, res, next) => {
     try {
-      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
+      const origin = publicBaseUrl();
       const [journalFlag, posts] = await Promise.all([
         storage.getSetting("page_journal_visible"),
         storage.getPublishedJournalPosts()
@@ -8073,6 +8261,12 @@ async function handleStripeEvent(event) {
   }
 }
 
+// server/lib/errorResponse.ts
+function clientErrorMessage(err, status, isDev2) {
+  if (status >= 500 && !isDev2) return "Internal Server Error";
+  return err.message || "Internal Server Error";
+}
+
 // server/app.ts
 var isDev = process.env.NODE_ENV !== "production";
 function applyBaseMiddleware(app) {
@@ -8129,7 +8323,7 @@ function applyErrorHandler(app) {
       const user = req.user;
       posthog.captureException(err, user?.email ?? "anonymous");
     }
-    res.status(status).json({ message: err.message || "Internal Server Error" });
+    res.status(status).json({ message: clientErrorMessage(err, status, isDev) });
     console.error(err);
   });
 }

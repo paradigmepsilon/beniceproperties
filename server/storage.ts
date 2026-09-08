@@ -9,7 +9,7 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { overlapsRange } from "./lib/ranges";
 import { planMessageLogQuery } from "./lib/messageLogQuery";
@@ -97,15 +97,45 @@ import {
   type InsertMessageLog,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
+import {
+  CHECKOUT_HOLD_LEASE_STATUSES,
+  CHECKOUT_HOLD_MINUTES,
+  DEPOSIT_HELD_LEASE_STATUSES,
+} from "@shared/schema";
 
-/** Lease statuses that hold a room (block overlapping bookings for that room). */
-const ROOM_BLOCKING_LEASE_STATUSES = [
+/**
+ * Every non-terminal lease status. NOT the same thing as "holds a room" — see
+ * roomHoldingLeaseCondition() below. Used for listings that want all live
+ * leases regardless of whether they currently block a calendar.
+ */
+const NON_TERMINAL_LEASE_STATUSES = [
   "DRAFT",
   "PENDING_SIGNATURE",
   "PENDING_FIRST_PAYMENT",
-  "PENDING_VERIFICATION", // deposit paid, room secured, awaiting ID approval
+  "PENDING_VERIFICATION",
   "ACTIVE",
 ] as const;
+
+/**
+ * SQL form of leaseHoldsRoom() in shared/schema.ts — the owner's rule that a
+ * room is only held once a deposit is paid, plus a short checkout window so a
+ * guest cannot lose the room mid-Stripe-flow. Keep the two in lockstep.
+ */
+function roomHoldingLeaseCondition(now: Date = new Date()) {
+  const windowStart = new Date(now.getTime() - CHECKOUT_HOLD_MINUTES * 60_000);
+  return or(
+    // 1. Deposit paid — the real hold, for the whole term.
+    and(
+      eq(leases.depositStatus, "PAID"),
+      inArray(leases.status, [...DEPOSIT_HELD_LEASE_STATUSES]),
+    ),
+    // 2. Unpaid, but still inside the checkout window.
+    and(
+      inArray(leases.status, [...CHECKOUT_HOLD_LEASE_STATUSES]),
+      gte(leases.createdAt, windowStart),
+    ),
+  );
+}
 
 export class StorageError extends Error {
   status: number;
@@ -789,7 +819,7 @@ class Storage implements IStorage {
   }
 
   /**
-   * Non-terminal leases — ROOM_BLOCKING_LEASE_STATUSES is exactly "every
+   * Non-terminal leases — NON_TERMINAL_LEASE_STATUSES is exactly "every
    * status short of COMPLETED/TERMINATED/DEFAULTED" — joined to guest +
    * property in one query. Mirrors getBookingsWithGuest's join pattern; the
    * guest picker uses this instead of getLeases() + a per-row lookup loop.
@@ -800,7 +830,7 @@ class Storage implements IStorage {
       .from(leases)
       .leftJoin(guests, eq(leases.guestId, guests.id))
       .leftJoin(properties, eq(leases.propertyId, properties.id))
-      .where(inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]))
+      .where(inArray(leases.status, [...NON_TERMINAL_LEASE_STATUSES]))
       .orderBy(desc(leases.createdAt));
     return rows
       .filter((r) => r.guests !== null && r.properties !== null)
@@ -817,7 +847,7 @@ class Storage implements IStorage {
   ): Promise<Record<string, string>> {
     if (propertyIds.length === 0) return {};
     // Occupying = deposit paid, room held. Narrower than
-    // ROOM_BLOCKING_LEASE_STATUSES on purpose: a DRAFT/unsigned lease blocks
+    // roomHoldingLeaseCondition on purpose: an in-checkout lease blocks
     // double-booking but does not make a card read "Fully booked" — only
     // occupied rooms do, and rooms flip OCCUPIED at deposit-paid.
     const rows = await db
@@ -1378,7 +1408,7 @@ class Storage implements IStorage {
       .innerJoin(leases, eq(leaseRooms.leaseId, leases.id))
       .where(
         and(
-          inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]),
+          roomHoldingLeaseCondition(),
           lte(leases.startDate, dateIso),
           gte(leases.endDate, dateIso),
         ),
@@ -1617,7 +1647,7 @@ class Storage implements IStorage {
       .where(
         and(
           inArray(leases.id, leaseIds),
-          inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]),
+          roomHoldingLeaseCondition(),
         ),
       );
   }

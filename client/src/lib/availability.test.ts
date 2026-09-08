@@ -4,7 +4,7 @@
 
 import { describe, it, expect } from "vitest";
 import { parseISO } from "date-fns";
-import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "./availability";
+import { busyToDisabledMatchers, rangeHitsBusy, datesBookable, earliestValidCheckout } from "./availability";
 import type { BusyRange } from "@shared/api-types";
 
 const busy: BusyRange[] = [{ start: "2026-08-10", end: "2026-08-14", source: "external" }];
@@ -77,5 +77,40 @@ describe("datesBookable — CTA gate", () => {
     expect(datesBookable(true, "2026-07-07", "2026-07-07", [], true)).toBe(false); // same day
     expect(datesBookable(true, "2026-07-07", "", [], true)).toBe(false); // missing checkout
     expect(datesBookable(true, "", "", [], true)).toBe(false); // nothing picked
+  });
+});
+
+describe("earliestValidCheckout", () => {
+  // The guest-facing dead end this fixes: a co-living guest picks a move-in near
+  // the end of a month, the 7-night minimum puts every valid move-out in the NEXT
+  // month, and a single-month calendar greys out everything on screen with no
+  // explanation. These pin the date the picker must reveal.
+  it("returns check-in + minNights when nothing is booked", () => {
+    expect(earliestValidCheckout("2026-09-29", 7, [], true)).toBe("2026-10-06");
+  });
+
+  it("crosses the month boundary (the Hutchens Sep 29 case)", () => {
+    const b: BusyRange[] = [{ start: "2026-08-03", end: "2026-09-29", source: "direct" }];
+    expect(earliestValidCheckout("2026-09-29", 7, b, true)).toBe("2026-10-06");
+  });
+
+  it("returns null when the minimum stay collides with the next booking", () => {
+    // Only 3 free nights before the next stay starts — no 7-night range fits, and
+    // extending the checkout only adds nights, so nothing later fits either.
+    const b: BusyRange[] = [{ start: "2026-10-04", end: "2026-10-20", source: "direct" }];
+    expect(earliestValidCheckout("2026-10-01", 7, b, true)).toBeNull();
+  });
+
+  it("allows a stay that ends exactly when the next booking starts (half-open)", () => {
+    const b: BusyRange[] = [{ start: "2026-10-08", end: "2026-10-20", source: "direct" }];
+    expect(earliestValidCheckout("2026-10-01", 7, b, true)).toBe("2026-10-08");
+  });
+
+  it("with no minimum (STR) the earliest checkout is the next day", () => {
+    expect(earliestValidCheckout("2026-10-01", 0, [], true)).toBe("2026-10-02");
+  });
+
+  it("returns null for a missing check-in", () => {
+    expect(earliestValidCheckout("", 7, [], true)).toBeNull();
   });
 });

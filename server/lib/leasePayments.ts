@@ -220,7 +220,7 @@ async function findLeaseByFirstPaymentIntent(piId: string): Promise<Lease | unde
 //      the snapshotted deposit that ALSO saves the card (setup_future_usage).
 //   2. finalizeDepositPayment() — on that PI succeeding (webhook): mark the
 //      deposit PAID, save the card, OCCUPY the room(s) — the room is now secured
-//      — then immediately charge the first week's rent (schedule_seq 1)
+//      — then immediately charge the first installment (schedule_seq 1)
 //      off-session on the saved card. If the first-week charge succeeds the lease
 //      goes ACTIVE; if it declines the lease stays PENDING_FIRST_PAYMENT and the
 //      guest can retry from the portal (dunning owns the follow-up).
@@ -309,7 +309,7 @@ export async function startDepositPayment(leaseId: string): Promise<StartDeposit
  * Activation is GATED on identity verification: the tenant uploads a driver's
  * license from the portal and an admin approves it (verifying their name), which
  * calls activateVerifiedLease() below — that is what moves the lease → ACTIVE,
- * fires the welcome lifecycle, and charges/defers the first week's rent. Paying
+ * fires the welcome lifecycle, and charges/defers the first installment. Paying
  * the deposit no longer activates on its own.
  */
 export async function finalizeDepositPayment(paymentIntentId: string): Promise<void> {
@@ -327,7 +327,26 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
     log(`could not read saved payment method for deposit ${paymentIntentId}: ${(err as Error).message}`, "stripe");
   }
 
-  // Deposit paid → secure the room(s), save the card, await verification.
+  // Since 2026-09-08 an unpaid lease only holds its room for a short checkout
+  // window, so a room CAN be taken while a deposit is in flight (or when this
+  // webhook lands late). Re-check before securing it: quietly marking a room
+  // OCCUPIED for two different guests is a double-booking.
+  const leaseRooms = await storage.getLeaseRooms(lease.id);
+  const conflicts: string[] = [];
+  for (const lr of leaseRooms) {
+    const free = await storage.isRoomAvailableForRange({
+      roomId: lr.roomId,
+      startDate: lease.startDate,
+      endDate: lease.endDate,
+      endExclusive: false, // lease endDate is INCLUSIVE
+      excludeLeaseId: lease.id,
+    });
+    if (!free) conflicts.push(lr.roomNameSnapshot ?? lr.roomId);
+  }
+
+  // Record the money either way — it was taken, and the guest must see it. But
+  // do NOT occupy a room somebody else now holds, and do NOT auto-refund: that
+  // is money movement and stays a human decision.
   await storage.updateLease(lease.id, {
     depositStatus: "PAID",
     depositPaidAt: new Date(),
@@ -335,9 +354,26 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
     stripePaymentMethodId: savedPaymentMethodId ?? undefined,
     status: "PENDING_VERIFICATION",
   });
-  const leaseRooms = await storage.getLeaseRooms(lease.id);
-  for (const lr of leaseRooms) {
-    await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
+
+  if (conflicts.length > 0) {
+    log(
+      `lease ${lease.id} deposit PAID but room(s) ${conflicts.join(", ")} were taken first — NOT occupied`,
+      "stripe",
+    );
+    await storage.raiseEscalationOnce({
+      leaseId: lease.id,
+      scheduleSeq: null,
+      kind: "PAYMENT_FAILED",
+      severity: "HIGH",
+      detail:
+        `Deposit ${paymentIntentId} was captured but ${conflicts.join(", ")} is already held for ` +
+        `${lease.startDate} → ${lease.endDate}. Room NOT occupied. Decide: rehouse the guest, or ` +
+        `refund the deposit manually. Nothing was auto-refunded.`,
+    });
+  } else {
+    for (const lr of leaseRooms) {
+      await storage.updateRoom(lr.roomId, { status: "OCCUPIED" });
+    }
   }
   log(
     `lease ${lease.id} PENDING_VERIFICATION — deposit PAID via ${paymentIntentId}; room(s) secured, awaiting ID approval`,
@@ -370,7 +406,7 @@ export async function finalizeDepositPayment(paymentIntentId: string): Promise<v
   }
 
   // NOTE: the deposit is the ONLY charge due here. The one-time cleaning fee AND
-  // the first week's rent are both move-in charges collected together at
+  // the first installment are both move-in charges collected together at
   // activateVerifiedLease() (after ID approval) — so an unverified tenant is
   // never charged rent or the cleaning fee, and the guest sees a single "due to
   // check in" moment.
@@ -430,7 +466,7 @@ export async function activateVerifiedLease(leaseId: string): Promise<void> {
     log(`activation lifecycle error lease ${lease.id}: ${(err as Error).message}`, "stripe");
   }
 
-  // Move-in charges: cleaning fee + first week's rent. Skip all card charges when
+  // Move-in charges: cleaning fee + first installment. Skip all card charges when
   // the guest elected to pay the first payment MANUALLY (seq 1 is MANUAL) — they
   // settle the combined move-in amount off-band and UO marks it paid.
   const savedPaymentMethodId = lease.stripePaymentMethodId ?? null;
@@ -440,7 +476,7 @@ export async function activateVerifiedLease(leaseId: string): Promise<void> {
 
   if (firstIsManual) {
     log(
-      `lease ${lease.id} first payment is MANUAL — cleaning fee + first week held for manual settlement (UO Mark Paid)`,
+      `lease ${lease.id} first payment is MANUAL — cleaning fee + first installment held for manual settlement (UO Mark Paid)`,
       "stripe",
     );
     return;
@@ -462,7 +498,7 @@ export async function activateVerifiedLease(leaseId: string): Promise<void> {
       log(`first-week charge on activation failed lease ${lease.id}: ${(err as Error).message}`, "stripe");
     });
   } else if (first && !dueNow) {
-    log(`lease ${lease.id} first week (${first.dueDate}) deferred to move-in; rent sweep will charge it`, "stripe");
+    log(`lease ${lease.id} first installment (${first.dueDate}) deferred to move-in; rent sweep will charge it`, "stripe");
   }
 }
 
@@ -492,7 +528,7 @@ export async function refundDeposit(leaseId: string): Promise<void> {
 }
 
 /**
- * Charge schedule_seq 1 (first week's rent) off-session on the saved card. Called
+ * Charge schedule_seq 1 (the first installment) off-session on the saved card. Called
  * when move-in is today/past (from the deposit finalizer). The lease is already
  * ACTIVE (the deposit secured + activated it); this just settles seq 1 and sends
  * the receipt. Idempotent per (lease, seq 1).
@@ -529,7 +565,7 @@ async function chargeFirstWeekOffSession(leaseId: string, paymentMethodId: strin
     paidAt: new Date(),
     stripePaymentIntentId: pi.id,
   });
-  log(`lease ${lease.id} first week charged off-session ${pi.id}`, "stripe");
+  log(`lease ${lease.id} first installment charged off-session ${pi.id}`, "stripe");
 
   // First-payment receipt (activation lifecycle already fired on the deposit).
   try {
@@ -616,7 +652,7 @@ export async function runScheduledRentSweep(today: string = todayIso()): Promise
     const schedule = await storage.getScheduleByLease(lease.id);
 
     for (const row of schedule) {
-      // seq 1 (first week's rent) is due on the move-in date. If move-in was in
+      // seq 1 (the first installment) is due on the move-in date. If move-in was in
       // the future at booking, the deposit finalizer deferred it to here; if it
       // was same-day, the finalizer already charged it (PAID) and the guards
       // below skip it. Either way the sweep charges it on/after start_date.

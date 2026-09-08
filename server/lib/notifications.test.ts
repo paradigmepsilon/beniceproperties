@@ -17,7 +17,7 @@ const mockTelegram = vi.hoisted(() => ({
 vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./telegram", () => mockTelegram);
 
-import { sendEmail, sendSms, notifyAdmin } from "./notifications";
+import { sendEmail, sendSms, notifyAdmin, notifyGuest, textToHtml } from "./notifications";
 
 const ADMIN_ENV_KEYS = [
   "ADMIN_NOTIFY_EMAIL",
@@ -165,5 +165,69 @@ describe("message_log write failures", () => {
       context: { audience: "GUEST", kind: "MANUAL" },
     });
     expect(result).toMatchObject({ sent: false, channel: "email", reason: "not-configured" });
+  });
+});
+
+
+describe("textToHtml", () => {
+  it("turns a bare URL into a real anchor", () => {
+    const html = textToHtml("Pay here: https://www.beniceproperties.com/portal/abc123");
+    expect(html).toContain(
+      '<a href="https://www.beniceproperties.com/portal/abc123">https://www.beniceproperties.com/portal/abc123</a>',
+    );
+  });
+
+  it("escapes HTML before linkifying, so injected markup is inert", () => {
+    // Guest names and admin-composed prose reach this unescaped. Before the fix
+    // the email body was `<p>${text}</p>` — a raw interpolation.
+    const html = textToHtml('<script>alert("x")</script>');
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>");
+  });
+
+  it("does not produce an anchor inside an escaped entity", () => {
+    const html = textToHtml("a < b https://example.com/x");
+    expect(html).toContain("&lt;");
+    expect(html).toContain('<a href="https://example.com/x">');
+  });
+
+  it("renders newlines as line breaks", () => {
+    expect(textToHtml("one\n\ntwo")).toContain("<br><br>");
+  });
+});
+
+describe("notifyGuest smsBody", () => {
+  beforeEach(() => {
+    mockStorage.createMessageLog.mockResolvedValue({ id: "m1" });
+  });
+
+  it("sends the short variant to SMS and the full body to email", async () => {
+    await notifyGuest({
+      email: "jane@example.com",
+      phone: "+15550001111",
+      subject: "Rent reminder",
+      body: "The long email body with a link: https://example.com/portal/abc",
+      smsBody: "BNP: rent due. Pay: https://example.com/portal/abc",
+      context: { leaseId: "lease-1", guestId: "g1", kind: "REMINDER_DUE" },
+    });
+    const channels = mockStorage.createMessageLog.mock.calls.map((c) => c[0]);
+    const email = channels.find((c) => c.channel === "EMAIL");
+    const sms = channels.find((c) => c.channel === "SMS");
+    expect(email.body).toContain("The long email body");
+    expect(sms.body).toBe("BNP: rent due. Pay: https://example.com/portal/abc");
+  });
+
+  it("falls back to `body` for SMS when no short variant is given", async () => {
+    await notifyGuest({
+      email: "jane@example.com",
+      phone: "+15550001111",
+      subject: "s",
+      body: "only one body",
+      context: { leaseId: "lease-1", guestId: "g1", kind: "X" },
+    });
+    const sms = mockStorage.createMessageLog.mock.calls
+      .map((c) => c[0])
+      .find((c) => c.channel === "SMS");
+    expect(sms.body).toBe("only one body");
   });
 });

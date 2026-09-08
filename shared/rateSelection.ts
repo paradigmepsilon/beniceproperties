@@ -3,7 +3,12 @@
 // BNP (Be Nice Properties) — the ONE canonical rate-tier selector. Imported by
 // BOTH client and server, exactly like shared/pricing.ts and shared/leaseSchedule.ts.
 //
-// MODEL (spec): a stay is priced at a SINGLE tier chosen by its length:
+// SUPERSEDED for pricing (2026-09-08): every stay — STR, short co-living, and
+// leases — now bills through cascadeStayPrice() below, which charges whole
+// months, then whole weeks, then leftover whole days. chooseRate() is retained
+// for tier LOOKUP only; it is no longer the money path.
+//
+// MODEL (legacy): a stay is priced at a SINGLE tier chosen by its length:
 //   nights >= 28 -> MONTHLY   (tierDays 28)
 //   nights >= 7  -> WEEKLY    (tierDays 7)
 //   else         -> DAILY     (tierDays 1)
@@ -29,6 +34,8 @@
 // =============================================================================
 
 import { addDays, getDay, parseISO } from "date-fns";
+
+import { CADENCE_DAYS, type PaymentCadence } from "./schema";
 
 export type RateTier = "DAILY" | "WEEKLY" | "MONTHLY";
 
@@ -129,6 +136,212 @@ export function chooseRate(input: RateInput): ChosenRate {
   );
 }
 
+// =============================================================================
+// CO-LIVING LEASE rates (owner rule, 2026-09-08).
+//
+// On the LEASE path the guest's chosen BILLING CADENCE picks the rate: pick
+// weekly, pay the weekly rate; pick monthly, get the monthly rate. The cadence
+// becomes the cascade's starting tier — see cascadeStayPrice() below, which is
+// what actually prices every stay in this app.
+//
+// MULTI-ROOM: a room's missing tier is derived from ITS OWN weekly rent before
+// summing, never dropped. Summing only the rooms that happen to carry a monthly
+// rate would silently rent an unpriced room for free — a live money bug.
+// =============================================================================
+
+/** One room's four rate tiers, as stored on the rooms table. */
+export interface LeaseRoomRate {
+  /** Room weekly rent (decimal string from the DB, number, or null). */
+  weeklyRent: string | number | null | undefined;
+  /** Room daily rate; unset means weeklyRent / 7. */
+  dailyRate?: string | number | null;
+  /** Room biweekly rate; unset means 2 x weeklyRent. */
+  biweeklyRate?: string | number | null;
+  /** Room monthly rate; unset means 4 x weeklyRent. */
+  monthlyRate?: string | number | null;
+}
+
+/**
+ * Combine every room's tiers into ONE set of cascade rates for the lease.
+ *
+ * Each room's missing tier is derived from ITS OWN weekly rent before summing —
+ * never dropped. Summing only the rooms that happen to carry a monthly rate
+ * would silently rent an unpriced room for free, which was a live money bug.
+ */
+export function combineLeaseRates(rooms: LeaseRoomRate[]): CascadeRates {
+  let daily = 0, weekly = 0, biweekly = 0, monthly = 0, any = false;
+  for (const r of rooms) {
+    const wk = parseRate(r.weeklyRent);
+    if (wk === null) continue; // weekly_rent is NOT NULL; a 0 room adds nothing
+    any = true;
+    weekly += wk;
+    daily += parseRate(r.dailyRate) ?? wk / 7;
+    biweekly += parseRate(r.biweeklyRate) ?? wk * 2;
+    monthly += parseRate(r.monthlyRate) ?? wk * 4;
+  }
+  if (!any) throw new RateError("No rate configured for this room — set a weekly rent.");
+  return { daily, weekly, biweekly, monthly };
+}
+
+// =============================================================================
+// TIER CASCADE (owner rule, 2026-09-08) — the one pricing rule for every stay.
+//
+// A stay bills as many WHOLE periods of the chosen tier as fit, then steps DOWN
+// a tier for what is left, ending with leftover whole days at the daily rate:
+//
+//   MONTHLY  -> months, then weeks, then days
+//   BIWEEKLY -> biweeks, then weeks, then days
+//   WEEKLY   -> weeks, then days
+//   DAILY    -> days
+//
+// MONTHLY deliberately skips the biweekly tier: the owner's rule is "after the
+// month ... the remaining time should be charged at a weekly rate, then at a
+// daily rate for the remainder."
+//
+// There are NO fractional days. Check-in is 4pm and checkout 11am, so every day
+// in the range is one whole billable day and nothing is ever prorated by hours.
+//
+// An unpriced tier is skipped, not fatal — those days simply fall to the next
+// tier down, the same fallback philosophy chooseRate() uses.
+// =============================================================================
+
+export type CascadeTier = "MONTHLY" | "BIWEEKLY" | "WEEKLY" | "DAILY";
+
+/** Days in one unit of each tier. A "month" is 4 weeks, matching CADENCE_DAYS. */
+export const CASCADE_TIER_DAYS: Record<CascadeTier, number> = {
+  MONTHLY: 28,
+  BIWEEKLY: 14,
+  WEEKLY: 7,
+  DAILY: 1,
+};
+
+/** Which tiers a cascade walks, given the tier it starts from. */
+const CASCADE_ORDER: Record<CascadeTier, CascadeTier[]> = {
+  // Monthly steps to WEEKLY, not biweekly — the owner's rule, verbatim.
+  MONTHLY: ["MONTHLY", "WEEKLY", "DAILY"],
+  BIWEEKLY: ["BIWEEKLY", "WEEKLY", "DAILY"],
+  WEEKLY: ["WEEKLY", "DAILY"],
+  DAILY: ["DAILY"],
+};
+
+export interface CascadeRates {
+  daily?: string | number | null;
+  weekly?: string | number | null;
+  biweekly?: string | number | null;
+  monthly?: string | number | null;
+}
+
+export interface CascadeInput {
+  /** Whole billable days in the stay (>= 1). */
+  days: number;
+  rates: CascadeRates;
+  /** Largest tier the cascade may start from — the guest's cadence, or stay length. */
+  topTier: CascadeTier;
+}
+
+export interface CascadeSegment {
+  tier: CascadeTier;
+  /** How many whole periods of this tier. Always >= 1 (empty tiers are omitted). */
+  units: number;
+  /** Days in one unit: 28 | 14 | 7 | 1. */
+  unitDays: number;
+  /** Price of one unit. */
+  unitRate: number;
+  /** units * unitDays. */
+  days: number;
+  /** units * unitRate, rounded to cents. */
+  amount: number;
+  /** Day offset from check-in where this segment starts (0-based). */
+  startDay: number;
+}
+
+export interface CascadePrice {
+  segments: CascadeSegment[];
+  /** Sum of every segment amount, rounded to cents. */
+  total: number;
+  /** Total whole days covered — always equals input.days. */
+  days: number;
+}
+
+/**
+ * The rate for one unit of a tier, or null when that tier has no usable price.
+ * Two documented derivations keep a partly-priced listing bookable:
+ *   BIWEEKLY unset -> 2 x weekly   (the pre-2026-09-08 behavior)
+ *   DAILY    unset -> weekly / 7   (mirrors shortStayPrice)
+ */
+function tierUnitRate(tier: CascadeTier, rates: CascadeRates): number | null {
+  const weekly = parseRate(rates.weekly);
+  switch (tier) {
+    case "MONTHLY":
+      return parseRate(rates.monthly);
+    case "BIWEEKLY": {
+      const bi = parseRate(rates.biweekly);
+      if (bi !== null) return bi;
+      return weekly !== null ? weekly * 2 : null;
+    }
+    case "WEEKLY":
+      return weekly;
+    case "DAILY": {
+      const daily = parseRate(rates.daily);
+      if (daily !== null) return daily;
+      return weekly !== null ? weekly / 7 : null;
+    }
+  }
+}
+
+/**
+ * Price a stay by cascading whole periods down the tiers. Throws RateError when
+ * the stay has no days, or when not one tier in the cascade carries a price.
+ */
+export function cascadeStayPrice(input: CascadeInput): CascadePrice {
+  if (!(input.days >= 1)) throw new RateError("Stay must be at least 1 day");
+
+  const segments: CascadeSegment[] = [];
+  let remaining = input.days;
+  let cursor = 0;
+
+  for (const tier of CASCADE_ORDER[input.topTier]) {
+    if (remaining <= 0) break;
+    const unitRate = tierUnitRate(tier, input.rates);
+    if (unitRate === null) continue; // unpriced tier: fall through to the next
+    const unitDays = CASCADE_TIER_DAYS[tier];
+    const units = Math.floor(remaining / unitDays);
+    if (units < 1) continue;
+
+    const days = units * unitDays;
+    segments.push({
+      tier,
+      units,
+      unitDays,
+      unitRate,
+      days,
+      amount: roundCurrency(units * unitRate),
+      startDay: cursor,
+    });
+    remaining -= days;
+    cursor += days;
+  }
+
+  if (segments.length === 0) {
+    throw new RateError(
+      "No rate configured for this listing — set a daily, weekly, or monthly rate.",
+    );
+  }
+  if (remaining > 0) {
+    // Only reachable when the DAILY tier itself is unpriced, which tierUnitRate
+    // prevents whenever a weekly rate exists. Surface it rather than undercharge.
+    throw new RateError(
+      `No daily rate configured to cover the final ${remaining} day(s) of this stay.`,
+    );
+  }
+
+  return {
+    segments,
+    total: roundCurrency(segments.reduce((sum, seg) => sum + seg.amount, 0)),
+    days: input.days,
+  };
+}
+
 /** Convenience: the total base amount (pre-fees) for a stay, rounded to cents. */
 export function baseAmountForStay(input: RateInput): number {
   const { effectiveNightly } = chooseRate(input);
@@ -220,6 +433,21 @@ export type WeekdayRates = Partial<Record<WeekdayField, string | number | null>>
  */
 export function hasAnyWeekdayRate(rates: WeekdayRates): boolean {
   return WEEKDAY_FIELDS.some((f) => parseRate(rates[f]) !== null);
+}
+
+/**
+ * Average of whatever per-weekday prices are set, or null when none are.
+ *
+ * Weekday prices ARE daily-tier prices, so a property that prices by weekday but
+ * sets no scalar daily/base rate still has a priced DAILY tier. The cascade needs
+ * a scalar to size and fall back on; this supplies it.
+ */
+export function averageWeekdayRate(rates: WeekdayRates): number | null {
+  const set = WEEKDAY_FIELDS.map((f) => parseRate(rates[f])).filter(
+    (v): v is number => v !== null,
+  );
+  if (set.length === 0) return null;
+  return set.reduce((a, b) => a + b, 0) / set.length;
 }
 
 export interface WeekdayStayInput {

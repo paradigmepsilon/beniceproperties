@@ -21,6 +21,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
+import { todayIso } from "@shared/dates";
+
+/** Mirrors OPEN_FOR_PAY in server/lib/portal.ts. Keep the two in sync. */
+const OPEN_FOR_PAY = new Set(["SCHEDULED", "DUE", "LATE", "FAILED"]);
 
 interface ManualInstructions {
   method: "CASHAPP" | "ZELLE";
@@ -238,6 +242,16 @@ export default function Portal() {
     () => data?.schedule.find((s) => s.status !== "PAID" && s.status !== "WAIVED"),
     [data],
   );
+  // Mirrors OPEN_FOR_PAY in server/lib/portal.ts — keep the two in sync. The
+  // server has always allowed paying ANY open installment; this page used to
+  // show a button only on nextDue, so a guest could not pay ahead or settle a
+  // later row.
+  const openRows = data?.schedule.filter((s) => OPEN_FOR_PAY.has(s.status)) ?? [];
+  const outstanding = openRows.reduce((sum, s) => sum + parseFloat(s.amount), 0);
+  const leaseClosed = data?.lease.status === "COMPLETED" || data?.lease.status === "TERMINATED";
+  // One in-flight payment at a time, but only the clicked row shows a spinner —
+  // with every open row payable, a bare isPending greyed out the whole list.
+  const busy = pay.isPending || payManual.isPending;
 
   if (isLoading) return <Shell><p className="text-muted-foreground">Loading your portal…</p></Shell>;
   if (error) return <Shell><p className="text-destructive">{cleanError(error)}</p></Shell>;
@@ -430,27 +444,46 @@ export default function Portal() {
                 <span className="flex items-center gap-2">
                   {money(s.amount)}
                   <Badge variant={statusVariant(s.status)} className={statusClass(s.status)}>{s.status}</Badge>
-                  {nextDue?.seq === s.seq && s.paymentMethod !== "MANUAL" && (
+                  {nextDue?.seq === s.seq && OPEN_FOR_PAY.has(s.status) && (
+                    <Badge variant="outline" data-testid={`badge-next-due-${s.seq}`}>Next due</Badge>
+                  )}
+                  {OPEN_FOR_PAY.has(s.status) && s.paymentMethod !== "MANUAL" && !leaseClosed && (
                     <span className="flex items-center gap-2">
                       {lease.hasSavedCard && (
-                        <Button size="sm" disabled={pay.isPending} onClick={() => pay.mutate(s.seq)} data-testid={`button-pay-${s.seq}`}>
-                          {pay.isPending ? "Paying…" : "Pay now"}
+                        <Button
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => pay.mutate(s.seq)}
+                          data-testid={`button-pay-${s.seq}`}
+                        >
+                          {pay.isPending && pay.variables === s.seq
+                            ? "Paying…"
+                            : s.dueDate > todayIso()
+                              ? "Pay early"
+                              : "Pay now"}
                         </Button>
                       )}
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={payManual.isPending}
+                        disabled={busy}
                         onClick={() => payManual.mutate({ seq: s.seq, method: "CASHAPP" })}
                         data-testid={`button-pay-manual-${s.seq}`}
                       >
-                        {payManual.isPending ? "…" : "Pay by CashApp/Zelle"}
+                        {payManual.isPending && payManual.variables?.seq === s.seq
+                          ? "…"
+                          : "Pay by CashApp/Zelle"}
                       </Button>
                     </span>
                   )}
                 </span>
               </div>
             ))}
+            {openRows.length > 0 && (
+              <p className="pt-2 text-sm font-medium" data-testid="text-outstanding">
+                {openRows.length} open · {money(String(outstanding))} outstanding
+              </p>
+            )}
             {lease.prorationNote && (
               <p className="pt-2 text-xs text-muted-foreground">{lease.prorationNote}</p>
             )}

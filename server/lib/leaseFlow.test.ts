@@ -174,6 +174,32 @@ describe("signLease", () => {
     expect(mockStorage.updateLease).not.toHaveBeenCalled(); // no re-sign
   });
 
+  it("the SIGNED document marks the day-prorated tail and states the real installment", async () => {
+    // Two regressions in one: the signed render used to hardcode prorated:false
+    // (so the tail was never marked), and the rent clause printed the weekly
+    // list rate "per week" regardless of cadence.
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { scheduleSeq: 1, dueDate: "2026-07-01", amount: "2100" },
+      { scheduleSeq: 2, dueDate: "2026-07-29", amount: "900" }, // 12-day tail
+    ]);
+    mockStorage.getLease.mockResolvedValue(
+      signedLeaseFixture({ paymentCadence: "MONTHLY", totalLeaseValue: "3000" }),
+    );
+    await signLease({
+      leaseId: "lease-1",
+      signedName: "Jane Q. Resident",
+      affirmed: true,
+      ip: "203.0.113.9",
+      signedAt: new Date("2026-07-01T12:00:00Z"),
+    });
+    // The signed artifact is frozen into the lease row, not returned.
+    const saved = mockStorage.updateLease.mock.calls.at(-1)![1].signedDocumentHtml as string;
+    expect(saved).toContain("$2,100.00 per payment");
+    expect(saved).toContain("covering 28 days");
+    expect(saved).not.toContain("per week");
+    expect(saved).toMatch(/prorated/i); // the $900 tail is marked
+  });
+
   it("404s when the lease does not exist", async () => {
     mockStorage.getLease.mockResolvedValue(undefined);
     await expect(

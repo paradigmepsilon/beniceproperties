@@ -141,6 +141,24 @@ async function getTransport(): Promise<import("nodemailer").Transporter> {
   return transportPromise;
 }
 
+/**
+ * Plain text -> safe email HTML: escape first, THEN linkify bare URLs, then turn
+ * newlines into breaks. Escaping first matters — the URL pattern excludes "<",
+ * so it can never match inside an entity we just wrote. Before this, the email
+ * fallback was `<p>${text}</p>`, which shipped payment links as unclickable text
+ * and interpolated unescaped guest names and admin prose straight into HTML.
+ */
+export function textToHtml(text: string): string {
+  const esc = text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+  return `<p>${esc
+    .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>')
+    .replace(/\n/g, "<br>")}</p>`;
+}
+
 export async function sendEmail(opts: {
   to: string;
   subject: string;
@@ -160,7 +178,7 @@ export async function sendEmail(opts: {
         to: opts.to,
         subject: opts.subject,
         text: opts.text,
-        html: opts.html ?? `<p>${opts.text}</p>`,
+        html: opts.html ?? textToHtml(opts.text),
       });
       log(`email sent to=${opts.to} subject="${opts.subject}"`, "notify");
       result = { sent: true, channel: "email" };
@@ -235,12 +253,17 @@ export async function sendTelegramLogged(opts: {
   return result;
 }
 
-/** Send the same message over both channels (SMS only if a phone is present). */
+/** Send a message over both channels (SMS only if a phone is present). */
 export async function notifyGuest(opts: {
   email: string;
   phone?: string | null;
   subject: string;
   body: string;
+  /**
+   * Short SMS variant. Defaults to `body`. Keep it ASCII-only and <= 160 chars:
+   * a curly quote or em dash forces UCS-2, which halves the segment to 70.
+   */
+  smsBody?: string;
   html?: string;
   context?: Omit<MessageContext, "audience">;
 }): Promise<{ email: SendResult; sms: SendResult }> {
@@ -251,7 +274,7 @@ export async function notifyGuest(opts: {
     sendEmail({ to: opts.email, subject: opts.subject, text: opts.body, html: opts.html, context: ctx }),
     // sendSms already returns/records "no-phone" as SKIPPED when `to` is empty,
     // so route both branches through it rather than short-circuiting here.
-    sendSms({ to: opts.phone ?? "", body: opts.body, context: ctx }),
+    sendSms({ to: opts.phone ?? "", body: opts.smsBody ?? opts.body, context: ctx }),
   ]);
   return { email, sms };
 }

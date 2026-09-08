@@ -96,7 +96,7 @@ describe("buildQuote — STR tier labelling + totals", () => {
   });
 });
 
-describe("strBaseTotal — per-weekday pricing (DAILY tier only)", () => {
+describe("strBaseTotal — per-weekday pricing (the DAILY tail of the cascade)", () => {
   // 2026-07-03 = Friday, +1 = Sat, +2 = Sun.
   const weekday = {
     monPrice: "120",
@@ -141,24 +141,27 @@ describe("strBaseTotal — per-weekday pricing (DAILY tier only)", () => {
     expect(r.baseAmount).toBe(450); // 150 × 3
   });
 
-  it("WEEKLY tier IGNORES weekday prices (scalar weekly rate)", () => {
-    const r = strBaseTotal(
-      strProperty({ weeklyRate: "560", ...weekday }), // weekday set but tier is WEEKLY
-      10,
-      "2026-07-03",
-    );
-    expect(r.tier).toBe("WEEKLY");
-    expect(r.baseAmount).toBe(800); // (560 / 7) × 10, weekday prices not used
+  it("weekday prices apply to the DAILY tail, not to the whole weeks", () => {
+    // Owner rule 2026-09-08: 10 nights = 1 whole week + 3 leftover days. The
+    // week bills the flat weekly rate; the 3 leftover nights are daily-tier, so
+    // they carry that property's weekday prices. Check-in Fri 2026-07-03 means
+    // the week covers Jul 3-9 and the tail is Fri 10 / Sat 11 / Sun 12.
+    const r = strBaseTotal(strProperty({ weeklyRate: "560", ...weekday }), 10, "2026-07-03");
+    expect(r.tier).toBe("WEEKLY"); // the largest tier the stay used
+    // 560 + (Fri 200 + Sat 250 + Sun 140) = 560 + 590
+    expect(r.baseAmount).toBe(1150);
   });
 
-  it("MONTHLY tier IGNORES weekday prices (scalar monthly rate)", () => {
-    const r = strBaseTotal(
-      strProperty({ monthlyRate: "2240", ...weekday }),
-      40,
-      "2026-07-03",
-    );
+  it("a monthly stay bills the month flat, then weekday-prices the leftover days", () => {
+    // 40 nights, monthly 2240, no weekly rate set: 1 month (28d) + 12 leftover
+    // days. The weekly tier is skipped because it is unpriced, so all 12 fall to
+    // the daily tier and carry weekday prices.
+    const r = strBaseTotal(strProperty({ monthlyRate: "2240", ...weekday }), 40, "2026-07-03");
     expect(r.tier).toBe("MONTHLY");
-    expect(r.baseAmount).toBe(3200); // (2240 / 28) × 40
+    // 2240 + 12 nights of weekday prices starting Fri 2026-07-31 = 2240 + 1920
+    expect(r.baseAmount).toBe(4160);
+    // No single nightly rate across a cascaded stay — display average only.
+    expect(r.effectiveNightly).toBe(104);
   });
 });
 

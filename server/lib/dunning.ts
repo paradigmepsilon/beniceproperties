@@ -38,8 +38,11 @@ import {
 import { todayIso } from "@shared/dates";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow, Guest } from "@shared/schema";
+import { portalUrl, publicBaseUrl } from "./publicUrl";
 
 const SETTING_DEFAULT_THRESHOLD = "defaulted_threshold_days";
+/** Kill switch for links in SMS (A2P 10DLC filtering). Default: on. */
+const SETTING_SMS_LINKS = "sms_include_links";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Whole days `dueDate` is in the past relative to `today` (negative = future). */
@@ -109,6 +112,19 @@ export async function runDunningSweep(today: string = todayIso()): Promise<Dunni
   return result;
 }
 
+/**
+ * The pay link for an SMS body, or "" when SMS links are switched off.
+ *
+ * US carriers filter link-bearing SMS hard from numbers without a registered
+ * A2P 10DLC campaign. `sms_include_links` (default on) is the kill switch: flip
+ * it off and SMS reverts to link-free text while email keeps the link.
+ */
+async function payLink(lease: Lease): Promise<string> {
+  const on = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
+  if (on === "false" || on === "0") return "";
+  return portalUrl(lease);
+}
+
 async function maybeSendReminder(
   lease: Lease,
   guest: Guest,
@@ -133,6 +149,7 @@ async function maybeSendReminder(
   if (already) return;
 
   const when = daysUntil === 0 ? "today" : `in ${daysUntil} day${daysUntil === 1 ? "" : "s"}`;
+  const payUrl = await payLink(lease);
   const sent = await notifyGuest({
     email: guest.email,
     phone: guest.phone,
@@ -142,8 +159,12 @@ async function maybeSendReminder(
       `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} ` +
       `is due ${when} (${row.dueDate}). ` +
       (row.paymentMethod === "CARD_ON_FILE"
-        ? "It will be charged automatically to your card on file."
-        : "Please send your payment by the due date."),
+        ? "It will be charged automatically to your card on file, plus a 3.5% card processing fee."
+        : "Please send your payment by the due date.") +
+      `\n\nPay now, switch to CashApp/Zelle, or view your full schedule: ${portalUrl(lease)}`,
+    smsBody:
+      `BNP: rent $${row.amount} (installment #${row.scheduleSeq}) due ${when}.` +
+      (payUrl ? ` Pay or view: ${payUrl}` : ""),
   });
   await storage.recordNotification({
     leaseId: lease.id,
@@ -202,8 +223,12 @@ async function handleOverdue(
         body:
           `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, ` +
           `due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of ` +
-          `$${LATE_FEE_PER_DAY.toFixed(2)}/day is accruing. Please pay as soon as possible to stop ` +
-          `further fees.`,
+          `$${LATE_FEE_PER_DAY.toFixed(2)}/day is accruing until it is paid.` +
+          `\n\nPay now to stop further fees — by card, or by CashApp/Zelle: ${portalUrl(lease)}`,
+        smsBody:
+          `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} ` +
+          `overdue; $${LATE_FEE_PER_DAY.toFixed(0)}/day late fee accruing.` +
+          ((await payLink(lease)) ? ` Pay: ${await payLink(lease)}` : ""),
       });
       await storage.recordNotification({
         leaseId: lease.id,
@@ -269,7 +294,13 @@ async function handleOverdue(
           subject: "Your lease is in default",
           body:
             `Hi ${guest.name}, your lease at ${property.name} is now in default due to an unpaid ` +
-            `balance past ${thresholdDays} days. Please contact us immediately to resolve this.`,
+            `balance past ${thresholdDays} days.` +
+            `\n\nYou can still clear the balance from your portal: ${portalUrl(lease)}` +
+            `\n\nIf you have already paid, or need to arrange something, reply to this email and ` +
+            `we will sort it out with you.`,
+          smsBody:
+            `BNP: your lease is in default (unpaid ${thresholdDays}+ days).` +
+            ((await payLink(lease)) ? ` Clear the balance: ${await payLink(lease)}` : ""),
         });
         await storage.recordNotification({
           leaseId: lease.id,
@@ -336,7 +367,8 @@ export async function handleChargeFailure(args: {
     sendDate: today,
   });
   if (!already) {
-    const fixUrl = `${publicBaseUrl()}/lease/pay?leaseId=${args.lease.id}`;
+    const fixUrl = portalUrl(args.lease);
+    const smsUrl = await payLink(args.lease);
     const sent = await notifyGuest({
       email: args.guest.email,
       phone: args.guest.phone,
@@ -344,7 +376,13 @@ export async function handleChargeFailure(args: {
       subject: "Action needed — your rent payment failed",
       body:
         `Hi ${args.guest.name}, we couldn't process your rent payment for installment ` +
-        `#${args.scheduleRow.scheduleSeq}. Please update your card / retry here: ${fixUrl}`,
+        `#${args.scheduleRow.scheduleSeq}.` +
+        `\n\nRetry it from your portal: ${fixUrl}` +
+        `\n\nIf your card has changed, you can pay this installment by CashApp or Zelle from ` +
+        `that same page — no card needed.`,
+      smsBody:
+        `BNP: we could not process your rent payment for installment ` +
+        `#${args.scheduleRow.scheduleSeq}.` + (smsUrl ? ` Retry: ${smsUrl}` : ""),
     });
     await storage.recordNotification({
       leaseId: args.lease.id,
@@ -403,9 +441,3 @@ export async function billAccruedLateFees(args: {
   return { billed: true, amount: total, paymentIntentId: pi.id };
 }
 
-function publicBaseUrl(): string {
-  return (
-    process.env.PUBLIC_BASE_URL ||
-    "https://www.beniceproperties.com"
-  );
-}

@@ -14,6 +14,7 @@ import {
   weekdayStayTotal,
   WEEKDAY_FIELDS,
   shortStayPrice,
+  cascadeStayPrice,
 } from "./rateSelection";
 
 describe("tierForNights", () => {
@@ -253,5 +254,111 @@ describe("shortStayPrice — whole weeks + daily remainder (7–28 nights)", () 
 
   it("throws RateError when the weekly rent is missing", () => {
     expect(() => shortStayPrice({ nights: 10, weeklyRent: "" })).toThrow(RateError);
+  });
+});
+
+describe("cascadeStayPrice — whole months, then weeks, then days", () => {
+  // Owner rule 2026-09-08: a stay bills as many whole periods of the chosen tier
+  // as fit, then steps DOWN a tier for what is left, and finally bills leftover
+  // whole days at the daily rate. There are no fractional days — check-in is 4pm
+  // and checkout 11am, so every day in the range is one whole billable day.
+  const RATES = { daily: "43", weekly: "300", biweekly: "580", monthly: "1200" };
+
+  it("Alex's example: 52 days monthly = 1 month + 3 weeks + 3 days", () => {
+    const p = cascadeStayPrice({ days: 52, rates: RATES, topTier: "MONTHLY" });
+    expect(p.segments.map((s) => [s.tier, s.units, s.amount])).toEqual([
+      ["MONTHLY", 1, 1200],
+      ["WEEKLY", 3, 900],
+      ["DAILY", 3, 129],
+    ]);
+    expect(p.total).toBe(2229);
+    expect(p.days).toBe(52);
+  });
+
+  it("MONTHLY skips the biweekly tier — month, then WEEKS, then days", () => {
+    // "after the month ... the remaining time should be charged at a weekly
+    // rate, then at a daily rate for the remainder" — weekly, not biweekly.
+    const p = cascadeStayPrice({ days: 48, rates: RATES, topTier: "MONTHLY" });
+    expect(p.segments.map((s) => s.tier)).toEqual(["MONTHLY", "WEEKLY", "DAILY"]);
+    expect(p.segments.find((s) => s.tier === "BIWEEKLY")).toBeUndefined();
+  });
+
+  it("BIWEEKLY cascades biweek -> week -> day", () => {
+    // 52 days = 3 biweeks (42) + 1 week (7) + 3 days
+    const p = cascadeStayPrice({ days: 52, rates: RATES, topTier: "BIWEEKLY" });
+    expect(p.segments.map((s) => [s.tier, s.units, s.amount])).toEqual([
+      ["BIWEEKLY", 3, 1740],
+      ["WEEKLY", 1, 300],
+      ["DAILY", 3, 129],
+    ]);
+    expect(p.total).toBe(2169);
+  });
+
+  it("WEEKLY cascades week -> day only", () => {
+    const p = cascadeStayPrice({ days: 52, rates: RATES, topTier: "WEEKLY" });
+    expect(p.segments.map((s) => [s.tier, s.units, s.amount])).toEqual([
+      ["WEEKLY", 7, 2100],
+      ["DAILY", 3, 129],
+    ]);
+    expect(p.total).toBe(2229);
+  });
+
+  it("omits a tier entirely when it does not divide into the remainder", () => {
+    const p = cascadeStayPrice({ days: 28, rates: RATES, topTier: "MONTHLY" });
+    expect(p.segments.map((s) => [s.tier, s.units])).toEqual([["MONTHLY", 1]]);
+    expect(p.total).toBe(1200);
+  });
+
+  it("reports where each segment starts, so callers can price those exact days", () => {
+    // STR weekday pricing needs to know WHICH nights the daily tail covers.
+    const p = cascadeStayPrice({ days: 52, rates: RATES, topTier: "MONTHLY" });
+    expect(p.segments.map((s) => [s.tier, s.startDay])).toEqual([
+      ["MONTHLY", 0],
+      ["WEEKLY", 28],
+      ["DAILY", 49],
+    ]);
+  });
+
+  it("falls past an unpriced tier rather than blocking the booking", () => {
+    // No monthly rate set: those days fall to weeks + days at the tiers that
+    // ARE priced. Mirrors chooseRate's fallback philosophy.
+    const p = cascadeStayPrice({
+      days: 52,
+      rates: { daily: "43", weekly: "300" },
+      topTier: "MONTHLY",
+    });
+    expect(p.segments.map((s) => [s.tier, s.units])).toEqual([["WEEKLY", 7], ["DAILY", 3]]);
+    expect(p.total).toBe(2229);
+  });
+
+  it("derives a daily rate from the weekly one when none is set", () => {
+    const p = cascadeStayPrice({ days: 10, rates: { weekly: "700" }, topTier: "WEEKLY" });
+    // 1 week $700 + 3 days at 700/7 = 100 each
+    expect(p.total).toBe(1000);
+  });
+
+  it("treats an unset biweekly rate as 2 x weekly", () => {
+    const p = cascadeStayPrice({
+      days: 28,
+      rates: { daily: "43", weekly: "300" },
+      topTier: "BIWEEKLY",
+    });
+    expect(p.segments.map((s) => [s.tier, s.units, s.amount])).toEqual([["BIWEEKLY", 2, 1200]]);
+  });
+
+  it("throws RateError when nothing is priced at all", () => {
+    expect(() => cascadeStayPrice({ days: 30, rates: {}, topTier: "MONTHLY" })).toThrow(RateError);
+  });
+
+  it("rejects a non-positive stay", () => {
+    expect(() => cascadeStayPrice({ days: 0, rates: RATES, topTier: "WEEKLY" })).toThrow(RateError);
+  });
+
+  it("every segment's days sum to the term, with no fractional days anywhere", () => {
+    for (const days of [7, 13, 29, 41, 55, 83, 90]) {
+      const p = cascadeStayPrice({ days, rates: RATES, topTier: "MONTHLY" });
+      expect(p.segments.reduce((a, s) => a + s.days, 0)).toBe(days);
+      for (const s of p.segments) expect(Number.isInteger(s.days)).toBe(true);
+    }
   });
 });

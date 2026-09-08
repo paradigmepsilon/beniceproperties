@@ -13,6 +13,7 @@ const mockStorage = vi.hoisted(() => ({
   getLeaseRooms: vi.fn(),
   getScheduleByLease: vi.fn(),
   getSettingNumber: vi.fn(),
+  getSetting: vi.fn(),
   updateScheduleRow: vi.fn(),
   updateLease: vi.fn(),
   hasNotification: vi.fn(),
@@ -55,6 +56,7 @@ function activeLease(overrides = {}) {
     status: "ACTIVE",
     stripeCustomerId: "cus_1",
     stripePaymentMethodId: "pm_1",
+    portalToken: "t".repeat(32),
     ...overrides,
   };
 }
@@ -73,6 +75,7 @@ function row(seq: number, dueDate: string, overrides = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockStorage.getSettingNumber.mockResolvedValue(7);
+  mockStorage.getSetting.mockResolvedValue(undefined); // SMS links on by default
   mockStorage.getProperty.mockResolvedValue(PROP);
   mockStorage.getGuest.mockResolvedValue(GUEST);
   mockStorage.getLeaseRooms.mockResolvedValue(ROOMS);
@@ -210,7 +213,13 @@ describe("handleChargeFailure", () => {
     );
     const msg = mockNotify.notifyGuest.mock.calls[0][0];
     expect(msg.subject).toMatch(/failed/i);
-    expect(msg.body).toMatch(/lease\/pay\?leaseId=lease-1/);
+    // The old /lease/pay?leaseId= link POSTed the DEPOSIT endpoint, which 409s
+    // on an ACTIVE lease — the only status a charge failure can happen on. The
+    // guest was shown a raw error. It must point at the portal instead.
+    expect(msg.body).not.toContain("/lease/pay");
+    expect(msg.body).toContain(`/portal/${"t".repeat(32)}`);
+    // A dead card cannot be fixed by re-charging it, so name the no-card option.
+    expect(msg.body).toMatch(/CashApp or Zelle/i);
     // A new escalation also pages an operator.
     expect(mockNotify.notifyAdmin).toHaveBeenCalledTimes(1);
     const alert = mockNotify.notifyAdmin.mock.calls[0][0];
@@ -220,6 +229,16 @@ describe("handleChargeFailure", () => {
     expect(alert.telegramText).toContain(GUEST.name);
     expect(alert.telegramText).not.toContain(GUEST.email);
     expect(alert.telegramText).not.toContain(GUEST.phone);
+  });
+
+  it("falls back to /lookup when the lease has no portal token", async () => {
+    await handleChargeFailure({
+      lease: activeLease({ portalToken: null }),
+      guest: GUEST,
+      scheduleRow: row(2, "2026-07-10", { status: "DUE" }),
+      today: "2026-07-10",
+    });
+    expect(mockNotify.notifyGuest.mock.calls[0][0].body).toContain("/lookup");
   });
 
   // Money timing is a CALENDAR-day question: a failure at 8pm ET on the 9th is

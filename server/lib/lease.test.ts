@@ -300,30 +300,122 @@ function tieredRoom(id: string, name: string, weekly: string, daily?: string, mo
   };
 }
 
-describe("buildLeaseQuote — auto tier by stay length", () => {
-  it("a 28-day term uses the MONTHLY rate; cadence defaults to weekly, guest may pick monthly", async () => {
+describe("buildLeaseQuote — the guest's CADENCE picks the rate", () => {
+  it("TOTAL DIFFERS by cadence: weekly bills weekly_rent, monthly bills monthly_rate", async () => {
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
-    // monthly 2240 → effectiveNightly 80. The rate TIER is monthly; the billing
-    // CADENCE is the guest's choice, gated by term (28 days → weekly or monthly).
-    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2240"));
+    // weekly 560 → 80/night. monthly 2100 → 75/night. A REAL discount, so the
+    // two cadences cannot coincidentally agree the way 560/2240 would.
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2100"));
+    const term = { propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28" }; // 28 days
 
     // Default (no cadence sent) → shortest allowed = WEEKLY: 4 × $560.
-    const wk = await buildLeaseQuote({
-      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28", // 28 days
-    });
-    expect(wk.allowedCadences).toEqual(["WEEKLY", "MONTHLY"]);
+    const wk = await buildLeaseQuote(term);
+    expect(wk.allowedCadences).toEqual(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
     expect(wk.cadence).toBe("WEEKLY");
-    expect(wk.schedule.every((r) => r.amount === 560)).toBe(true); // 80 × 7
+    expect(wk.periodDays).toBe(7);
+    expect(wk.installmentAmount).toBe(560);
+    expect(wk.schedule.every((r) => r.amount === 560)).toBe(true);
     expect(wk.totalLeaseValue).toBe(2240);
 
-    // Guest picks MONTHLY → a single $2240 installment.
-    const mo = await buildLeaseQuote({
-      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28", cadence: "MONTHLY",
-    });
+    // Guest picks MONTHLY → a single installment at the monthly rate itself.
+    const mo = await buildLeaseQuote({ ...term, cadence: "MONTHLY" });
     expect(mo.cadence).toBe("MONTHLY");
+    expect(mo.periodDays).toBe(28);
+    expect(mo.installmentAmount).toBe(2100);
     expect(mo.schedule).toHaveLength(1);
-    expect(mo.schedule[0].amount).toBe(2240); // 80 × 28
-    expect(mo.totalLeaseValue).toBe(2240);
+    expect(mo.schedule[0].amount).toBe(2100);
+    expect(mo.totalLeaseValue).toBe(2100);
+
+    // THE headline behavior change: paying monthly costs less than paying weekly.
+    expect(mo.totalLeaseValue).toBeLessThan(wk.totalLeaseValue);
+  });
+
+  it("BIWEEKLY bills 2 x weekly_rent — same total as WEEKLY, half as many payments", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560"));
+    // Biweekly needs a 84+ day term. 2026-07-01 → 2026-09-22 is exactly 84.
+    const term = { propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-09-22" };
+    const wk = await buildLeaseQuote({ ...term, cadence: "WEEKLY" });
+    const bi = await buildLeaseQuote({ ...term, cadence: "BIWEEKLY" });
+    expect(bi.allowedCadences).toEqual(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
+    expect(bi.installmentAmount).toBe(1120); // 2 × 560
+    expect(bi.periodDays).toBe(14);
+    expect(bi.schedule).toHaveLength(6);
+    expect(wk.schedule).toHaveLength(12);
+    expect(bi.totalLeaseValue).toBe(wk.totalLeaseValue);
+  });
+
+  it("MONTHLY tail cascades to weeks then days, as ONE combined final payment", async () => {
+    // Owner example: Sep 15 -> Nov 5 is 52 days. After the month there is not
+    // another month available, so the remainder bills at the weekly rate, then
+    // the daily rate — collected as a single final payment so a guest who chose
+    // MONTHLY still makes monthly payments.
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(
+      tieredRoom("r1", "Room 1", "300", "43", "1200"), // wk 300 / daily 43 / mo 1200
+    );
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"],
+      startDate: "2026-09-15", endDate: "2026-11-05", cadence: "MONTHLY",
+    });
+    expect(q.termDays).toBe(52);
+    expect(q.schedule).toHaveLength(2);
+    expect(q.schedule[0]).toMatchObject({ seq: 1, amount: 1200, daysCovered: 28, prorated: false });
+    // 3 weeks x 300 + 3 days x 43 = 900 + 129
+    expect(q.schedule[1]).toMatchObject({ seq: 2, amount: 1029, daysCovered: 24, prorated: true });
+    expect(q.totalLeaseValue).toBe(2229);
+    expect(q.prorationNote).toMatch(/3 weeks \+ 3 days/);
+  });
+
+  it("WEEKLY bills whole weeks, with the overage at the daily rate", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "300", "43", "1200"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"],
+      startDate: "2026-09-15", endDate: "2026-11-05", cadence: "WEEKLY",
+    });
+    expect(q.schedule).toHaveLength(8); // 7 full weeks + 1 combined tail
+    expect(q.schedule.slice(0, 7).every((r) => r.amount === 300)).toBe(true);
+    expect(q.schedule[7]).toMatchObject({ amount: 129, daysCovered: 3, prorated: true });
+    expect(q.totalLeaseValue).toBe(2229);
+  });
+
+  it("BIWEEKLY uses its OWN rate, not 2 x weekly, when one is set", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue({
+      ...tieredRoom("r1", "Room 1", "300", "43", "1200"),
+      biweeklyRate: "580", // a real discount vs 2 x 300
+    });
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"],
+      startDate: "2026-09-15", endDate: "2026-11-05", cadence: "BIWEEKLY",
+    });
+    // 52 days = 3 biweeks (42d) + 1 week + 3 days
+    expect(q.schedule).toHaveLength(4);
+    expect(q.schedule.slice(0, 3).every((r) => r.amount === 580)).toBe(true);
+    expect(q.schedule[3]).toMatchObject({ amount: 429, daysCovered: 10 }); // 300 + 3x43
+    expect(q.totalLeaseValue).toBe(2169);
+  });
+
+  it("an unset biweekly rate still falls back to 2 x weekly", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "300", "43", "1200"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"],
+      startDate: "2026-09-15", endDate: "2026-10-12", cadence: "BIWEEKLY", // 28 days
+    });
+    expect(q.installmentAmount).toBe(600); // 2 x 300
+    expect(q.schedule).toHaveLength(2);
+  });
+
+  it("biweekly is now offered on any month-plus term, not just 84+ days", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "300", "43", "1200"));
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-09-15", endDate: "2026-10-12",
+    });
+    expect(q.termDays).toBe(28);
+    expect(q.allowedCadences).toEqual(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
   });
 
   it("rejects a cadence not allowed for the term (e.g. monthly on a 2-week stay)", async () => {
@@ -346,24 +438,58 @@ describe("buildLeaseQuote — auto tier by stay length", () => {
     expect(q.schedule.every((r) => r.amount === 560)).toBe(true); // 80 × 7
   });
 
-  it("a sub-7 day term uses the DAILY rate, billed weekly", async () => {
+  it("bills leftover whole days at rooms.daily_rate, not a pro-rata slice of the week", async () => {
+    // Owner rule 2026-09-08: the cascade ends at the DAILY tier, and a day is a
+    // whole billable day (check-in 4pm, checkout 11am — no fractional days).
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
     mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560", "100", "2240"));
     const q = await buildLeaseQuote({
       propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-04", // 4 days
     });
-    expect(q.cadence).toBe("WEEKLY"); // daily tier still bills weekly
-    expect(q.dueToday).toBe(400); // 100 × 4 (one short period)
+    expect(q.cadence).toBe("WEEKLY");
+    expect(q.dueToday).toBe(400); // 4 × $100 daily, not 4 × (560/7)
   });
 
-  it("falls back to weekly when the monthly rate is missing", async () => {
+  it("MONTHLY with no monthly_rate falls back to 4 x weekly_rent", async () => {
     mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
     mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560")); // only weekly set
     const q = await buildLeaseQuote({
-      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28", // 28 days → monthly requested
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-07-28",
+      cadence: "MONTHLY",
     });
-    expect(q.cadence).toBe("WEEKLY"); // fell back
-    expect(q.schedule.every((r) => r.amount === 560)).toBe(true);
+    expect(q.cadence).toBe("MONTHLY");
+    expect(q.periodDays).toBe(28);
+    expect(q.installmentAmount).toBe(2240); // 4 × 560
+    expect(q.schedule).toHaveLength(1);
+    expect(q.totalLeaseValue).toBe(2240);
+  });
+
+  it("the fallback is price-neutral: no monthly_rate means cadence cannot change the total", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom.mockResolvedValue(tieredRoom("r1", "Room 1", "560")); // no monthly rate
+    const term = { propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-08-09" }; // 40 days
+    const wk = await buildLeaseQuote({ ...term, cadence: "WEEKLY" });
+    const mo = await buildLeaseQuote({ ...term, cadence: "MONTHLY" });
+    expect(mo.totalLeaseValue).toBe(wk.totalLeaseValue); // 4×560/28 === 560/7 exactly
+    // ...but the SHAPE differs, which is the whole point of picking a cadence.
+    expect(wk.schedule).toHaveLength(6);
+    expect(mo.schedule).toHaveLength(2);
+  });
+
+  it("MULTI-ROOM MONTHLY: a room with no monthly_rate contributes 4 x ITS OWN weekly rent", async () => {
+    mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+    mockStorage.getRoom
+      .mockResolvedValueOnce(tieredRoom("r1", "Room 1", "560", undefined, "2100")) // 75/night
+      .mockResolvedValueOnce(tieredRoom("r2", "Room 2", "280")); // no monthly → 40/night
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1", "r2"],
+      startDate: "2026-07-01", endDate: "2026-07-28", cadence: "MONTHLY",
+    });
+    // 115/night × 28 = 3220. Summing only the rooms that HAVE a monthly rate
+    // would yield 2100 and silently rent Room 2 for free.
+    expect(q.installmentAmount).toBe(3220);
+    expect(q.installmentAmount).not.toBe(2100);
+    expect(q.totalLeaseValue).toBe(3220);
   });
 
   it("legacy weekly-only listing bills identically to pre-Phase-3", async () => {
@@ -386,6 +512,16 @@ describe("buildLeaseQuote — auto tier by stay length", () => {
     const sum = Math.round(q.schedule.reduce((a, r) => a + r.amount, 0) * 100) / 100;
     expect(q.totalLeaseValue).toBe(sum);
     expect(q.dueToday).toBe(q.schedule[0].amount);
+    expect(q.installmentAmount).toBe(q.schedule[0].amount); // full period === row 1
+
+    // Same invariant at MONTHLY, on a rate that does not divide evenly.
+    const mo = await buildLeaseQuote({
+      propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-08-09",
+      cadence: "MONTHLY",
+    });
+    const moSum = Math.round(mo.schedule.reduce((a, r) => a + r.amount, 0) * 100) / 100;
+    expect(mo.totalLeaseValue).toBe(moSum);
+    expect(mo.installmentAmount).toBe(mo.schedule[0].amount);
   });
 });
 

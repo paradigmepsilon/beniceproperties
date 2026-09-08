@@ -28,6 +28,7 @@ import type {
 import {
   PAYMENT_CADENCES,
   COLIVING_MIN_DAYS,
+  MAX_LEASE_DAYS,
   requiresLease,
   isDirectCoLivingStay,
 } from "@shared/schema";
@@ -47,6 +48,14 @@ const CADENCE_LABELS: Record<Cadence, string> = {
   WEEKLY: "Weekly",
   BIWEEKLY: "Bi-weekly",
   MONTHLY: "Monthly",
+};
+
+// Adjective form for "your first ___ payment" — always grammatical, unlike
+// building it from the label ("first two weeks's rent").
+const CADENCE_ADJECTIVE: Record<Cadence, string> = {
+  WEEKLY: "weekly",
+  BIWEEKLY: "bi-weekly",
+  MONTHLY: "monthly",
 };
 
 // apiRequest throws `${status}: ${jsonBody}` — pull out a clean message.
@@ -272,7 +281,9 @@ export default function LeaseBooking() {
                     Stays over a month are set up as a lease. Choose a payment schedule below.
                   </p>
                 ) : (
-                  <p className="text-xs text-muted-foreground">Stays run from 7 to 90 nights.</p>
+                  <p className="text-xs text-muted-foreground">
+                    Stays run from {COLIVING_MIN_DAYS} to {MAX_LEASE_DAYS - 1} nights.
+                  </p>
                 )}
               </CardContent>
             </Card>
@@ -283,11 +294,15 @@ export default function LeaseBooking() {
                   <CardTitle className="text-base">Your rate</CardTitle>
                 </CardHeader>
                 <CardContent className="text-sm text-muted-foreground">
-                  Based on a {quote.termDays}-night stay, you're getting the{" "}
+                  You're on the{" "}
                   <span className="font-medium text-foreground">
-                    {CADENCE_LABELS[quote.cadence]?.toLowerCase() ?? quote.cadence.toLowerCase()}
+                    {CADENCE_ADJECTIVE[quote.cadence] ?? quote.cadence.toLowerCase()}
                   </span>{" "}
-                  rate, billed {CADENCE_LABELS[quote.cadence]?.toLowerCase() ?? "per period"}.
+                  rate:{" "}
+                  <span className="font-medium text-foreground" data-testid="text-installment-rate">
+                    {money(quote.installmentAmount)}
+                  </span>{" "}
+                  every {quote.periodDays} days, over a {quote.termDays}-day term.
                 </CardContent>
               </Card>
             )}
@@ -314,8 +329,8 @@ export default function LeaseBooking() {
                     ))}
                   </div>
                   <p className="mt-2 text-xs text-muted-foreground">
-                    Longer terms unlock more options. Your rate is the same; this only changes how
-                    often you're billed.
+                    Longer terms unlock more options. Your rate follows the schedule you pick, so
+                    the total below updates when you change it.
                   </p>
                 </CardContent>
               </Card>
@@ -453,7 +468,9 @@ export default function LeaseBooking() {
                       </div>
                     )}
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Due at move-in: first week's rent</span>
+                      <span className="text-muted-foreground">
+                        Due at move-in: your first {CADENCE_ADJECTIVE[quote.cadence]} payment
+                      </span>
                       <span className="font-medium" data-testid="text-due-today">{money(quote.dueToday)}</span>
                     </div>
                     {quote.cleaningFeeTotal > 0 && (
@@ -477,7 +494,7 @@ export default function LeaseBooking() {
                     {quote.depositTotal > 0 && (
                       <p className="text-xs text-muted-foreground">
                         Only the refundable deposit is due now, and it secures your room. On your move-in
-                        date ({quote.startDate}) your first week's rent
+                        date ({quote.startDate}) your first {CADENCE_ADJECTIVE[quote.cadence]} payment
                         {quote.cleaningFeeTotal > 0 ? " plus the one-time cleaning fee are" : " is"} due,
                         and the rest follows your schedule above. You can pay each installment by card
                         (3.5% fee) or by CashApp/Zelle (no fee).

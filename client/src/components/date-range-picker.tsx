@@ -7,8 +7,8 @@
 // Emits ISO `YYYY-MM-DD` strings so it drops into the existing checkIn/checkOut
 // string state without Date/TZ juggling.
 
-import { useState } from "react";
-import { format, parseISO } from "date-fns";
+import { useEffect, useState } from "react";
+import { addDays, addMonths, format, isSameMonth, parseISO, startOfMonth } from "date-fns";
 import type { DateRange, Matcher } from "react-day-picker";
 import { CalendarDays } from "lucide-react";
 import { Calendar } from "@/components/ui/calendar";
@@ -56,6 +56,44 @@ export function DateRangePicker({
     ? { from: parseISO(checkIn), to: checkOut ? parseISO(checkOut) : undefined }
     : undefined;
 
+  // The month the calendar is showing. Controlled (not just `defaultMonth`) so we
+  // can move it after a check-in is picked — see the effect below.
+  const [month, setMonth] = useState<Date>(() => startOfMonth(checkIn ? parseISO(checkIn) : new Date()));
+
+  // Two months side by side once there's room, one on phones. A minimum-stay
+  // floor usually lands the first valid checkout in the NEXT month, so showing
+  // only one month is what left guests staring at a fully greyed calendar.
+  const [monthCount, setMonthCount] = useState(1);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(min-width: 640px)");
+    if (!mq) return;
+    const apply = () => setMonthCount(mq.matches ? 2 : 1);
+    apply();
+    mq.addEventListener("change", apply);
+    return () => mq.removeEventListener("change", apply);
+  }, []);
+
+  // Once a check-in is chosen and the guest is picking a move-out, make sure the
+  // earliest date they're ALLOWED to pick is actually on screen. With a 7-night
+  // co-living minimum, picking Sep 29 puts every selectable move-out in October;
+  // without this the calendar sat on September with every day disabled and the
+  // guest had no way to tell the site wasn't broken.
+  useEffect(() => {
+    if (!open || !checkIn || checkOut) return;
+    const floor = startOfMonth(addDays(parseISO(checkIn), Math.max(1, minNights ?? 1)));
+    setMonth((current) => {
+      // Months already on screen: `current`, plus the next one when showing two.
+      const visible = monthCount > 1 ? [current, addMonths(current, 1)] : [current];
+      return visible.some((m) => isSameMonth(floor, m)) ? current : floor;
+    });
+  }, [open, checkIn, checkOut, minNights, monthCount]);
+
+  // Reopening with no dates should land on the current month, not wherever the
+  // guest last scrolled to.
+  useEffect(() => {
+    if (open && !checkIn) setMonth(startOfMonth(new Date()));
+  }, [open, checkIn]);
+
   function handleSelect(range: DateRange | undefined) {
     const from = range?.from ? iso(range.from) : "";
     const to = range?.to ? iso(range.to) : "";
@@ -97,7 +135,9 @@ export function DateRangePicker({
             range (disables Continue) and the server re-validates on submit. */}
         <Calendar
           mode="range"
-          numberOfMonths={1}
+          numberOfMonths={monthCount}
+          month={month}
+          onMonthChange={setMonth}
           selected={selected}
           onSelect={handleSelect}
           disabled={disabled}
@@ -107,7 +147,6 @@ export function DateRangePicker({
           // guest-facing NIGHTS. A checkout closer than this won't commit; the
           // pick resets. Omitted (undefined) for callers without a minimum (STR).
           min={minNights ? minNights + 1 : undefined}
-          defaultMonth={checkIn ? parseISO(checkIn) : undefined}
           initialFocus
         />
       </PopoverContent>

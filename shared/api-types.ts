@@ -161,8 +161,9 @@ export const leaseQuoteRequestSchema = z.object({
   roomIds: z.array(z.string().min(1)).min(1, "Select at least one room"),
   startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Start date is required"),
   endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "End date is required"),
-  // Deprecated: cadence is auto-derived server-side from stay length. Kept
-  // optional for back-compat with callers that still send it (value ignored).
+  // The guest's billing cadence. Must be one of allowedCadencesForTerm() when
+  // sent; omitted means the server uses the shortest allowed cadence so a first
+  // preview always renders. Cadence DRIVES THE RATE — it is not cosmetic.
   cadence: z.enum(PAYMENT_CADENCES).optional(),
 });
 
@@ -188,8 +189,15 @@ export interface LeaseQuoteResponse {
   cadence: (typeof PAYMENT_CADENCES)[number];
   /** Cadences the guest may choose for this term length (gate by stay length). */
   allowedCadences: (typeof PAYMENT_CADENCES)[number][];
-  /** Combined weekly rate across all included rooms. */
+  /**
+   * Combined weekly LIST rate across all included rooms. This is a room
+   * attribute, NOT necessarily what the guest is billed — see installmentAmount.
+   */
   weeklyRateTotal: number;
+  /** One full installment at `cadence` — the guest's real rate. */
+  installmentAmount: number;
+  /** Days one installment covers: 7 | 14 | 28. */
+  periodDays: number;
   /** Refundable security deposit that secures the room (sum across rooms). */
   depositTotal: number;
   /**

@@ -14,6 +14,7 @@ import { log } from "./server-log";
 import { storage } from "./storage";
 import { buildAndPushSnapshot } from "./integrations/kpiRollup";
 import { runScheduledRentSweep } from "./lib/leasePayments";
+import { runLeaseHoldExpiry } from "./lib/leaseHolds";
 import { runDunningSweep } from "./lib/dunning";
 import { runLeaseEndingNotices } from "./lib/lifecycle";
 import { refreshExternalCalendars, checkCalendarSyncHealth } from "./lib/icalSync";
@@ -59,6 +60,9 @@ class BackgroundScheduler {
     this.isRunning = true;
     try {
       await this.calendarRefreshRun();
+      // Release expired holds BEFORE the occupancy sync so a freed room's
+      // status is corrected in the same pass.
+      await this.holdExpiryRun();
       await this.occupancySyncRun();
       await this.calendarHealthCheckRun();
       await this.weeklyRentRun();
@@ -122,6 +126,17 @@ class BackgroundScheduler {
       }
     } catch (err) {
       log(`calendar sync health check failed: ${(err as Error).message}`, "scheduler");
+    }
+  }
+
+  private async holdExpiryRun(): Promise<void> {
+    // Owner rule: a room is held only once a deposit is paid, and the hold
+    // lapses if the first rent payment misses the move-in date. Runs before the
+    // occupancy sync so a freed room's status is corrected in the same sweep.
+    try {
+      await runLeaseHoldExpiry();
+    } catch (err) {
+      log(`lease hold expiry failed: ${(err as Error).message}`, "scheduler");
     }
   }
 

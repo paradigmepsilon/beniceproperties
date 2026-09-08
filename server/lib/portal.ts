@@ -127,6 +127,12 @@ export async function payInstallmentNow(
   scheduleSeq: number,
 ): Promise<{ paid: boolean; amount: number; paymentIntentId?: string }> {
   const lease = await resolvePortalLease(token);
+  // A closed lease must not be chargeable through a still-valid portal token.
+  // The UI used to hide every row but the next due one, which masked this; now
+  // that any open row is payable, the guard has to be real.
+  if (lease.status === "COMPLETED" || lease.status === "TERMINATED") {
+    throw new LeaseError("This lease is closed", 409);
+  }
   if (!lease.stripeCustomerId || !lease.stripePaymentMethodId) {
     throw new LeaseError("No saved card on this lease; pay via your arranged method", 409);
   }

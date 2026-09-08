@@ -16,6 +16,7 @@ import { runLeaseEndingNotices } from "../../server/lib/lifecycle";
 import { refreshExternalCalendars, checkCalendarSyncHealth } from "../../server/lib/icalSync";
 import { syncRoomOccupancyStatus } from "../../server/lib/occupancy";
 import { log } from "../../server/server-log";
+import { runLeaseHoldExpiry } from "../../server/lib/leaseHolds";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Vercel Cron sends `Authorization: Bearer ${CRON_SECRET}`. Reject anything else.
@@ -28,6 +29,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Refresh Airbnb iCal blocks first so the guest calendar + guards are fresh
     // even on days the dedicated hourly calendar cron didn't cover something.
     const calendar = await refreshExternalCalendars();
+
+    // Release expired room holds BEFORE the occupancy sync, so a room freed
+    // here has its status corrected in the same pass.
+    try {
+      await runLeaseHoldExpiry();
+    } catch (err) {
+      log(`lease hold expiry failed: ${(err as Error).message}`, "cron");
+    }
 
     // Daily room-occupancy status sync + calendar-sync health check. Each
     // wrapped separately so one failing never blocks the rest of the sweep.

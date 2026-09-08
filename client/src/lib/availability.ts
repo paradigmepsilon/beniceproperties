@@ -9,7 +9,7 @@
 // selectable as a new check-in. The `halfOpen` flag itself still supports the
 // inclusive mode (`false`) for any range that genuinely is inclusive-end.
 
-import { parseISO, subDays } from "date-fns";
+import { addDays, format, parseISO, subDays } from "date-fns";
 import type { Matcher } from "react-day-picker";
 import type { BusyRange } from "@shared/api-types";
 
@@ -77,4 +77,33 @@ export function datesBookable(
   if (!availReady) return false;
   if (!checkIn || !checkOut || checkOut <= checkIn) return false;
   return !rangeHitsBusy(checkIn, checkOut, busy, halfOpen);
+}
+
+/**
+ * The earliest move-out a guest can actually pick for a given move-in, or null
+ * when no valid stay starts there.
+ *
+ * Two things gate it: the product minimum (co-living is 7 nights; STR passes 0)
+ * and the room's existing bookings. Because extending a checkout only ADDS
+ * nights, if the shortest allowed stay already straddles a busy range then every
+ * longer one does too — so there is no valid checkout from that check-in at all,
+ * and we return null rather than a date the guest can't use.
+ *
+ * This exists because the minimum routinely pushes the first valid move-out into
+ * the FOLLOWING month (pick Sep 29, the earliest is Oct 6). A single-month
+ * calendar then renders every visible day disabled, which reads as a broken site.
+ * Callers use this to scroll the calendar to the month that has real options and
+ * to tell the guest the date they're looking for.
+ */
+export function earliestValidCheckout(
+  checkIn: string,
+  minNights: number,
+  busy: BusyRange[],
+  halfOpen: boolean,
+): string | null {
+  if (!checkIn) return null;
+  // A range needs at least one night even when the product sets no minimum.
+  const nights = Math.max(1, minNights);
+  const candidate = format(addDays(parseISO(checkIn), nights), "yyyy-MM-dd");
+  return rangeHitsBusy(checkIn, candidate, busy, halfOpen) ? null : candidate;
 }

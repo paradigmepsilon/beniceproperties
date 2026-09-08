@@ -110,6 +110,7 @@ import {
 import { buildAndPushSnapshot } from "./integrations/kpiRollup";
 import { log } from "./server-log";
 import { posthog } from "./lib/posthog";
+import { publicBaseUrl } from "./lib/publicUrl";
 
 function appUrl(req: express.Request, path: string): string {
   const proto = req.protocol;
@@ -370,7 +371,7 @@ export async function registerRoutes(app: Express): Promise<void> {
   // =========================================================================
   app.get("/sitemap.xml", async (_req, res, next) => {
     try {
-      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
+      const origin = publicBaseUrl();
       const [ltrFlag, journalFlag, properties, posts] = await Promise.all([
         storage.getSetting("page_ltr_visible"),
         storage.getSetting("page_journal_visible"),
@@ -448,7 +449,7 @@ export async function registerRoutes(app: Express): Promise<void> {
   // =========================================================================
   app.get("/feed.xml", async (_req, res, next) => {
     try {
-      const origin = process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
+      const origin = publicBaseUrl();
       const [journalFlag, posts] = await Promise.all([
         storage.getSetting("page_journal_visible"),
         storage.getPublishedJournalPosts(),

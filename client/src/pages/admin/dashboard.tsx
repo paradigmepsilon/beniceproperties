@@ -566,6 +566,7 @@ function StrRateEditor({ property }: { property: Property }) {
   const [basePrice, setBasePrice] = useState(numOrBlank(property.basePrice));
   const [dailyRate, setDailyRate] = useState(numOrBlank(property.dailyRate));
   const [weeklyRate, setWeeklyRate] = useState(numOrBlank(property.weeklyRate));
+  const [biweeklyRate, setBiweeklyRate] = useState(numOrBlank(property.biweeklyRate));
   const [monthlyRate, setMonthlyRate] = useState(numOrBlank(property.monthlyRate));
   const [cleaningFee, setCleaningFee] = useState(numOrBlank(property.cleaningFee));
 
@@ -574,6 +575,7 @@ function StrRateEditor({ property }: { property: Property }) {
       await apiRequest("PATCH", `/api/admin/properties/${property.id}`, {
         basePrice: rate(basePrice) ?? null,
         dailyRate: rate(dailyRate) ?? null,
+        biweeklyRate: rate(biweeklyRate) ?? null,
         weeklyRate: rate(weeklyRate) ?? null,
         monthlyRate: rate(monthlyRate) ?? null,
         cleaningFee: rate(cleaningFee) ?? "0",
@@ -597,6 +599,7 @@ function StrRateEditor({ property }: { property: Property }) {
         <RateField label="Cleaning fee" value={cleaningFee} onChange={setCleaningFee} placeholder="0.00" testId={`input-cleaning-${property.id}`} />
         <RateField label="Daily rate" value={dailyRate} onChange={setDailyRate} placeholder="450.00" testId={`input-daily-${property.id}`} />
         <RateField label="Weekly rate" value={weeklyRate} onChange={setWeeklyRate} placeholder="2700.00" testId={`input-weekly-${property.id}`} />
+        <RateField label="Biweekly rate" value={biweeklyRate} onChange={setBiweeklyRate} placeholder="5400.00" testId={`input-biweekly-${property.id}`} />
         <RateField label="Monthly rate" value={monthlyRate} onChange={setMonthlyRate} placeholder="9000.00" testId={`input-monthly-${property.id}`} />
       </div>
       <Button size="sm" disabled={save.isPending} onClick={() => save.mutate()} data-testid={`button-save-rates-${property.id}`}>
@@ -633,6 +636,7 @@ function RoomEditor({ room, propertyId }: { room: Room; propertyId: string }) {
   const [depositAmount, setDepositAmount] = useState(numOrBlank(room.depositAmount));
   const [cleaningFee, setCleaningFee] = useState(numOrBlank(room.cleaningFee));
   const [dailyRate, setDailyRate] = useState(numOrBlank(room.dailyRate));
+  const [biweeklyRate, setBiweeklyRate] = useState(numOrBlank(room.biweeklyRate));
   const [monthlyRate, setMonthlyRate] = useState(numOrBlank(room.monthlyRate));
   const [status, setStatus] = useState(room.status);
 
@@ -645,6 +649,7 @@ function RoomEditor({ room, propertyId }: { room: Room; propertyId: string }) {
         depositAmount: rate(depositAmount) ?? "0",
         cleaningFee: rate(cleaningFee) ?? "0",
         dailyRate: rate(dailyRate) ?? null,
+        biweeklyRate: rate(biweeklyRate) ?? null,
         monthlyRate: rate(monthlyRate) ?? null,
         status,
       });
@@ -680,6 +685,7 @@ function RoomEditor({ room, propertyId }: { room: Room; propertyId: string }) {
         <RateField label="Deposit" value={depositAmount} onChange={setDepositAmount} placeholder="275.00" testId={`input-room-deposit-${room.id}`} />
         <RateField label="Cleaning fee" value={cleaningFee} onChange={setCleaningFee} placeholder="0.00" testId={`input-room-cleaning-${room.id}`} />
         <RateField label="Daily (optional)" value={dailyRate} onChange={setDailyRate} placeholder="—" testId={`input-room-daily-${room.id}`} />
+        <RateField label="Biweekly (optional)" value={biweeklyRate} onChange={setBiweeklyRate} placeholder="—" testId={`input-room-biweekly-${room.id}`} />
         <RateField label="Monthly (optional)" value={monthlyRate} onChange={setMonthlyRate} placeholder="—" testId={`input-room-monthly-${room.id}`} />
       </div>
       <Button className="mt-3" size="sm" disabled={save.isPending} onClick={() => save.mutate()} data-testid={`button-save-room-${room.id}`}>

@@ -7,12 +7,12 @@
 // =============================================================================
 
 import { customAlphabet } from "nanoid";
-import { differenceInCalendarDays, parseISO } from "date-fns";
+import { addDays, differenceInCalendarDays, format, parseISO } from "date-fns";
 import { calculateBreakdown, type PaymentMethod } from "@shared/pricing";
 import {
-  chooseRate,
   hasAnyWeekdayRate,
-  shortStayPrice,
+  cascadeStayPrice,
+  averageWeekdayRate,
   weekdayStayTotal,
   RateError,
   type RateTier,
@@ -53,7 +53,7 @@ function nights(checkIn: string, checkOut: string): number {
  * Per-weekday (2026-06-30): when the stay lands in the DAILY tier (<7 nights) AND
  * the property has any weekday price set, the total is the SUM of each night's
  * weekday price (fallback per night = dailyRate ?? basePrice, i.e. the same value
- * chooseRate used for DAILY). WEEKLY/MONTHLY tiers are untouched. A property with
+ * the cascade's DAILY tier). Whole weeks and months bill flat. A property with
  * no weekday prices is byte-identical to the previous behavior.
  *
  * Exported for unit testing (like buildQuote / generateReference below).
@@ -63,49 +63,62 @@ export function strBaseTotal(
   n: number,
   checkIn: string,
 ): { baseAmount: number; tier: RateTier; effectiveNightly: number } {
-  const chosen = chooseRate({
-    nights: n,
-    // base_price is the legacy nightly; treat it as the daily-tier rate so a
-    // property with only base_price set keeps billing nightly × n.
-    daily: property.dailyRate ?? property.basePrice,
-    weekly: property.weeklyRate,
-    monthly: property.monthlyRate,
+  // Owner rule 2026-09-08: ONE pricing rule everywhere. A stay bills as many
+  // whole months as fit, then whole weeks, then leftover whole days — it is no
+  // longer a single tier prorated per night. So a 40-night stay is 1 month +
+  // 1 week + 5 days, not 40 x (monthly / 28).
+  const weekdayRates: WeekdayRates = {
+    monPrice: property.monPrice,
+    tuePrice: property.tuePrice,
+    wedPrice: property.wedPrice,
+    thuPrice: property.thuPrice,
+    friPrice: property.friPrice,
+    satPrice: property.satPrice,
+    sunPrice: property.sunPrice,
+  };
+
+  const priced = cascadeStayPrice({
+    days: n,
+    rates: {
+      // base_price is the legacy nightly; treat it as the daily-tier rate so a
+      // property with only base_price set keeps billing nightly × n. A property
+      // that prices ONLY by weekday still has a priced daily tier — average the
+      // set weekdays so the cascade can size the tail and fall back on it.
+      daily: property.dailyRate ?? property.basePrice ?? averageWeekdayRate(weekdayRates),
+      weekly: property.weeklyRate,
+      biweekly: property.biweeklyRate,
+      monthly: property.monthlyRate,
+    },
+    // Whole-property stays have no billing cadence, so they cascade from the
+    // top: months, then weeks, then days (biweekly is skipped, exactly as the
+    // MONTHLY cadence does on the lease side).
+    topTier: "MONTHLY",
   });
 
-  if (chosen.tier === "DAILY") {
-    const weekdayRates: WeekdayRates = {
-      monPrice: property.monPrice,
-      tuePrice: property.tuePrice,
-      wedPrice: property.wedPrice,
-      thuPrice: property.thuPrice,
-      friPrice: property.friPrice,
-      satPrice: property.satPrice,
-      sunPrice: property.sunPrice,
-    };
-    if (hasAnyWeekdayRate(weekdayRates)) {
-      const baseAmount = weekdayStayTotal({
-        checkIn,
-        nights: n,
-        weekdayRates,
-        // chosen.effectiveNightly for DAILY == dailyRate ?? basePrice (tierDays 1).
-        fallbackNightly: chosen.effectiveNightly,
-      });
-      return {
-        baseAmount,
-        tier: "DAILY",
-        // Nightly prices vary across the stay, so there is no single nightly rate.
-        // effectiveNightly is a DISPLAY average only — baseAmount is authoritative
-        // and is the value that flows to the charge. (Verified: nothing downstream
-        // uses effectiveNightly for STR money math.)
-        effectiveNightly: Math.round((baseAmount / n) * 100) / 100,
-      };
-    }
+  // Per-weekday prices apply ONLY to the leftover daily nights — the specific
+  // calendar nights the cascade did not absorb into a whole month or week.
+  const dailySeg = priced.segments.find((seg) => seg.tier === "DAILY");
+  let baseAmount = priced.total;
+  if (dailySeg && hasAnyWeekdayRate(weekdayRates)) {
+    const weekdayAmount = weekdayStayTotal({
+      // The daily tail starts this many nights after check-in.
+      checkIn: format(addDays(parseISO(checkIn), dailySeg.startDay), "yyyy-MM-dd"),
+      nights: dailySeg.units,
+      weekdayRates,
+      fallbackNightly: dailySeg.unitRate,
+    });
+    baseAmount = Math.round((priced.total - dailySeg.amount + weekdayAmount) * 100) / 100;
   }
 
+  // The largest tier the stay actually used, for display + Stripe metadata.
+  const top = priced.segments[0].tier;
   return {
-    baseAmount: Math.round(chosen.effectiveNightly * n * 100) / 100,
-    tier: chosen.tier,
-    effectiveNightly: chosen.effectiveNightly,
+    baseAmount,
+    tier: top === "BIWEEKLY" ? "WEEKLY" : top,
+    // Nightly prices vary across a cascaded stay, so there is no single nightly
+    // rate. This is a DISPLAY average only — baseAmount is authoritative and is
+    // the value that flows to the charge.
+    effectiveNightly: Math.round((baseAmount / n) * 100) / 100,
   };
 }
 
@@ -235,32 +248,42 @@ export async function resolveBooking(input: {
     });
     if (!free) throw new BookingError("Those dates are not available for this room", 409);
 
+    // Same cascade as leases and STR (owner rule 2026-09-08). At exactly 28
+    // nights this now bills one MONTH at the monthly rate rather than 4 weeks,
+    // which is why it goes through cascadeStayPrice rather than shortStayPrice.
     let priced;
     try {
-      priced = shortStayPrice({
-        nights: n,
-        weeklyRent: room.weeklyRent,
-        dailyRate: room.dailyRate,
+      priced = cascadeStayPrice({
+        days: n,
+        rates: {
+          daily: room.dailyRate,
+          weekly: room.weeklyRent,
+          biweekly: room.biweeklyRate,
+          monthly: room.monthlyRate,
+        },
+        topTier: "MONTHLY",
       });
     } catch (err) {
       if (err instanceof RateError) throw new BookingError(err.message, 422);
       throw err;
     }
+    const weekSeg = priced.segments.find((seg) => seg.tier === "WEEKLY");
+    const daySeg = priced.segments.find((seg) => seg.tier === "DAILY");
     return {
       model: "COLIVING",
       property,
       room,
       checkIn: input.checkIn,
       checkOut: input.checkOut,
-      baseAmount: priced.baseAmount,
+      baseAmount: priced.total,
       // Per-room cleaning fee, folded into the upfront charge like STR. 0 if unset.
       cleaningFee: room.cleaningFee ? parseFloat(room.cleaningFee) : 0,
       nights: n,
       shortStay: {
-        weeks: priced.weeks,
-        remainderDays: priced.remainderDays,
-        weeklyRate: priced.weeklyRate,
-        dailyRate: priced.dailyRate,
+        weeks: weekSeg?.units ?? 0,
+        remainderDays: daySeg?.units ?? 0,
+        weeklyRate: weekSeg?.unitRate ?? parseFloat(room.weeklyRent),
+        dailyRate: daySeg?.unitRate ?? parseFloat(room.weeklyRent) / 7,
       },
     };
   }

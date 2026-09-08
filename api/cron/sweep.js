@@ -15,8 +15,11 @@ __export(schema_exports, {
   BOOKING_STATUSES: () => BOOKING_STATUSES,
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
+  CHECKOUT_HOLD_LEASE_STATUSES: () => CHECKOUT_HOLD_LEASE_STATUSES,
+  CHECKOUT_HOLD_MINUTES: () => CHECKOUT_HOLD_MINUTES,
   COLIVING_MIN_DAYS: () => COLIVING_MIN_DAYS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
+  DEPOSIT_HELD_LEASE_STATUSES: () => DEPOSIT_HELD_LEASE_STATUSES,
   DEPOSIT_STATUSES: () => DEPOSIT_STATUSES,
   ESCALATION_KINDS: () => ESCALATION_KINDS,
   ESCALATION_SEVERITIES: () => ESCALATION_SEVERITIES,
@@ -93,6 +96,7 @@ __export(schema_exports, {
   journalPosts: () => journalPosts,
   kpiSnapshots: () => kpiSnapshots,
   lateFees: () => lateFees,
+  leaseHoldsRoom: () => leaseHoldsRoom,
   leaseRooms: () => leaseRooms,
   leases: () => leases,
   lifecycleEvents: () => lifecycleEvents,
@@ -127,9 +131,17 @@ import {
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
+function leaseHoldsRoom(lease, now = /* @__PURE__ */ new Date()) {
+  if (lease.depositStatus === "PAID" && DEPOSIT_HELD_LEASE_STATUSES.includes(lease.status)) {
+    return true;
+  }
+  if (!CHECKOUT_HOLD_LEASE_STATUSES.includes(lease.status)) return false;
+  if (!lease.createdAt) return false;
+  const created = lease.createdAt instanceof Date ? lease.createdAt : new Date(lease.createdAt);
+  return now.getTime() - created.getTime() < CHECKOUT_HOLD_MINUTES * 6e4;
+}
 function allowedCadencesForTerm(termDays) {
-  if (termDays >= 84) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
-  if (termDays >= 28) return ["WEEKLY", "MONTHLY"];
+  if (termDays >= 28) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
   return ["WEEKLY"];
 }
 function requiresLease(termDays) {
@@ -138,7 +150,7 @@ function requiresLease(termDays) {
 function isDirectCoLivingStay(termDays) {
   return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
-var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
+var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
 var init_schema = __esm({
   "shared/schema.ts"() {
     "use strict";
@@ -266,6 +278,13 @@ var init_schema = __esm({
       MONTHLY: 28
     };
     MAX_LEASE_DAYS = 90;
+    DEPOSIT_HELD_LEASE_STATUSES = ["PENDING_VERIFICATION", "ACTIVE"];
+    CHECKOUT_HOLD_LEASE_STATUSES = [
+      "DRAFT",
+      "PENDING_SIGNATURE",
+      "PENDING_FIRST_PAYMENT"
+    ];
+    CHECKOUT_HOLD_MINUTES = 30;
     COLIVING_MIN_DAYS = 7;
     LEASE_REQUIRED_ABOVE_DAYS = 28;
     LATE_FEE_PER_DAY = 25;
@@ -330,6 +349,8 @@ var init_schema = __esm({
       // basePrice for back-compat. See shared/rateSelection.ts.
       dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
       weeklyRate: decimal("weekly_rate", { precision: 10, scale: 2 }),
+      // Added 2026-09-08: biweekly is a priced tier in its own right, not 2 x weekly.
+      biweeklyRate: decimal("biweekly_rate", { precision: 10, scale: 2 }),
       monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
       // Per-night-by-weekday prices (added 2026-06-30, additive nullable). When a stay
       // resolves to the DAILY tier (<7 nights), each night is priced by the weekday it
@@ -407,6 +428,8 @@ var init_schema = __esm({
         // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
         // next shorter tier. See shared/rateSelection.ts.
         dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
+        // Added 2026-09-08: a priced tier in its own right, not 2 x weekly_rent.
+        biweeklyRate: decimal("biweekly_rate", { precision: 10, scale: 2 }),
         monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
         // "AVAILABLE" | "OCCUPIED" | "HOLD" | "MAINTENANCE" | "INACTIVE"
         status: text("status").notNull().default("AVAILABLE"),
@@ -950,8 +973,12 @@ var init_schema = __esm({
       // ~14 days before end_date
       "BOOKING_CONFIRMED",
       // short-stay booking materialized (guest)
-      "ADMIN_NEW_BOOKING"
+      "ADMIN_NEW_BOOKING",
       // short-stay booking materialized (admin)
+      "LEASE_HOLD_RELEASED",
+      // hold expired — room released back to inventory
+      "FIRST_PAYMENT_REMINDER"
+      // signed, deposit unpaid — nudge before the hold lapses
     ];
     LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"];
     LEASE_ENDING_NOTICE_DAYS = 14;
@@ -1265,6 +1292,14 @@ var init_escalationDedupe = __esm({
   }
 });
 
+// shared/rateSelection.ts
+import { addDays, getDay, parseISO } from "date-fns";
+var init_rateSelection = __esm({
+  "shared/rateSelection.ts"() {
+    "use strict";
+  }
+});
+
 // shared/leaseSchedule.ts
 function parseYmd(ymd2) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd2);
@@ -1280,6 +1315,7 @@ var init_leaseSchedule = __esm({
   "shared/leaseSchedule.ts"() {
     "use strict";
     init_schema();
+    init_rateSelection();
     ScheduleError = class extends Error {
     };
     MS_PER_DAY = 24 * 60 * 60 * 1e3;
@@ -1292,8 +1328,23 @@ __export(storage_exports, {
   StorageError: () => StorageError,
   storage: () => storage
 });
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, sql as sql3 } from "drizzle-orm";
-var ROOM_BLOCKING_LEASE_STATUSES, StorageError, Storage, storage;
+import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
+function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
+  const windowStart = new Date(now.getTime() - CHECKOUT_HOLD_MINUTES * 6e4);
+  return or(
+    // 1. Deposit paid — the real hold, for the whole term.
+    and(
+      eq(leases.depositStatus, "PAID"),
+      inArray(leases.status, [...DEPOSIT_HELD_LEASE_STATUSES])
+    ),
+    // 2. Unpaid, but still inside the checkout window.
+    and(
+      inArray(leases.status, [...CHECKOUT_HOLD_LEASE_STATUSES]),
+      gte(leases.createdAt, windowStart)
+    )
+  );
+}
+var NON_TERMINAL_LEASE_STATUSES, StorageError, Storage, storage;
 var init_storage = __esm({
   "server/storage.ts"() {
     "use strict";
@@ -1303,12 +1354,12 @@ var init_storage = __esm({
     init_escalationDedupe();
     init_schema();
     init_leaseSchedule();
-    ROOM_BLOCKING_LEASE_STATUSES = [
+    init_schema();
+    NON_TERMINAL_LEASE_STATUSES = [
       "DRAFT",
       "PENDING_SIGNATURE",
       "PENDING_FIRST_PAYMENT",
       "PENDING_VERIFICATION",
-      // deposit paid, room secured, awaiting ID approval
       "ACTIVE"
     ];
     StorageError = class extends Error {
@@ -1554,13 +1605,13 @@ var init_storage = __esm({
         return db.select().from(leases).where(inArray(leases.id, ids));
       }
       /**
-       * Non-terminal leases — ROOM_BLOCKING_LEASE_STATUSES is exactly "every
+       * Non-terminal leases — NON_TERMINAL_LEASE_STATUSES is exactly "every
        * status short of COMPLETED/TERMINATED/DEFAULTED" — joined to guest +
        * property in one query. Mirrors getBookingsWithGuest's join pattern; the
        * guest picker uses this instead of getLeases() + a per-row lookup loop.
        */
       async getActiveLeasesWithGuest() {
-        const rows = await db.select().from(leases).leftJoin(guests, eq(leases.guestId, guests.id)).leftJoin(properties, eq(leases.propertyId, properties.id)).where(inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES])).orderBy(desc(leases.createdAt));
+        const rows = await db.select().from(leases).leftJoin(guests, eq(leases.guestId, guests.id)).leftJoin(properties, eq(leases.propertyId, properties.id)).where(inArray(leases.status, [...NON_TERMINAL_LEASE_STATUSES])).orderBy(desc(leases.createdAt));
         return rows.filter((r) => r.guests !== null && r.properties !== null).map((r) => ({
           ...r.leases,
           guest: r.guests,
@@ -1890,7 +1941,7 @@ var init_storage = __esm({
         for (const r of bookingRows) if (r.roomId) occupied.add(r.roomId);
         const leaseRows = await db.select({ roomId: leaseRooms.roomId }).from(leaseRooms).innerJoin(leases, eq(leaseRooms.leaseId, leases.id)).where(
           and(
-            inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES]),
+            roomHoldingLeaseCondition(),
             lte(leases.startDate, dateIso),
             gte(leases.endDate, dateIso)
           )
@@ -2037,7 +2088,7 @@ var init_storage = __esm({
         return db.select().from(leases).where(
           and(
             inArray(leases.id, leaseIds),
-            inArray(leases.status, [...ROOM_BLOCKING_LEASE_STATUSES])
+            roomHoldingLeaseCondition()
           )
         );
       }
@@ -2289,11 +2340,7 @@ async function chargeSavedCard(opts) {
 
 // server/lib/lease.ts
 init_leaseSchedule();
-
-// shared/rateSelection.ts
-import { addDays, getDay, parseISO } from "date-fns";
-
-// server/lib/lease.ts
+init_rateSelection();
 init_schema();
 init_storage();
 init_ranges();
@@ -2404,6 +2451,10 @@ async function getTransport() {
   }
   return transportPromise;
 }
+function textToHtml(text2) {
+  const esc = text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return `<p>${esc.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>').replace(/\n/g, "<br>")}</p>`;
+}
 async function sendEmail(opts) {
   let result;
   if (!isEmailConfigured()) {
@@ -2417,7 +2468,7 @@ async function sendEmail(opts) {
         to: opts.to,
         subject: opts.subject,
         text: opts.text,
-        html: opts.html ?? `<p>${opts.text}</p>`
+        html: opts.html ?? textToHtml(opts.text)
       });
       log(`email sent to=${opts.to} subject="${opts.subject}"`, "notify");
       result = { sent: true, channel: "email" };
@@ -2478,7 +2529,7 @@ async function notifyGuest(opts) {
     sendEmail({ to: opts.email, subject: opts.subject, text: opts.body, html: opts.html, context: ctx }),
     // sendSms already returns/records "no-phone" as SKIPPED when `to` is empty,
     // so route both branches through it rather than short-circuiting here.
-    sendSms({ to: opts.phone ?? "", body: opts.body, context: ctx })
+    sendSms({ to: opts.phone ?? "", body: opts.smsBody ?? opts.body, context: ctx })
   ]);
   return { email, sms };
 }
@@ -2500,7 +2551,26 @@ ${opts.telegramText ?? opts.body}`,
 // server/lib/dunning.ts
 init_schema();
 init_dates();
+
+// server/lib/publicUrl.ts
+function publicBaseUrl() {
+  const explicit = process.env.PUBLIC_BASE_URL;
+  if (explicit) return explicit.replace(/\/+$/, "");
+  if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return "https://www.beniceproperties.com";
+}
+function lookupUrl() {
+  return `${publicBaseUrl()}/lookup`;
+}
+function portalUrl(lease) {
+  return lease.portalToken ? `${publicBaseUrl()}/portal/${lease.portalToken}` : lookupUrl();
+}
+
+// server/lib/dunning.ts
 var SETTING_DEFAULT_THRESHOLD = "defaulted_threshold_days";
+var SETTING_SMS_LINKS = "sms_include_links";
 var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
 function daysPastDue(dueDate, today) {
   const due = (/* @__PURE__ */ new Date(`${dueDate}T00:00:00Z`)).getTime();
@@ -2545,6 +2615,11 @@ async function runDunningSweep(today = todayIso()) {
   }
   return result;
 }
+async function payLink(lease) {
+  const on = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
+  if (on === "false" || on === "0") return "";
+  return portalUrl(lease);
+}
 async function maybeSendReminder(lease, guest, row, past, today, result) {
   const daysUntil2 = -past;
   let kind = null;
@@ -2560,12 +2635,16 @@ async function maybeSendReminder(lease, guest, row, past, today, result) {
   });
   if (already) return;
   const when = daysUntil2 === 0 ? "today" : `in ${daysUntil2} day${daysUntil2 === 1 ? "" : "s"}`;
+  const payUrl = await payLink(lease);
   const sent = await notifyGuest({
     email: guest.email,
     phone: guest.phone,
     context: { leaseId: lease.id, guestId: guest.id, kind },
     subject: `Rent reminder \u2014 payment due ${when}`,
-    body: `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} is due ${when} (${row.dueDate}). ` + (row.paymentMethod === "CARD_ON_FILE" ? "It will be charged automatically to your card on file." : "Please send your payment by the due date.")
+    body: `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} is due ${when} (${row.dueDate}). ` + (row.paymentMethod === "CARD_ON_FILE" ? "It will be charged automatically to your card on file, plus a 3.5% card processing fee." : "Please send your payment by the due date.") + `
+
+Pay now, switch to CashApp/Zelle, or view your full schedule: ${portalUrl(lease)}`,
+    smsBody: `BNP: rent $${row.amount} (installment #${row.scheduleSeq}) due ${when}.` + (payUrl ? ` Pay or view: ${payUrl}` : "")
   });
   await storage.recordNotification({
     leaseId: lease.id,
@@ -2603,7 +2682,10 @@ async function handleOverdue(lease, property, guest, rooms2, row, past, today, t
         phone: guest.phone,
         context: { leaseId: lease.id, guestId: guest.id, kind },
         subject: `Payment overdue \u2014 installment #${row.scheduleSeq}`,
-        body: `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of $${LATE_FEE_PER_DAY.toFixed(2)}/day is accruing. Please pay as soon as possible to stop further fees.`
+        body: `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of $${LATE_FEE_PER_DAY.toFixed(2)}/day is accruing until it is paid.
+
+Pay now to stop further fees \u2014 by card, or by CashApp/Zelle: ${portalUrl(lease)}`,
+        smsBody: `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} overdue; $${LATE_FEE_PER_DAY.toFixed(0)}/day late fee accruing.` + (await payLink(lease) ? ` Pay: ${await payLink(lease)}` : "")
       });
       await storage.recordNotification({
         leaseId: lease.id,
@@ -2657,7 +2739,12 @@ async function handleOverdue(lease, property, guest, rooms2, row, past, today, t
           phone: guest.phone,
           context: { leaseId: lease.id, guestId: guest.id, kind: "DEFAULTED" },
           subject: "Your lease is in default",
-          body: `Hi ${guest.name}, your lease at ${property.name} is now in default due to an unpaid balance past ${thresholdDays} days. Please contact us immediately to resolve this.`
+          body: `Hi ${guest.name}, your lease at ${property.name} is now in default due to an unpaid balance past ${thresholdDays} days.
+
+You can still clear the balance from your portal: ${portalUrl(lease)}
+
+If you have already paid, or need to arrange something, reply to this email and we will sort it out with you.`,
+          smsBody: `BNP: your lease is in default (unpaid ${thresholdDays}+ days).` + (await payLink(lease) ? ` Clear the balance: ${await payLink(lease)}` : "")
         });
         await storage.recordNotification({
           leaseId: lease.id,
@@ -2701,13 +2788,19 @@ async function handleChargeFailure(args) {
     sendDate: today
   });
   if (!already) {
-    const fixUrl = `${publicBaseUrl()}/lease/pay?leaseId=${args.lease.id}`;
+    const fixUrl = portalUrl(args.lease);
+    const smsUrl = await payLink(args.lease);
     const sent = await notifyGuest({
       email: args.guest.email,
       phone: args.guest.phone,
       context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "PAYMENT_FAILED" },
       subject: "Action needed \u2014 your rent payment failed",
-      body: `Hi ${args.guest.name}, we couldn't process your rent payment for installment #${args.scheduleRow.scheduleSeq}. Please update your card / retry here: ${fixUrl}`
+      body: `Hi ${args.guest.name}, we couldn't process your rent payment for installment #${args.scheduleRow.scheduleSeq}.
+
+Retry it from your portal: ${fixUrl}
+
+If your card has changed, you can pay this installment by CashApp or Zelle from that same page \u2014 no card needed.`,
+      smsBody: `BNP: we could not process your rent payment for installment #${args.scheduleRow.scheduleSeq}.` + (smsUrl ? ` Retry: ${smsUrl}` : "")
     });
     await storage.recordNotification({
       leaseId: args.lease.id,
@@ -2748,9 +2841,6 @@ async function billAccruedLateFees(args) {
   log(`billed $${total} late fees for lease ${args.lease.id} seq ${args.scheduleSeq} (${pi.id})`, "scheduler");
   return { billed: true, amount: total, paymentIntentId: pi.id };
 }
-function publicBaseUrl() {
-  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
-}
 
 // server/lib/lifecycle.ts
 init_storage();
@@ -2767,7 +2857,12 @@ var CONFLICT_ADMIN_NOTE = (status) => status === "CONFLICT" ? "\n\nDATES WERE AL
 var LIFECYCLE_TEMPLATES = {
   welcome: (v) => ({
     subject: `Welcome to ${v.property} \u{1F389}`,
-    body: `Hi ${v.name}, welcome! Your lease at ${v.property} is active and your move-in date is ${v.start}. We're glad to have you. Your full payment schedule and signed lease are in your guest portal. Reach out anytime through the portal with questions or maintenance requests.`
+    body: `Hi ${v.name}, welcome! Your lease at ${v.property} is active and your move-in date is ${v.start}. We're glad to have you.
+
+Your guest portal \u2014 payment schedule, signed lease, every rent payment, and maintenance requests \u2014 is here: ${v.portalUrl}
+
+Save that link. It is how you pay and how you reach us.`,
+    smsBody: `BNP: welcome! Your lease is active (move-in ${v.start}). Save your portal link: ${v.portalUrl}`
   }),
   scheduleRecap: (v) => ({
     subject: "Your lease payment schedule",
@@ -2783,13 +2878,16 @@ Payments on a saved card are charged automatically on each due date. Manage ever
   }),
   paymentReceipt: (v) => ({
     subject: `Payment received \u2014 ${v.property}`,
-    body: `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ${v.property}. Thank you! A record is available in your portal.`
+    body: `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ${v.property}. Thank you!
+
+Your receipt and full payment schedule: ${v.portalUrl}`,
+    smsBody: `BNP: payment of ${v.amount} received (installment #${v.seq}). Thanks! ${v.portalUrl}`
   }),
   depositReceipt: (v) => ({
     subject: `Your room is secured \u2014 ${v.property} \u{1F512}`,
     body: `Hi ${v.name}, we received your refundable security deposit of ${v.amount} \u2014 your room (${v.room}) at ${v.property} is now secured and held for you. The deposit is returned at the end of your lease per the agreement.
 
-One last step to activate your lease: upload a photo of your driver's license from your portal so we can verify your identity. Once we approve it, your lease goes active and your first week's rent is charged. Upload here: ${v.portalUrl}`
+One last step to activate your lease: upload a photo of your driver's license from your portal so we can verify your identity. Once we approve it, your lease goes active and your first rent payment is charged. Upload here: ${v.portalUrl}`
   }),
   // --- Short-stay bookings (no lease: STR nightly, or a 7–28-night co-living stay) ---
   bookingConfirmed: (v) => ({
@@ -2808,9 +2906,6 @@ One last step to activate your lease: upload a photo of your driver's license fr
     body: `Hi ${v.name}, your lease at ${v.property} ends on ${v.end} (${v.days} days away). If you'd like to renew or extend, reply or reach out through your portal: ${v.portalUrl}. We'd love to have you stay.`
   })
 };
-function portalUrl(lease) {
-  return lease.portalToken ? `${publicBaseUrl2()}/portal/${lease.portalToken}` : `${publicBaseUrl2()}/lookup`;
-}
 async function onPaymentReceived(args) {
   const { lease, property, guest, scheduleRow } = args;
   if (await storage.hasLifecycleEvent({ leaseId: lease.id }, "PAYMENT_RECEIPT", scheduleRow.scheduleSeq)) return;
@@ -2818,13 +2913,15 @@ async function onPaymentReceived(args) {
     name: guest.name,
     amount: fmtMoney(parseFloat(scheduleRow.amount)),
     seq: scheduleRow.scheduleSeq,
-    property: property.name
+    property: property.name,
+    portalUrl: portalUrl(lease)
   });
   const sent = await notifyGuest({
     email: guest.email,
     phone: guest.phone,
     subject: tpl.subject,
     body: tpl.body,
+    smsBody: tpl.smsBody,
     context: { leaseId: lease.id, guestId: guest.id, kind: "PAYMENT_RECEIPT" }
   });
   await storage.recordLifecycleEvent({
@@ -2874,9 +2971,6 @@ async function runLeaseEndingNotices(today = ymd(/* @__PURE__ */ new Date())) {
   }
   if (sent > 0) log(`lifecycle: ${sent} lease-ending notice(s) sent`, "scheduler");
   return sent;
-}
-function publicBaseUrl2() {
-  return process.env.PUBLIC_BASE_URL || "https://www.beniceproperties.com";
 }
 
 // server/lib/leasePayments.ts
@@ -3360,6 +3454,124 @@ async function syncRoomOccupancyStatus(today = todayIso()) {
   return { occupied, available, changed };
 }
 
+// server/lib/leaseHolds.ts
+init_dates();
+init_schema();
+init_storage();
+var ABANDONED_HOURS = 24;
+var SETTLED = /* @__PURE__ */ new Set(["PAID", "WAIVED"]);
+async function runLeaseHoldExpiry(opts = {}) {
+  const now = opts.now ?? /* @__PURE__ */ new Date();
+  const today = opts.today ?? todayIso();
+  const result = { movedIn: 0, abandoned: 0, nudged: 0 };
+  const leases2 = await storage.getActiveLeasesWithGuest();
+  for (const lease of leases2) {
+    const depositPaid = lease.depositStatus === "PAID";
+    if (depositPaid) {
+      await handleDepositedLease(lease, today, result);
+      continue;
+    }
+    if (!CHECKOUT_HOLD_LEASE_STATUSES.includes(lease.status)) continue;
+    const createdAt = lease.createdAt ? new Date(lease.createdAt) : null;
+    if (!createdAt) continue;
+    const ageHours = (now.getTime() - createdAt.getTime()) / 36e5;
+    if (ageHours < ABANDONED_HOURS) continue;
+    if (lease.cleaningFeeStatus === "PAID") continue;
+    if (await anyInstallmentSettled(lease.id)) continue;
+    await release(lease, "abandoned before any payment was made");
+    result.abandoned += 1;
+  }
+  if (result.movedIn || result.abandoned || result.nudged) {
+    log(
+      `hold expiry: ${result.movedIn} released at move-in, ${result.abandoned} abandoned, ${result.nudged} nudged`,
+      "scheduler"
+    );
+  }
+  return result;
+}
+async function handleDepositedLease(lease, today, result) {
+  if (lease.status === "DEFAULTED" || lease.status === "TERMINATED") return;
+  const schedule = await storage.getScheduleByLease(lease.id);
+  const first = schedule.find((s) => s.scheduleSeq === 1);
+  if (!first || SETTLED.has(first.status)) return;
+  if (today === lease.startDate) {
+    if (await storage.hasLifecycleEvent({ leaseId: lease.id }, "FIRST_PAYMENT_REMINDER", null)) {
+      return;
+    }
+    const sent = await notifyGuest({
+      email: lease.guest.email,
+      phone: lease.guest.phone,
+      context: { leaseId: lease.id, guestId: lease.guest.id, kind: "FIRST_PAYMENT_REMINDER" },
+      subject: "Today is move-in \u2014 your first rent payment is due",
+      body: `Hi ${lease.guest.name}, welcome \u2014 today is your move-in date. Your first rent payment of $${first.amount} is due today to keep your room.
+
+Pay by card, or by CashApp/Zelle: ${portalUrl(lease)}
+
+If it isn't paid by the end of today the room goes back on the market. Your deposit is not forfeited automatically \u2014 reply to this email and we'll sort it out with you.`,
+      smsBody: `BNP: move-in day. First rent $${first.amount} is due today to keep your room. Pay: ${portalUrl(lease)}`
+    });
+    await storage.recordLifecycleEvent({
+      leaseId: lease.id,
+      eventType: "FIRST_PAYMENT_REMINDER",
+      scheduleSeq: null,
+      status: sent.email.sent || sent.sms.sent ? "SENT" : "SKIPPED",
+      emailSent: sent.email.sent,
+      smsSent: sent.sms.sent
+    });
+    result.nudged += 1;
+    return;
+  }
+  if (today <= lease.startDate) return;
+  if (first.paymentMethod === "MANUAL") {
+    await storage.raiseEscalationOnce({
+      leaseId: lease.id,
+      scheduleSeq: 1,
+      kind: "PAYMENT_OVERDUE",
+      severity: "HIGH",
+      detail: `Move-in was ${lease.startDate} and installment #1 (manual CashApp/Zelle) is still unpaid. Hold NOT auto-released \u2014 confirm the payment with Mark Paid, or terminate the lease by hand to free the room.`
+    });
+    return;
+  }
+  await release(lease, `first payment not received by the move-in date (${lease.startDate})`);
+  result.movedIn += 1;
+}
+async function anyInstallmentSettled(leaseId) {
+  const schedule = await storage.getScheduleByLease(leaseId);
+  return schedule.some((s) => SETTLED.has(s.status));
+}
+async function release(lease, reason) {
+  if (await storage.hasLifecycleEvent({ leaseId: lease.id }, "LEASE_HOLD_RELEASED", null)) return;
+  await storage.updateLease(lease.id, { status: "TERMINATED" });
+  log(`lease ${lease.id} hold released \u2014 ${reason}`, "scheduler");
+  const sent = await notifyGuest({
+    email: lease.guest.email,
+    phone: lease.guest.phone,
+    context: { leaseId: lease.id, guestId: lease.guest.id, kind: "LEASE_HOLD_RELEASED" },
+    subject: `Your reservation at ${lease.property.name} has been released`,
+    body: `Hi ${lease.guest.name}, we've released the hold on your room at ${lease.property.name} because the ${reason}.
+
+The room is back on the market. If you still want it, you can rebook here: ${publicBaseUrl()}/property/${lease.propertyId}
+
+If you believe this is a mistake \u2014 or you already paid \u2014 reply to this email right away and we'll get it sorted.`,
+    smsBody: `BNP: the hold on your room at ${lease.property.name} was released. Rebook: ${publicBaseUrl()}/property/${lease.propertyId}`
+  });
+  await notifyAdmin({
+    subject: `Hold released \u2014 ${lease.property.name} (${lease.guest.name})`,
+    body: `Lease ${lease.id} at ${lease.property.name} was TERMINATED and the room released: ${reason}. Guest: ${lease.guest.name} <${lease.guest.email}>. Term was ${lease.startDate} to ${lease.endDate}. Deposit status: ${lease.depositStatus ?? "none"} \u2014 NOT auto-refunded.`,
+    // Telegram is third-party: name only, never contact details.
+    telegramText: `Hold released: ${lease.property.name}, ${lease.guest.name}. ${reason}. Deposit ${lease.depositStatus ?? "none"} \u2014 refund decision pending.`,
+    context: { leaseId: lease.id, guestId: lease.guest.id, kind: "ESCALATION" }
+  });
+  await storage.recordLifecycleEvent({
+    leaseId: lease.id,
+    eventType: "LEASE_HOLD_RELEASED",
+    scheduleSeq: null,
+    status: sent.email.sent || sent.sms.sent ? "SENT" : "SKIPPED",
+    emailSent: sent.email.sent,
+    smsSent: sent.sms.sent
+  });
+}
+
 // api-src/cron/sweep.ts
 async function handler(req, res) {
   const secret2 = process.env.CRON_SECRET;
@@ -3368,6 +3580,11 @@ async function handler(req, res) {
   }
   try {
     const calendar = await refreshExternalCalendars();
+    try {
+      await runLeaseHoldExpiry();
+    } catch (err) {
+      log(`lease hold expiry failed: ${err.message}`, "cron");
+    }
     let occupancy;
     try {
       occupancy = await syncRoomOccupancyStatus();

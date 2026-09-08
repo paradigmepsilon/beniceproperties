@@ -13,6 +13,7 @@ const mockStorage = vi.hoisted(() => ({
   getGuest: vi.fn(),
   updateScheduleRow: vi.fn(),
   getSettingNumber: vi.fn(),
+  getSetting: vi.fn(),
   hasNotification: vi.fn(),
   recordNotification: vi.fn(),
   accrueLateFeeOnce: vi.fn(),
@@ -52,6 +53,7 @@ beforeEach(() => {
   mockStorage.getLeaseRooms.mockResolvedValue(ROOMS);
   mockStorage.getGuest.mockResolvedValue({ id: "g1", name: "Jane", email: "j@x.com", phone: "+15550000000" });
   mockStorage.getSettingNumber.mockResolvedValue(7);
+  mockStorage.getSetting.mockResolvedValue(undefined);
   mockStorage.hasNotification.mockResolvedValue(false);
   mockStorage.recordNotification.mockResolvedValue({});
   mockStorage.raiseEscalationOnce.mockResolvedValue(null);

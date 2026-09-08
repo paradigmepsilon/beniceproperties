@@ -23,6 +23,7 @@ import { notifyGuest, notifyAdmin } from "./notifications";
 import { LEASE_ENDING_NOTICE_DAYS, GUEST_AUTO_NOTIFICATIONS_SETTING } from "@shared/schema";
 import { log } from "../server-log";
 import type { Booking, Lease, Property, Room, Guest, PaymentScheduleRow } from "@shared/schema";
+import { lookupUrl, portalUrl } from "./publicUrl";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -49,12 +50,16 @@ const CONFLICT_ADMIN_NOTE = (status: string) =>
     : "";
 
 export const LIFECYCLE_TEMPLATES = {
-  welcome: (v: { name: string; property: string; start: string }) => ({
+  welcome: (v: { name: string; property: string; start: string; portalUrl: string }) => ({
     subject: `Welcome to ${v.property} 🎉`,
     body:
       `Hi ${v.name}, welcome! Your lease at ${v.property} is active and your move-in date is ` +
-      `${v.start}. We're glad to have you. Your full payment schedule and signed lease are in your ` +
-      `guest portal. Reach out anytime through the portal with questions or maintenance requests.`,
+      `${v.start}. We're glad to have you.\n\n` +
+      `Your guest portal — payment schedule, signed lease, every rent payment, and maintenance ` +
+      `requests — is here: ${v.portalUrl}\n\n` +
+      `Save that link. It is how you pay and how you reach us.`,
+    smsBody:
+      `BNP: welcome! Your lease is active (move-in ${v.start}). Save your portal link: ${v.portalUrl}`,
   }),
   scheduleRecap: (v: { name: string; total: string; rows: string; portalUrl: string }) => ({
     subject: "Your lease payment schedule",
@@ -69,11 +74,13 @@ export const LIFECYCLE_TEMPLATES = {
       `New lease activated at ${v.property}. Guest: ${v.guest}. Term: ${v.start} → ${v.end}. ` +
       `Total lease value: ${v.total}.`,
   }),
-  paymentReceipt: (v: { name: string; amount: string; seq: number; property: string }) => ({
+  paymentReceipt: (v: { name: string; amount: string; seq: number; property: string; portalUrl: string }) => ({
     subject: `Payment received — ${v.property}`,
     body:
       `Hi ${v.name}, we received your rent payment of ${v.amount} (installment #${v.seq}) for ` +
-      `${v.property}. Thank you! A record is available in your portal.`,
+      `${v.property}. Thank you!\n\n` +
+      `Your receipt and full payment schedule: ${v.portalUrl}`,
+    smsBody: `BNP: payment of ${v.amount} received (installment #${v.seq}). Thanks! ${v.portalUrl}`,
   }),
   depositReceipt: (v: { name: string; amount: string; property: string; room: string; portalUrl: string }) => ({
     subject: `Your room is secured — ${v.property} 🔒`,
@@ -83,7 +90,7 @@ export const LIFECYCLE_TEMPLATES = {
       `end of your lease per the agreement.\n\n` +
       `One last step to activate your lease: upload a photo of your driver's license from your portal ` +
       `so we can verify your identity. Once we approve it, your lease goes active and your first ` +
-      `week's rent is charged. Upload here: ${v.portalUrl}`,
+      `rent payment is charged. Upload here: ${v.portalUrl}`,
   }),
   // --- Short-stay bookings (no lease: STR nightly, or a 7–28-night co-living stay) ---
   bookingConfirmed: (v: {
@@ -129,10 +136,6 @@ export const LIFECYCLE_TEMPLATES = {
   }),
 };
 
-function portalUrl(lease: Lease): string {
-  return lease.portalToken ? `${publicBaseUrl()}/portal/${lease.portalToken}` : `${publicBaseUrl()}/lookup`;
-}
-
 // ---------------------------------------------------------------------------
 // Event: lease activated (called from finalizeFirstPayment)
 // ---------------------------------------------------------------------------
@@ -149,12 +152,18 @@ export async function onLeaseActivated(leaseId: string): Promise<void> {
 
   // Welcome (once).
   if (!(await storage.hasLifecycleEvent({ leaseId: lease.id }, "COLIVING_WELCOME", null))) {
-    const tpl = LIFECYCLE_TEMPLATES.welcome({ name: guest.name, property: property.name, start: lease.startDate });
+    const tpl = LIFECYCLE_TEMPLATES.welcome({
+      name: guest.name,
+      property: property.name,
+      start: lease.startDate,
+      portalUrl: portalUrl(lease),
+    });
     const sent = await notifyGuest({
       email: guest.email,
       phone: guest.phone,
       subject: tpl.subject,
       body: tpl.body,
+      smsBody: tpl.smsBody,
       context: { leaseId: lease.id, guestId: guest.id, kind: "COLIVING_WELCOME" },
     });
     await storage.recordLifecycleEvent({
@@ -242,12 +251,14 @@ export async function onPaymentReceived(args: {
     amount: fmtMoney(parseFloat(scheduleRow.amount)),
     seq: scheduleRow.scheduleSeq,
     property: property.name,
+    portalUrl: portalUrl(lease),
   });
   const sent = await notifyGuest({
     email: guest.email,
     phone: guest.phone,
     subject: tpl.subject,
     body: tpl.body,
+    smsBody: tpl.smsBody,
     context: { leaseId: lease.id, guestId: guest.id, kind: "PAYMENT_RECEIPT" },
   });
   await storage.recordLifecycleEvent({
@@ -311,7 +322,7 @@ export function roomDisplayName(room?: Room | null): string | null {
 
 /** Guest lookup page for a booking with no lease/portal token. */
 function bookingLookupUrl(): string {
-  return `${publicBaseUrl()}/lookup`;
+  return lookupUrl();
 }
 
 /**
@@ -475,9 +486,3 @@ export async function runLeaseEndingNotices(today: string = ymd(new Date())): Pr
   return sent;
 }
 
-function publicBaseUrl(): string {
-  return (
-    process.env.PUBLIC_BASE_URL ||
-    "https://www.beniceproperties.com"
-  );
-}

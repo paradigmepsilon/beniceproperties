@@ -133,6 +133,41 @@ describe("payInstallmentNow", () => {
   });
 });
 
+describe("payInstallmentNow — out of order", () => {
+  it("pays a LATER installment while an earlier one is still open", async () => {
+    // The owner asked for payment links on every upcoming installment. The
+    // server already allowed this; only the portal UI blocked it.
+    mockStorage.getScheduleByLease.mockResolvedValue([
+      { id: "r1", scheduleSeq: 1, dueDate: "2026-07-01", amount: "250", status: "LATE", paymentMethod: "CARD_ON_FILE" },
+      { id: "r3", scheduleSeq: 3, dueDate: "2026-07-15", amount: "250", status: "SCHEDULED", paymentMethod: "CARD_ON_FILE" },
+    ]);
+    const res = await payInstallmentNow(TOKEN, 3);
+    expect(res.paid).toBe(true);
+    // Shares the sweep's key, so a portal pay and the scheduler cannot double-charge.
+    expect(mockStripe.chargeSavedCard).toHaveBeenCalledWith(
+      expect.objectContaining({ idempotencyKey: "lease-rent-lease-1-seq-3" }),
+    );
+    // Paying #3 early does not mark #1 paid.
+    expect(mockStorage.updateScheduleRow).toHaveBeenCalledTimes(1);
+    expect(mockStorage.updateScheduleRow).toHaveBeenCalledWith("r3", expect.objectContaining({ status: "PAID" }));
+  });
+});
+
+describe("payInstallmentNow — lease status guard", () => {
+  it("refuses to charge a TERMINATED lease through a still-valid token", async () => {
+    // The portal UI used to expose a button only on the next-due row, which
+    // masked this. Now that any open row is payable, the guard must be real.
+    mockStorage.getLeaseByPortalToken.mockResolvedValue(lease({ status: "TERMINATED" }));
+    await expect(payInstallmentNow(TOKEN, 2)).rejects.toThrow(/closed/i);
+    expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("refuses to charge a COMPLETED lease", async () => {
+    mockStorage.getLeaseByPortalToken.mockResolvedValue(lease({ status: "COMPLETED" }));
+    await expect(payInstallmentNow(TOKEN, 2)).rejects.toThrow(/closed/i);
+  });
+});
+
 describe("electManualInstallment", () => {
   beforeEach(() => {
     mockStorage.getLeaseByPortalToken.mockResolvedValue(lease());

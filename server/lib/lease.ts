@@ -10,23 +10,19 @@
 // =============================================================================
 
 import {
-  generateTierSchedule,
+  generateCascadeSchedule,
   inclusiveDays,
   ScheduleError,
   type PaymentCadence,
 } from "@shared/leaseSchedule";
-import { chooseRate, RateError } from "@shared/rateSelection";
+import { combineLeaseRates, cascadeStayPrice, RateError } from "@shared/rateSelection";
 import type { LeaseQuoteResponse, LeaseScheduleLine } from "@shared/api-types";
-import { MAX_LEASE_DAYS, ROOM_UNBOOKABLE_STATUSES, allowedCadencesForTerm } from "@shared/schema";
+import { CADENCE_DAYS, MAX_LEASE_DAYS, ROOM_UNBOOKABLE_STATUSES, allowedCadencesForTerm } from "@shared/schema";
 import { storage } from "../storage";
 import { overlapsRange } from "./ranges";
 import type { Room } from "@shared/schema";
 
-const CADENCE_PERIOD_DAYS: Record<PaymentCadence, number> = {
-  WEEKLY: 7,
-  BIWEEKLY: 14,
-  MONTHLY: 28,
-};
+const roundMoney = (v: number) => Math.round(v * 100) / 100;
 
 /** Sum a per-room rate column across rooms; null if no room has it set. */
 function sumRate(rooms: Room[], pick: (r: Room) => string | null): number | null {
@@ -58,9 +54,10 @@ export interface LeaseQuoteInput {
   endDate: string;
   /**
    * Guest-selected billing cadence. Must be one of allowedCadencesForTerm(term).
+   * THIS PICKS THE RATE (owner rule 2026-09-08): weekly/biweekly bill at
+   * weekly_rent, monthly bills at monthly_rate (or 4 x weekly_rent when unset).
    * Optional here: if omitted we default to the first (shortest) allowed cadence,
-   * so a preview always renders. The rate TIER (amount per period) is independent
-   * of this — cadence only controls how often the guest is billed.
+   * so a preview always renders.
    */
   cadence?: PaymentCadence;
 }
@@ -141,59 +138,66 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
   // overlap guard runs at commit time in storage.createLease(), where a room is
   // actually taken.
 
-  // Combined per-tier rates across rooms (supports rooms with different rents).
-  // weekly falls back from room.weekly_rent (always set); daily/monthly are the
-  // new optional tiers.
+  // The rooms' combined weekly LIST rate. Surfaced on the quote as a room
+  // attribute — it is NOT necessarily what the guest is billed (see cadence
+  // below). rooms.daily_rate is never consulted on the lease path.
   const weeklyRateTotal = sumRate(rooms, (r) => r.weeklyRent) ?? 0;
-  const dailyTotal = sumRate(rooms, (r) => r.dailyRate);
-  const monthlyTotal = sumRate(rooms, (r) => r.monthlyRate);
   // Refundable security deposit that secures the room(s). Sum across rooms.
   const depositTotal = sumRate(rooms, (r) => r.depositAmount) ?? 0;
   // One-time cleaning fee (non-refundable). Sum across rooms. Charged at move-in
   // as its own PaymentIntent — NOT part of the recurring installment schedule.
   const cleaningFeeTotal = sumRate(rooms, (r) => r.cleaningFee) ?? 0;
 
-  // The rate TIER sets the price per night (>=28 monthly, >=7 weekly, else daily),
-  // falling back to a shorter tier if the chosen one isn't priced. Independent of
-  // the billing cadence below.
-  let chosen;
-  try {
-    chosen = chooseRate({
-      nights: termDays,
-      daily: dailyTotal,
-      weekly: weeklyRateTotal,
-      monthly: monthlyTotal,
-    });
-  } catch (err) {
-    if (err instanceof RateError) throw new LeaseError(err.message, 422);
-    throw err;
-  }
-
-  // Billing cadence is the GUEST's choice, gated by term length. Validate the
-  // submitted cadence; default to the shortest allowed one when none is sent
-  // (so a preview always renders). This is separate from the rate tier above.
+  // Billing cadence is the GUEST's choice, gated by term length — and it is what
+  // SETS THE RATE (owner rule 2026-09-08), so resolve it BEFORE pricing. Reject
+  // an out-of-range cadence before defaulting, so an invalid request is never
+  // silently quoted at the default instead.
   const allowed = allowedCadencesForTerm(termDays);
-  const cadence: PaymentCadence =
-    input.cadence && allowed.includes(input.cadence) ? input.cadence : allowed[0];
   if (input.cadence && !allowed.includes(input.cadence)) {
     throw new LeaseError(
       `A ${input.cadence.toLowerCase()} schedule isn't available for a ${termDays}-day term`,
       422,
     );
   }
+  const cadence: PaymentCadence = input.cadence ?? allowed[0];
+
+  // Cadence -> rate. Each room's missing tier is derived from its OWN weekly rent
+  // before summing, so an unpriced room is never rented for free.
+  let rates;
   let generated;
+  let priced;
   try {
-    generated = generateTierSchedule({
+    rates = combineLeaseRates(
+      rooms.map((r) => ({
+        weeklyRent: r.weeklyRent,
+        dailyRate: r.dailyRate,
+        biweeklyRate: r.biweeklyRate,
+        monthlyRate: r.monthlyRate,
+      })),
+    );
+    // The stay bills as whole periods of the chosen cadence, then steps DOWN a
+    // tier for the remainder (owner rule 2026-09-08). No fractional days.
+    generated = generateCascadeSchedule({
       startDate: input.startDate,
       endDate: input.endDate,
       cadence,
-      effectiveNightly: chosen.effectiveNightly,
-      periodDays: CADENCE_PERIOD_DAYS[cadence],
+      rates,
+    });
+    priced = cascadeStayPrice({
+      days: generated.totalDays,
+      rates,
+      topTier: cadence,
     });
   } catch (err) {
+    if (err instanceof RateError) throw new LeaseError(err.message, 422);
     if (err instanceof ScheduleError) throw new LeaseError(err.message, 422);
     throw err;
   }
+  const head = priced.segments.find((seg) => seg.tier === cadence);
+  const rate = {
+    periodRate: roundMoney(head?.unitRate ?? generated.installments[0]?.amount ?? 0),
+    periodDays: head?.unitDays ?? CADENCE_DAYS[cadence],
+  };
 
   const schedule: LeaseScheduleLine[] = generated.installments.map((i) => ({
     seq: i.seq,
@@ -218,6 +222,8 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
     cadence,
     allowedCadences: allowed,
     weeklyRateTotal,
+    installmentAmount: rate.periodRate,
+    periodDays: rate.periodDays,
     depositTotal,
     cleaningFeeTotal,
     termDays: generated.totalDays,

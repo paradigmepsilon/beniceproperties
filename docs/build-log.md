@@ -3114,3 +3114,423 @@ nullable), indexes `booking_intents_pi_idx`, `booking_intents_email_idx`,
   where the cron runs, then deploy UO.
 
 MIGRATION-2026-09-06: COMPLETE — deconfliction + messaging + booking_intents live
+
+## 2026-09-06 — OWNER STEPS: Stripe events live, deploys verified, env partially set
+
+Executed what could be executed of the remaining owner steps from the
+2026-09-05 audit entry (steps 1, 3, 4). No code change.
+
+### Done
+
+- **Stripe webhook.** Endpoint `we_1Tn0QKCSfkiL9dJCsTlgaaqQ`
+  (`https://beniceproperties.vercel.app/api/stripe/webhook`, live mode) now also
+  subscribes to `payment_intent.succeeded` and `payment_intent.payment_failed`.
+  The previous five events were kept and the signing secret did not rotate, so
+  `STRIPE_WEBHOOK_SECRET` is unchanged. Re-read after the update confirmed both
+  events. The revenue-loss hole from the 2026-09-02 audit is closed for every
+  payment from this point on.
+- **BNP deployed.** Production is the git-integration deploy of `f353445`
+  (main, 17:13 ET; aliases www.beniceproperties.com + beniceproperties.vercel.app).
+  Verified live: `/api/health` ok (the app boots, so `SESSION_SECRET` is set in
+  Vercel Production — also confirmed in `vercel env ls`), `POST /api/bookings`
+  → 410, `GET /api/uo/properties` → 503 (route live, service token not yet
+  configured), unsigned `POST /api/stripe/webhook` → 400.
+- **UO deployed.** Production is the git-integration deploy of `7cadef2` (main,
+  17:06 ET). `prisma migrate status` reports the schema up to date (63
+  migrations, including `20260905000000_add_bnp_direct_booking_ops_task_source`).
+  `BNP_DATABASE_URL` is set in UO's Vercel Production, which is where
+  `/api/cron/ops-task-autogen` (every 15 min, `vercel.json`) runs; the route
+  answers 401 unauthenticated.
+- **Calendar sync.** The hourly cron ran on the new deployment at 17:17 ET:
+  7 listings, 7 ok, 0 failed, 9 external bookings created — the first rows
+  `external_bookings` has ever received. `ical_honor_host_blocks` and
+  `guest_auto_notifications` are both `true`.
+- **Env set (non-secret values only):** BNP Production `SMTP_HOST=smtp.gmail.com`,
+  `SMTP_PORT=465`; UO Production `BNP_API_URL=https://www.beniceproperties.com`.
+
+### Still pending (owner)
+
+The agent session was blocked by the workspace's secret-handling rules from
+reading or copying secret values and from running production-write scripts.
+
+- BNP Production secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`,
+  `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER`, `SMTP_USER`,
+  `SMTP_PASS`, `MAIL_FROM`, `ADMIN_NOTIFY_EMAIL`, plus the shared service token
+  `UO_BNP_API_TOKEN` (BNP) = `BNP_API_TOKEN` (UO). Until these land, admin alerts
+  and guest email/SMS stay dry-run (recorded in `message_log`) and UO's
+  management actions show the "Connect BNP API" notice.
+- `node scripts/materialize-lost-bookings.mjs --confirm` — both bookings were
+  still MISSING on a read-only check today: BNP-5F2B-WNJM (08-31 → 09-07) and
+  BNP-BGFK-W3FL (09-02 → 09-09). Their rooms are NOT blocked for the remaining
+  nights until this runs.
+- After the secrets land: `vercel redeploy <latest production URL>` for both
+  projects — env is read at deploy time.
+
+OWNER-STEPS-2026-09-06: PARTIAL — Stripe events + deploys done; secrets + materialize pending
+
+## 2026-09-07 — BUGFIX: co-living booking dead end (guest could not pick a move-out)
+
+Triggered by a guest report of "issues booking through the website". Reproduced,
+root-caused, and fixed a hard dead end in the co-living booking flow.
+
+### Symptom (reproduced on production before any change)
+
+On `/room/:id`, a guest picks a move-in date and the ENTIRE calendar goes grey —
+zero selectable days — while the CTA stays disabled reading "Select your dates".
+No error, no hint, no way forward. The site looks broken.
+
+### Root cause
+
+Not a data or server bug — the server was correct throughout. It is the picker's
+month window:
+
+- `DateRangePicker` rendered `numberOfMonths={1}` with only `defaultMonth`, which
+  sets the INITIAL month and never moves afterwards.
+- react-day-picker's `min={COLIVING_MIN_DAYS + 1}` correctly disables every day
+  inside the 7-night floor after the chosen check-in.
+- So a move-in late in a month puts every selectable move-out in the NEXT month,
+  which was off-screen with no auto-advance and no minimum-stay copy (the
+  existing `isBelowMin` hint only renders once BOTH dates are set, so the
+  half-picked state said nothing at all).
+
+Live worked example — Hutchens "Cozy Oasis" (`01c8b846…`), the $300/wk room on
+the homepage card. It is booked through 2026-09-29, so Sep 29 is the first
+selectable move-in. Sep 29 + 7 nights = Oct 6. September then rendered with 30/30
+days disabled and October was not on screen. Verified against production:
+picking Sep 29 left **0** enabled days.
+
+### Fixed
+
+- `client/src/lib/availability.ts` — new pure `earliestValidCheckout(checkIn,
+  minNights, busy, halfOpen)`. Returns the first move-out that satisfies both the
+  product minimum and the room's bookings, or `null` when the minimum stay runs
+  straight into the next booking (extending a checkout only adds nights, so if
+  the shortest allowed stay collides, every longer one does too).
+- `client/src/components/date-range-picker.tsx` — the displayed month is now
+  CONTROLLED. Once a check-in is set and a move-out is pending, the calendar
+  advances so the earliest selectable move-out is on screen. Also renders two
+  months at ≥640px (one on phones, mobile-first preserved), which covers the
+  common case without any jump.
+- `client/src/pages/room-detail.tsx` — new half-picked hint: "7-night minimum —
+  pick a move-out on or after Oct 6", or, when no stay fits, "This room is booked
+  again too soon after that date to fit a 7-night stay. Try an earlier move-in."
+
+### Tests + verification
+
+- `client/src/lib/availability.test.ts` — 6 new cases (month-boundary case, the
+  live Hutchens range, the null collision case, the half-open boundary where a
+  stay ends exactly when the next booking starts, the STR no-minimum case,
+  empty check-in). Written failing first (TypeError: not a function), then green.
+- `npx vitest run` — **529 passed, 47 files, 0 failed.**
+- `npx tsc --noEmit` — clean.
+- `npm run build` — succeeds (42/42 routes prerendered, dist/index.js 344.6kb).
+- Browser verification against a local server on the same live data, replaying
+  the exact failing path (`/room/01c8b846…`, pick Sep 29):
+  - before: 1 month shown, **0** selectable days, no hint, CTA dead.
+  - after: 2 months shown, **26** selectable days (Oct 6–31), hint reads
+    "7-night minimum — pick a move-out on or after Oct 6."
+  - completing Sep 29 → Oct 6 yields "Short stay (7 nights)", stay total $300.00,
+    CTA **enabled** at "Continue to checkout".
+  - STR regression check (`/property/88423aa4…`, no minimum): picking Sep 30 —
+    worst case, last day of the month — keeps 56 days selectable, no stray jump.
+  - 0 console errors across the session.
+
+Stopped short of clicking into `/checkout`: this env carries **live** Stripe keys
+(`pk_live_…`) and the checkout page auto-creates a PaymentIntent on mount, which
+NON-NEGOTIABLE FLOOR #2 forbids. The `/api/quote` leg was proven separately by
+read-only production probes.
+
+### Found but NOT changed — needs an owner decision
+
+The homepage card for HUTCHENS HOME reads "Available — from $300.00 / week" while
+all three of its rooms are status OCCUPIED. This is by design: `/api/properties`
+prices from `isRoomBookableStatus`, which deliberately counts OCCUPIED rooms
+(an occupied room with a free future range is still reservable). The effect is
+that the cheapest advertised rate can belong to a room with no near-term
+availability. Changing that is a merchandising call, not a bug fix — flagged to
+Alex rather than changed unilaterally.
+
+BUGFIX-2026-09-07: COMPLETE — tests green
+
+---
+
+## 2026-09-08 — Cadence-driven lease rates + deposit-gated room holds
+
+Two owner corrections, both surfaced while answering "how does a 90-day stay paid
+weekly get handled?"
+
+### Decision 1 — the guest's billing cadence now PICKS THE RATE (reversal)
+
+Previously the rate tier came from *stay length* (`chooseRate({nights: termDays})`)
+and total lease value was invariant to cadence — the booking page even said so
+("Your rate is the same; this only changes how often you're billed"). Owner rule:
+pick weekly, pay the weekly rate; pick monthly, get the monthly rate.
+
+    WEEKLY   -> weekly_rent,   periodDays 7   -> nightly = weekly / 7
+    BIWEEKLY -> 2 x weekly,    periodDays 14  -> nightly = weekly / 7
+    MONTHLY  -> monthly_rate,  periodDays 28  -> nightly = monthly / 28
+                monthly_rate unset -> 4 x weekly (price-neutral fallback)
+
+New `chooseLeaseRate()` in `shared/rateSelection.ts`, beside an **untouched**
+`chooseRate` (still serving STR and the 7–28 night co-living short stay). The
+DAILY tier no longer exists on the lease path. Term ceiling stays MAX_LEASE_DAYS
+= 90 **inclusive days** (= 89 nights); the client copy that promised "7 to 90
+nights" was the bug and was corrected, not the ceiling.
+
+Fixed alongside, because the change made each one load-bearing:
+- **Multi-room money bug.** `sumRate` skipped rooms with a null monthly_rate, so
+  a 2-room lease where only Room A had one priced *both* rooms off Room A —
+  Room B's rent silently vanished. The fallback is now applied per room.
+- **The signed lease document misstated the rent.** Clause 3 printed the weekly
+  list rate "per week" regardless of cadence. It now states the real installment
+  and its period.
+- Clause 3 also claimed the first payment "includes the one-time cleaning fee"
+  while clause 4 (and the code) said move-in charges are separate. Contradiction
+  in a signed contract, removed.
+- `signLease` hardcoded `prorated: false`, so the **signed** document never
+  marked the prorated tail even though the review render did.
+
+### Decision 2 — a room is only held once a deposit is paid
+
+Previously a lease blocked its room from row creation (`PENDING_SIGNATURE`),
+before signature and before any money, and **nothing ever released it** — an
+abandoned checkout could kill a room for the full 90-day term. Owner rule: hold
+starts at deposit; the first rent payment must land by the first day of the
+reservation or the hold and room are released; the deposit itself stays held
+until the reservation ends.
+
+`leaseHoldsRoom()` in `shared/schema.ts` is the single source of truth, mirrored
+in SQL by `roomHoldingLeaseCondition()` in `server/storage.ts`:
+- deposit PAID + status PENDING_VERIFICATION/ACTIVE -> held for the term
+- unpaid + inside a 30-minute checkout window -> held (so a guest cannot lose
+  the room mid-Stripe-flow); after that, not held
+
+New `server/lib/leaseHolds.ts` (`runLeaseHoldExpiry`), wired into the daily
+sweep cron, the hourly calendar cron, and the local scheduler:
+- **Move-in release** — deposit paid but seq 1 unpaid once `today > start_date`.
+  Deliberately the day AFTER, not the day of: the cron runs 08:00 UTC = 4am ET,
+  and the guest is owed their whole move-in day. A nudge goes out on the day.
+- **Abandoned-row hygiene** — unpaid rows older than 24h.
+- **Never auto-terminates a CashApp/Zelle guest**: their money may already be
+  sent with only UO's Mark Paid outstanding, so that case escalates to a human.
+- Nothing here moves money. A deposit on a released lease is **not** auto-refunded.
+
+New race this opens, guarded: with no long pre-deposit hold, a room can be taken
+while a deposit is in flight. `finalizeDepositPayment` now re-checks availability
+before occupying; on conflict it records the money, does **not** occupy, and
+raises a HIGH escalation for a manual refund decision.
+
+### Payment links (the other half of the owner's ask)
+
+Not one reminder, overdue notice or default notice contained a URL — the overdue
+message said "please pay as soon as possible" with no mechanism. The single link
+that did exist (PAYMENT_FAILED -> `/lease/pay`) POSTed the deposit endpoint,
+which 409s on an ACTIVE lease, the only status a charge failure can occur on;
+the guest saw a raw error string.
+
+- Portal link added to REMINDER_7D/_3D/_DUE, OVERDUE_1..3, DEFAULTED,
+  PAYMENT_RECEIPT, COLIVING_WELCOME; PAYMENT_FAILED repointed at the portal.
+- `server/lib/publicUrl.ts` replaces five duplicate `publicBaseUrl()` copies,
+  adds trailing-slash normalization and a Vercel-preview branch (preview deploys
+  were emailing guests links to production). `PUBLIC_BASE_URL` documented in
+  `.env.example`, where it was missing entirely.
+- `textToHtml()` — the email fallback was `<p>${text}</p>`, which shipped links
+  as unclickable text and interpolated unescaped guest names and admin prose
+  into HTML. Escapes first, then linkifies.
+- `notifyGuest` takes an optional `smsBody`; every SMS is ASCII and <= 160 chars
+  (one GSM-7 segment). SMS links sit behind an `sms_include_links` kill switch
+  (default on) because US carriers filter link-bearing SMS from numbers without
+  a registered A2P 10DLC campaign.
+- Reminders now say "plus a 3.5% card processing fee" — they quoted base rent
+  while the card was charged `chargeTotalFor` (+3.5%).
+- Portal: any OPEN installment is payable, not just the next due one (the server
+  always allowed it; only the UI blocked it). Future rows read "Pay early".
+  Added the missing `COMPLETED`/`TERMINATED` guard in `payInstallmentNow` — a
+  closed lease was chargeable through a still-valid token.
+
+### Verified
+
+- `npx tsc --noEmit` clean.
+- `npx vitest run` — **51 files, 587 tests, all passing** (was 47/529).
+- `npm run build` (42/42 routes prerendered) and `npm run build:api`; `api/*.js`
+  regenerated and committed. NOTE: the `check:api` guard referenced in
+  `scripts/build-api.mjs` does not exist in package.json — nothing catches a
+  stale bundle, so this must be done by hand.
+- Live read-only quotes against production data (dev server :3007, no writes):
+  all three cadences render; BIWEEKLY correctly locked below an 84-day term;
+  89 nights accepted, 90 nights rejected at the ceiling.
+- Visual browser check NOT run — the Playwright browser profile was locked by
+  another session. Copy changes were verified present/absent in the built bundle
+  instead.
+
+### Found but NOT changed — needs an owner decision
+
+**Every co-living room is priced at monthly = exactly 4 x weekly**, so the new
+cadence-driven rate currently produces *no* price difference:
+
+    HUTCHENS  Cozy Oasis    wk 300  mo 1200   42.86/night either way
+    HUTCHENS  Interns       wk 325  mo 1300   46.43/night either way
+    HUTCHENS  Near ATL      wk 350  mo 1400   50.00/night either way
+    OBC       Near Airport  wk 325  mo 1300   46.43/night either way
+    OBC       Professionals wk 350  mo 1400   50.00/night either way
+    OBC       Comfy Private wk 300  mo 1200   42.86/night either way
+
+The mechanism is live and correct, but "pay monthly, get the monthly rate" means
+nothing to a guest until monthly rates are set BELOW 4 x weekly in the admin
+dashboard. Pricing is the owner's call, so nothing was changed.
+
+### Deferred — review-gated (CLAUDE.md Phases 4/5)
+
+Paying an installment with a NEW card via Stripe Elements, saved as the new
+default. There is no card-update path anywhere in the app today, so a declined
+card can only be worked around via CashApp/Zelle (which the failure message now
+says explicitly). ~200 lines. Two traps that earn the gate: the idempotency key
+`lease-rent-{id}-seq-{n}` is shared with the rent sweep, so reusing it returns
+the old failed PI and the guest can never retry; and without an `initiated_by`
+guard a typo in Elements fires `handleChargeFailure` — escalation plus a "your
+payment failed" SMS while the guest is looking at the form.
+
+CADENCE-RATES-2026-09-08: COMPLETE — tests green
+
+---
+
+## 2026-09-08 (later) — One cascade rule: whole months, then weeks, then days
+
+Owner correction to how a stay is priced when it doesn't divide evenly into the
+chosen cadence.
+
+> "if a guest is booking from Sep 15 to Nov 2, and chooses to pay monthly, after
+> the month, and there is not another month available, then the remaining time
+> should be charged at a weekly rate, then at a daily rate for the remainder."
+
+This replaces per-night proration everywhere. `cascadeStayPrice()` in
+`shared/rateSelection.ts` is now the single money path for ALL three flows —
+co-living leases, co-living short stays, and STR whole-property:
+
+    MONTHLY  -> months, then weeks, then days   (skips biweekly, per the rule)
+    BIWEEKLY -> biweeks, then weeks, then days
+    WEEKLY   -> weeks, then days
+
+**No fractional days anywhere.** Check-in is 4pm and checkout 11am, so every day
+in the range is one whole billable day; nothing is prorated by hours.
+
+### Schedule shape — one combined final payment
+
+Full periods at the chosen cadence each become their own installment; everything
+the cascade steps DOWN to collapses into ONE final payment. A guest who picked
+MONTHLY still makes monthly payments and never gets four charges in their last
+three weeks. Verified live (HUTCHENS Cozy Oasis, wk 300 / daily 43 / mo 1200,
+Sep 15 -> Nov 5 = 52 days):
+
+    MONTHLY   #1 Sep 15 $1,200.00 28d   #2 Oct 13 $1,029.00 24d  (3 weeks + 3 days)
+    BIWEEKLY  #1-#3 $600.00 14d each    #4 Oct 27 $  429.00 10d  (1 week + 3 days)
+    WEEKLY    #1-#7 $300.00  7d each    #8 Nov 03 $  129.00  3d  (3 days)
+
+All three total $2,229.00. The final payment's AMOUNT still cascades tier by
+tier — it is not a flat per-night slice.
+
+### Biweekly is now a real priced tier
+
+`biweekly_rate` added to `properties` and `rooms` (nullable; unset still falls
+back to 2 x weekly, so this is a no-op until a rate is entered). Admin dashboard
+gained a Biweekly field on both the property rate editor and the room editor, so
+all four tiers — daily / weekly / biweekly / monthly — are settable per STR
+property and per co-living room.
+
+`allowedCadencesForTerm` — biweekly moved from 84+ days to the month-plus
+bracket alongside monthly, so all three cadences are genuinely selectable:
+
+    7-27 days:  weekly only
+    28+ days:   weekly, biweekly, monthly
+
+NOTE: read "offer for any stay longer than 1 month" as the month-plus bracket
+(28+ inclusive days), matching where monthly already appears. Excluding biweekly
+at exactly 28 days would have let a guest pay monthly but not biweekly on the
+same term, which is incoherent. One-character change if the strict reading was
+intended.
+
+### STR now cascades too ("one rule everywhere")
+
+`strBaseTotal` no longer picks one tier and prorates per night. Real impact is
+small because Antiguan's tiers are near-proportional:
+
+    ANTIGUAN, 40 nights (daily 93 / weekly 650 / monthly 2600)
+      BEFORE  40 x (2600/28)                    = $3,714.29
+      AFTER   1 month + 1 week + 5 days         = $3,715.00   (+$0.71)
+
+**Weekday pricing interaction (behavior change, flagged):** per-weekday prices
+are DAILY-tier prices, so they now apply to the cascade's daily tail — a 10-night
+stay is 1 flat week + 3 weekday-priced nights, where previously the whole stay
+billed at the scalar weekly rate and weekday prices were ignored. A property that
+prices ONLY by weekday now has a priced daily tier via `averageWeekdayRate()`;
+before, such a property threw once the tail needed a rate.
+
+The co-living short stay (7-28 nights) also moved onto the cascade. At exactly 28
+nights it now bills one MONTH at the monthly rate rather than 4 weeks.
+
+### Code removed
+
+`chooseLeaseRate()` — added earlier the same day, superseded by the cascade
+within hours. Removed rather than left standing: two competing lease-rate
+functions is how a future pricing bug happens. `chooseRate`, `shortStayPrice`,
+`generateSchedule` and `generateTierSchedule` remain exported and tested but are
+no longer on the money path; `chooseRate` is now tier LOOKUP only.
+
+`PaymentCadence` moved from `shared/leaseSchedule.ts` to `shared/schema.ts` (its
+source of truth) so `leaseSchedule` can import a value from `rateSelection`
+without a runtime import cycle. `leaseSchedule` re-exports it for back-compat.
+
+### Verified
+
+- `npx tsc --noEmit` clean.
+- `npx vitest run` — **51 files, 593 tests, all passing.**
+- `npm run build` + `npm run build:api`; `api/*.js` regenerated.
+- **Production migration RUN** (owner-approved): `node scripts/push-biweekly-rate.mjs`
+  added `biweekly_rate` to properties + rooms. Additive, nullable, idempotent, no
+  backfill, no existing column or row touched. The app was hard-down against the
+  live DB between the schema edit and this migration — the code selects the
+  column, so `/api/properties` 500s until it exists. Sequence matters on deploy.
+- Live read-only quotes against production: all three cadences produce the
+  cascade above; `/api/properties` back to HTTP 200 post-migration.
+
+### Still open from the earlier entry
+
+Every co-living room is still priced at monthly = exactly 4 x weekly and daily
+~= weekly/7, so cadence choice barely moves the total today (52-day monthly vs
+weekly differ by $0.00 on Cozy Oasis). The machinery is correct and live; the
+prices are the owner's call. Biweekly rates are unset everywhere, so biweekly
+currently bills 2 x weekly.
+
+CASCADE-PRICING-2026-09-08: COMPLETE — tests green
+
+### Addendum — two owner decisions on the cascade (2026-09-08)
+
+**Price inversions are INTENTIONAL, not a bug to fix.** Once a real monthly
+discount exists, the greedy cascade makes some shorter stays cost more than
+longer ones. With the owner's proposed ladder (daily 55 / weekly 350 / biweekly
+700 / monthly 1300) there are six such windows in a 90-day range:
+
+    26d $1,325.00   27d $1,380.00   ->  28d $1,300.00
+    54d $2,625.00   55d $2,680.00   ->  56d $2,600.00
+    82d $3,925.00   83d $3,980.00   ->  84d $3,900.00
+
+Offered a cap (never charge more than a longer stay); owner declined — the
+inversion is the incentive to book the full period. Do NOT "fix" this later
+without asking. Possible future UX softener, NOT built: nudge the guest at
+26-27 / 54-55 / 82-83 days with "add 1 night and save $80".
+
+**Rates stay owner-managed.** No rate data was written. The admin dashboard is
+the surface: room editor now carries Weekly rent / Deposit / Cleaning fee /
+Daily / Biweekly / Monthly, and the STR property editor carries Nightly base /
+Cleaning fee / Daily / Weekly / Biweekly / Monthly. Verified
+`insertRoomSchema.partial()` and `insertPropertySchema.partial()` accept
+`biweeklyRate` (and accept null, so a rate can be cleared), and the fields are
+present in the built admin bundle. Not verified: a real end-to-end save, which
+would be a production data write.
+
+Sanity check of the owner's ladder through the real engine — the discount does
+flow through to totals with no code change needed:
+
+    30d  weekly $1,510.00  monthly $1,410.00   (saves $100)
+    60d  weekly $3,020.00  monthly $2,820.00   (saves $200)
+    90d  weekly $4,530.00  monthly $4,230.00   (saves $300)

@@ -29,14 +29,8 @@ import { activateVerifiedLease } from "./leasePayments";
 import { notifyGuest, notifyAdmin } from "./notifications";
 import { US_STATE_CODES, type Vehicle } from "@shared/schema";
 import { log } from "../server-log";
+import { portalUrl } from "./publicUrl";
 
-/** Public base URL for guest-facing links (mirrors dunning/lifecycle helper). */
-function publicBaseUrl(): string {
-  return (
-    process.env.PUBLIC_BASE_URL ||
-    "https://www.beniceproperties.com"
-  );
-}
 
 // Accepted upload types → file extension. Images plus PDF (licenses are often
 // scanned to PDF). Mirrors UO's whitelist; the client filename is never trusted.
@@ -327,9 +321,7 @@ export async function rejectVerification(
   try {
     const guest = await storage.getGuest(lease.guestId);
     if (guest) {
-      const link = lease.portalToken
-        ? `${publicBaseUrl()}/portal/${lease.portalToken}`
-        : `${publicBaseUrl()}/lookup`;
+      const link = portalUrl(lease);
       await notifyGuest({
         email: guest.email,
         phone: guest.phone,

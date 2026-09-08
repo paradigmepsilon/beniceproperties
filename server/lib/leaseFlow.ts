@@ -72,7 +72,7 @@ function docDataFrom(
     startDate: quote.startDate,
     endDate: quote.endDate,
     cadence: quote.cadence,
-    weeklyRateTotal: quote.weeklyRateTotal,
+    installmentAmount: quote.installmentAmount,
     totalLeaseValue: quote.totalLeaseValue,
     depositTotal: quote.depositTotal,
     cleaningFeeTotal: quote.cleaningFeeTotal,
@@ -216,6 +216,12 @@ export async function signLease(input: SignLeaseInput): Promise<SignLeaseResult>
   const schedule = await storage.getScheduleByLease(lease.id);
   if (!property || !guest) throw new LeaseError("Lease data incomplete", 500);
 
+  // The full-period installment, derived from the PERSISTED schedule rather than
+  // a snapshot column. buildSchedule() emits full periods first and prorates only
+  // the trailing tail, so row 1 is a full period for any term >= one period —
+  // true of every real lease (min 30 inclusive days vs. a max 28-day period).
+  const fullInstallment = parseFloat(schedule[0]?.amount ?? "0");
+
   const docData: LeaseDocData = {
     leaseId: lease.id,
     guestName: guest.name,
@@ -230,7 +236,7 @@ export async function signLease(input: SignLeaseInput): Promise<SignLeaseResult>
     startDate: lease.startDate,
     endDate: lease.endDate,
     cadence: lease.paymentCadence as LeaseDocData["cadence"],
-    weeklyRateTotal: parseFloat(lease.weeklyRateSnapshot),
+    installmentAmount: fullInstallment,
     totalLeaseValue: parseFloat(lease.totalLeaseValue),
     depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
     cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
@@ -239,7 +245,10 @@ export async function signLease(input: SignLeaseInput): Promise<SignLeaseResult>
       seq: s.scheduleSeq,
       dueDate: s.dueDate,
       amount: parseFloat(s.amount),
-      prorated: false,
+      // A row smaller than a full period IS the day-prorated tail. Previously
+      // hardcoded false, so the SIGNED doc never marked the tail even though the
+      // review render did.
+      prorated: parseFloat(s.amount) < fullInstallment,
     })),
   };
 

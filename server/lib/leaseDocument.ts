@@ -22,7 +22,7 @@
 // from the lease data passed in.
 // =============================================================================
 
-import { LATE_FEE_PER_DAY } from "@shared/schema";
+import { CADENCE_DAYS, LATE_FEE_PER_DAY } from "@shared/schema";
 
 export interface LeaseDocRoom {
   name: string;
@@ -47,7 +47,12 @@ export interface LeaseDocData {
   startDate: string;
   endDate: string;
   cadence: "WEEKLY" | "BIWEEKLY" | "MONTHLY";
-  weeklyRateTotal: number;
+  /**
+   * One FULL installment at `cadence` — what the Resident is actually charged.
+   * NOT the rooms' weekly list rate: since 2026-09-08 the guest's cadence picks
+   * the rate, so a monthly lease bills monthly_rate, not 4 x weekly_rent.
+   */
+  installmentAmount: number;
   totalLeaseValue: number;
   /** Refundable security deposit due at move-in (sum across rooms). */
   depositTotal: number;
@@ -97,11 +102,10 @@ export const DEFAULT_LEASE_TEMPLATE = {
     {
       heading: "3. Rent & Payment Schedule",
       body:
-        "Rent is billed on a {{cadenceLabel}} basis at a combined rate of " +
-        "{{weeklyRateLabel}} per week across all rented room(s). The first payment is due on " +
-        "the start date (move-in) and includes the one-time cleaning fee described below. The " +
-        "complete schedule of payments and amounts appears below; the total value of this lease " +
-        "is {{totalLeaseValue}}. {{prorationNote}}",
+        "Rent is billed on a {{cadenceLabel}} basis at {{installmentLabel}} per payment, each " +
+        "payment covering {{periodDaysLabel}} days across all rented room(s). The first payment " +
+        "is due on the start date (move-in). The complete schedule of payments and amounts " +
+        "appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}",
     },
     {
       heading: "4. Move-in Charges (Deposit & Cleaning Fee)",
@@ -178,7 +182,8 @@ function tokenMap(data: LeaseDocData): Record<string, string> {
     endDate: data.endDate,
     termDays: String(inclusiveDays(data.startDate, data.endDate)),
     cadenceLabel: CADENCE_LABEL[data.cadence],
-    weeklyRateLabel: fmtMoney(data.weeklyRateTotal),
+    installmentLabel: fmtMoney(data.installmentAmount),
+    periodDaysLabel: String(CADENCE_DAYS[data.cadence]),
     totalLeaseValue: fmtMoney(data.totalLeaseValue),
     depositTotal: fmtMoney(data.depositTotal),
     // Only state a cleaning fee when one applies; it is non-refundable.

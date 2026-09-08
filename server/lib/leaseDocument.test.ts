@@ -21,7 +21,7 @@ const DATA: LeaseDocData = {
   startDate: "2026-07-01",
   endDate: "2026-07-28",
   cadence: "WEEKLY",
-  weeklyRateTotal: 260,
+  installmentAmount: 260,
   totalLeaseValue: 1040,
   depositTotal: 260,
   cleaningFeeTotal: 75,
@@ -106,5 +106,38 @@ describe("renderSignedLeaseHtml", () => {
     expect(html).not.toContain("<script>x</script>");
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("A &amp; B &lt;b&gt;");
+  });
+});
+
+describe("the rent clause states what the Resident is actually charged", () => {
+  it("WEEKLY: the installment and its 7-day period", () => {
+    const html = renderLeaseHtml(DATA);
+    expect(html).toContain("$260.00 per payment");
+    expect(html).toContain("covering 7 days");
+    expect(html).toContain("weekly basis");
+  });
+
+  it("MONTHLY: bills the monthly amount over 28 days and never says 'per week'", () => {
+    // The regression guard for the legal-text bug: before 2026-09-08 this clause
+    // printed the weekly list rate "per week" regardless of cadence.
+    const html = renderLeaseHtml({
+      ...DATA,
+      cadence: "MONTHLY",
+      installmentAmount: 2100,
+      totalLeaseValue: 2100,
+      schedule: [{ seq: 1, dueDate: "2026-07-01", amount: 2100, prorated: false }],
+    });
+    expect(html).toContain("$2,100.00 per payment");
+    expect(html).toContain("covering 28 days");
+    expect(html).not.toContain("per week");
+    expect(html).not.toContain("{{");
+  });
+
+  it("no longer claims the first payment includes the cleaning fee", () => {
+    // Clause 4 (and the code — the fee is its own CLEANING_FEE PaymentIntent)
+    // says move-in charges are separate. Clause 3 used to contradict it.
+    const html = renderLeaseHtml(DATA);
+    expect(html).not.toMatch(/first payment[^.]*includes the one-time cleaning fee/i);
+    expect(html).toContain("separate from rent");
   });
 });

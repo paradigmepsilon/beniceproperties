@@ -15,6 +15,8 @@ const mockStorage = vi.hoisted(() => ({
   getProperty: vi.fn(),
   getRoom: vi.fn(),
   getLeaseRooms: vi.fn(),
+  isRoomAvailableForRange: vi.fn(),
+  raiseEscalationOnce: vi.fn(),
   getScheduleByLease: vi.fn(),
   getGuest: vi.fn(),
   updateLease: vi.fn(),
@@ -80,6 +82,9 @@ function schedRow(seq: number, overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Rooms are free unless a test says otherwise (deposit-race guard).
+  mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+  mockStorage.raiseEscalationOnce.mockResolvedValue({ id: "esc-1" });
 });
 
 describe("startFirstPayment", () => {
@@ -273,6 +278,32 @@ describe("finalizeDepositPayment", () => {
     await finalizeDepositPayment("pi_dep_1");
     expect(mockStorage.updateRoom).not.toHaveBeenCalled();
     expect(mockStripe.chargeSavedCard).not.toHaveBeenCalled();
+  });
+
+  it("does NOT occupy a room that was taken first — escalates, never auto-refunds", async () => {
+    // An unpaid lease only holds its room for a short checkout window now, so a
+    // deposit can land on a room somebody else already secured. Silently marking
+    // it OCCUPIED for two guests would be a double-booking.
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(false);
+    mockStorage.getLeases.mockResolvedValue([
+      lease({ depositStatus: "PENDING", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
+    ]);
+    mockStorage.getLease.mockResolvedValue(
+      lease({ depositStatus: "PAID", depositStripePaymentIntentId: "pi_dep_1", stripeCustomerId: "cus_123" }),
+    );
+
+    await finalizeDepositPayment("pi_dep_1");
+
+    // The money was taken, so it is still recorded against the lease.
+    expect(mockStorage.updateLease).toHaveBeenCalledWith(
+      "lease-1",
+      expect.objectContaining({ depositStatus: "PAID" }),
+    );
+    // ...but the room is NOT handed to this guest.
+    expect(mockStorage.updateRoom).not.toHaveBeenCalled();
+    expect(mockStorage.raiseEscalationOnce).toHaveBeenCalledWith(
+      expect.objectContaining({ severity: "HIGH" }),
+    );
   });
 
   it("does NOT charge the cleaning fee at deposit time (it is a move-in charge)", async () => {

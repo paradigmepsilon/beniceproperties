@@ -90,6 +90,7 @@ export const PROPERTY_ENTITIES = ["TRAD", "BNP"] as const;
 // =============================================================================
 
 export const PAYMENT_CADENCES = ["WEEKLY", "BIWEEKLY", "MONTHLY"] as const;
+export type PaymentCadence = (typeof PAYMENT_CADENCES)[number];
 export const LEASE_STATUSES = [
   "DRAFT", // created, not yet signed
   "PENDING_SIGNATURE", // presented to guest for signature
@@ -150,23 +151,78 @@ export const CADENCE_DAYS: Record<(typeof PAYMENT_CADENCES)[number], number> = {
 /** Hard ceiling on a co-living lease term (spec: ≤ 90 days). */
 export const MAX_LEASE_DAYS = 90;
 
+// ---------------------------------------------------------------------------
+// Which leases HOLD a room (owner rule, 2026-09-08)
+//
+// "A room should only be on hold if a deposit was made." Before this, a lease
+// blocked its room from the instant the row was created — before signature and
+// before any money — and nothing ever released it, so an abandoned checkout
+// could kill a room for the full 90-day term.
+//
+// Two ways a lease holds a room now:
+//   1. DEPOSIT PAID — the real, business hold. Lasts the term.
+//   2. CHECKOUT WINDOW — a short technical hold from lease creation so a guest
+//      cannot lose the room mid-Stripe-flow. Not a business hold.
+//
+// Terminal statuses (COMPLETED / TERMINATED / DEFAULTED) never hold.
+// ---------------------------------------------------------------------------
+
+/** Post-deposit statuses: the room is genuinely secured for the whole term. */
+export const DEPOSIT_HELD_LEASE_STATUSES = ["PENDING_VERIFICATION", "ACTIVE"] as const;
+
+/** Pre-deposit statuses: hold the room only inside the checkout window. */
+export const CHECKOUT_HOLD_LEASE_STATUSES = [
+  "DRAFT",
+  "PENDING_SIGNATURE",
+  "PENDING_FIRST_PAYMENT",
+] as const;
+
+/** How long an unpaid lease keeps its room while the guest completes checkout. */
+export const CHECKOUT_HOLD_MINUTES = 30;
+
+/**
+ * True when this lease currently holds its room(s). ONE source of truth, shared
+ * by the availability query, the calendar feed, and the hold-release job —
+ * restating this rule anywhere else is how a room gets released while still
+ * blocking, or blocks after being released.
+ */
+export function leaseHoldsRoom(
+  lease: { status: string; depositStatus?: string | null; createdAt?: Date | string | null },
+  now: Date = new Date(),
+): boolean {
+  if (
+    lease.depositStatus === "PAID" &&
+    (DEPOSIT_HELD_LEASE_STATUSES as readonly string[]).includes(lease.status)
+  ) {
+    return true;
+  }
+  if (!(CHECKOUT_HOLD_LEASE_STATUSES as readonly string[]).includes(lease.status)) return false;
+  if (!lease.createdAt) return false;
+  const created = lease.createdAt instanceof Date ? lease.createdAt : new Date(lease.createdAt);
+  return now.getTime() - created.getTime() < CHECKOUT_HOLD_MINUTES * 60_000;
+}
+
 /**
  * Which billing cadences a guest may choose, gated by term length (owner rule).
- * The rate TIER (amount per period) is still chosen by stay length elsewhere;
- * this only governs how OFTEN the guest is billed. One source of truth — imported
- * by the client (to render options) and the server (to validate the submission).
+ * The chosen cadence also PICKS THE RATE (owner rule 2026-09-08): weekly and
+ * biweekly bill weekly_rent, monthly bills monthly_rate (or 4 x weekly_rent when
+ * unset). See chooseLeaseRate() in shared/rateSelection.ts. One source of truth —
+ * imported by the client (to render options) and the server (to validate).
  *
- *   1 week  to < 1 month  (7–27 days):  weekly only
- *   1 month to < 3 months (28–83 days): weekly, or monthly (pay the whole month)
- *   3 months and up       (84–90 days): weekly, biweekly, or monthly
+ *   1 week to < 1 month (7–27 days): weekly only
+ *   1 month and up       (28–90 days): weekly, biweekly, or monthly
+ *
+ * Owner rule 2026-09-08: biweekly moved from 84+ days to the month-plus bracket,
+ * alongside monthly, now that it is a priced tier in its own right rather than a
+ * derived 2 x weekly. A cadence is only offered once the stay can complete at
+ * least one full period at that tier, which the cascade then bills.
  *
  * Below 7 days a co-living lease isn't offered; callers should reject shorter terms.
  */
 export function allowedCadencesForTerm(
   termDays: number,
 ): (typeof PAYMENT_CADENCES)[number][] {
-  if (termDays >= 84) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
-  if (termDays >= 28) return ["WEEKLY", "MONTHLY"];
+  if (termDays >= 28) return ["WEEKLY", "BIWEEKLY", "MONTHLY"];
   return ["WEEKLY"];
 }
 
@@ -287,6 +343,8 @@ export const properties = pgTable("properties", {
   // basePrice for back-compat. See shared/rateSelection.ts.
   dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
   weeklyRate: decimal("weekly_rate", { precision: 10, scale: 2 }),
+  // Added 2026-09-08: biweekly is a priced tier in its own right, not 2 x weekly.
+  biweeklyRate: decimal("biweekly_rate", { precision: 10, scale: 2 }),
   monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
   // Per-night-by-weekday prices (added 2026-06-30, additive nullable). When a stay
   // resolves to the DAILY tier (<7 nights), each night is priced by the weekday it
@@ -394,6 +452,8 @@ export const rooms = pgTable(
     // chooseRate(); these add the daily + monthly tiers. Nullable; fallback to the
     // next shorter tier. See shared/rateSelection.ts.
     dailyRate: decimal("daily_rate", { precision: 10, scale: 2 }),
+    // Added 2026-09-08: a priced tier in its own right, not 2 x weekly_rent.
+    biweeklyRate: decimal("biweekly_rate", { precision: 10, scale: 2 }),
     monthlyRate: decimal("monthly_rate", { precision: 10, scale: 2 }),
     // "AVAILABLE" | "OCCUPIED" | "HOLD" | "MAINTENANCE" | "INACTIVE"
     status: text("status").notNull().default("AVAILABLE"),
@@ -1196,6 +1256,8 @@ export const LIFECYCLE_EVENT_TYPES = [
   "LEASE_ENDING_SOON", // ~14 days before end_date
   "BOOKING_CONFIRMED", // short-stay booking materialized (guest)
   "ADMIN_NEW_BOOKING", // short-stay booking materialized (admin)
+  "LEASE_HOLD_RELEASED", // hold expired — room released back to inventory
+  "FIRST_PAYMENT_REMINDER", // signed, deposit unpaid — nudge before the hold lapses
 ] as const;
 
 export const LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"] as const;
