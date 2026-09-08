@@ -15,17 +15,19 @@ __export(schema_exports, {
   BOOKING_STATUSES: () => BOOKING_STATUSES,
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
+  CARD_SURCHARGE_RATE_SETTING: () => CARD_SURCHARGE_RATE_SETTING,
   CHECKOUT_HOLD_LEASE_STATUSES: () => CHECKOUT_HOLD_LEASE_STATUSES,
   CHECKOUT_HOLD_MINUTES: () => CHECKOUT_HOLD_MINUTES,
   COLIVING_MIN_DAYS: () => COLIVING_MIN_DAYS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
+  DEFAULT_LATE_FEE_PER_DAY: () => DEFAULT_LATE_FEE_PER_DAY,
   DEPOSIT_HELD_LEASE_STATUSES: () => DEPOSIT_HELD_LEASE_STATUSES,
   DEPOSIT_STATUSES: () => DEPOSIT_STATUSES,
   ESCALATION_KINDS: () => ESCALATION_KINDS,
   ESCALATION_SEVERITIES: () => ESCALATION_SEVERITIES,
   ESCALATION_STATUSES: () => ESCALATION_STATUSES,
   GUEST_AUTO_NOTIFICATIONS_SETTING: () => GUEST_AUTO_NOTIFICATIONS_SETTING,
-  LATE_FEE_PER_DAY: () => LATE_FEE_PER_DAY,
+  LATE_FEE_PER_DAY_SETTING: () => LATE_FEE_PER_DAY_SETTING,
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
   LEASE_ENDING_NOTICE_DAYS: () => LEASE_ENDING_NOTICE_DAYS,
   LEASE_REQUIRED_ABOVE_DAYS: () => LEASE_REQUIRED_ABOVE_DAYS,
@@ -150,7 +152,7 @@ function requiresLease(termDays) {
 function isDirectCoLivingStay(termDays) {
   return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
-var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
+var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, DEFAULT_LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, LATE_FEE_PER_DAY_SETTING, CARD_SURCHARGE_RATE_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
 var init_schema = __esm({
   "shared/schema.ts"() {
     "use strict";
@@ -287,7 +289,7 @@ var init_schema = __esm({
     CHECKOUT_HOLD_MINUTES = 30;
     COLIVING_MIN_DAYS = 7;
     LEASE_REQUIRED_ABOVE_DAYS = 28;
-    LATE_FEE_PER_DAY = 25;
+    DEFAULT_LATE_FEE_PER_DAY = 25;
     NOTIFICATION_KINDS = [
       "REMINDER_7D",
       // 7 days before due
@@ -703,6 +705,13 @@ var init_schema = __esm({
         cleaningFeeStatus: text("cleaning_fee_status").notNull().default("PENDING"),
         cleaningFeeStripePaymentIntentId: text("cleaning_fee_stripe_payment_intent_id"),
         cleaningFeePaidAt: timestamp("cleaning_fee_paid_at"),
+        // --- Pricing terms frozen at creation (added 2026-09-08). The late fee and
+        // card surcharge are admin-editable settings now; these snapshots keep every
+        // signed lease on the terms its agreement states. Null on pre-2026-09-08
+        // leases → resolvers fall back to the current setting (== the old constants
+        // until someone changes them). Additive, nullable. ---
+        lateFeePerDaySnapshot: decimal("late_fee_per_day_snapshot", { precision: 10, scale: 2 }),
+        cardSurchargeRateSnapshot: decimal("card_surcharge_rate_snapshot", { precision: 6, scale: 4 }),
         // --- Tenant identity verification (driver's license review). The tenant
         // uploads a license from the portal; an admin reviews it against signedName
         // and APPROVES to activate the lease. The license image lives in R2 (private);
@@ -886,6 +895,8 @@ var init_schema = __esm({
     });
     insertAppSettingSchema = createInsertSchema(appSettings).omit({ updatedAt: true });
     GUEST_AUTO_NOTIFICATIONS_SETTING = "guest_auto_notifications";
+    LATE_FEE_PER_DAY_SETTING = "late_fee_per_day";
+    CARD_SURCHARGE_RATE_SETTING = "card_surcharge_rate";
     uoEscalations = pgTable(
       "uo_escalations",
       {
@@ -1530,6 +1541,7 @@ var init_leaseSchedule = __esm({
 var storage_exports = {};
 __export(storage_exports, {
   StorageError: () => StorageError,
+  parseSettingNumber: () => parseSettingNumber,
   storage: () => storage
 });
 import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
@@ -1547,6 +1559,11 @@ function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
       gte(leases.createdAt, windowStart)
     )
   );
+}
+function parseSettingNumber(value, fallback) {
+  if (value == null || value.trim() === "") return fallback;
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 var NON_TERMINAL_LEASE_STATUSES, StorageError, Storage, storage;
 var init_storage = __esm({
@@ -2056,9 +2073,7 @@ var init_storage = __esm({
       }
       async getSettingNumber(key, fallback) {
         const row = await this.getSetting(key);
-        if (!row) return fallback;
-        const n = parseInt(row.value, 10);
-        return Number.isFinite(n) ? n : fallback;
+        return parseSettingNumber(row?.value, fallback);
       }
       async setSetting(key, value) {
         const existing = await this.getSetting(key);
@@ -2333,7 +2348,7 @@ import helmet from "helmet";
 // server/routes.ts
 import express from "express";
 import multer from "multer";
-import { z as z3 } from "zod";
+import { z as z4 } from "zod";
 import { differenceInCalendarDays as differenceInCalendarDays2, parseISO as parseISO5 } from "date-fns";
 
 // server/auth.ts
@@ -2600,7 +2615,11 @@ import { customAlphabet } from "nanoid";
 import { addDays as addDays3, differenceInCalendarDays, format, parseISO as parseISO2 } from "date-fns";
 
 // shared/pricing.ts
-var CREDIT_CARD_RATE = 0.035;
+var DEFAULT_CREDIT_CARD_RATE = 0.035;
+var formatSurchargePct = (rate) => {
+  const pct = Math.round(rate * 1e4) / 100;
+  return `${pct}%`;
+};
 var TAX_RATE = 0;
 var DEFAULT_CLEANING_FEE = 0;
 var roundCurrency3 = (v) => Math.round(v * 100) / 100;
@@ -2609,14 +2628,15 @@ var calculateBreakdown = ({
   cleaningFee = DEFAULT_CLEANING_FEE,
   extrasTotal = 0,
   promoDiscount = 0,
-  paymentMethod
+  paymentMethod,
+  surchargeRate = DEFAULT_CREDIT_CARD_RATE
 }) => {
   const cf = roundCurrency3(cleaningFee);
   const extras = roundCurrency3(extrasTotal);
   const discount = roundCurrency3(Math.max(0, promoDiscount));
   const subtotal = roundCurrency3(Math.max(0, baseAmount + cf + extras - discount));
   const tax = roundCurrency3(subtotal * TAX_RATE);
-  const surcharge = paymentMethod === "STRIPE" ? roundCurrency3((subtotal + tax) * CREDIT_CARD_RATE) : 0;
+  const surcharge = paymentMethod === "STRIPE" ? roundCurrency3((subtotal + tax) * surchargeRate) : 0;
   const total = roundCurrency3(subtotal + tax + surcharge);
   return {
     baseAmount: roundCurrency3(baseAmount),
@@ -2804,12 +2824,13 @@ async function resolveBooking(input) {
     effectiveNightly: str2.effectiveNightly
   };
 }
-function buildQuote(resolved, paymentMethod) {
+function buildQuote(resolved, paymentMethod, surchargeRate = DEFAULT_CREDIT_CARD_RATE) {
   if (resolved.model === "STR") {
     const b2 = calculateBreakdown({
       baseAmount: resolved.baseAmount,
       cleaningFee: resolved.cleaningFee,
-      paymentMethod
+      paymentMethod,
+      surchargeRate
     });
     const tierLabel = resolved.rateTier === "MONTHLY" ? " @ monthly rate" : resolved.rateTier === "WEEKLY" ? " @ weekly rate" : "";
     const lines2 = [
@@ -2820,7 +2841,7 @@ function buildQuote(resolved, paymentMethod) {
     ];
     if (resolved.cleaningFee > 0) lines2.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
     if (b2.tax > 0) lines2.push({ label: "Tax", amount: b2.tax });
-    if (b2.surcharge > 0) lines2.push({ label: "Card processing (3.5%)", amount: b2.surcharge });
+    if (b2.surcharge > 0) lines2.push({ label: `Card processing (${formatSurchargePct(surchargeRate)})`, amount: b2.surcharge });
     return {
       model: "STR",
       nights: resolved.nights,
@@ -2830,7 +2851,8 @@ function buildQuote(resolved, paymentMethod) {
   const b = calculateBreakdown({
     baseAmount: resolved.baseAmount,
     cleaningFee: resolved.cleaningFee,
-    paymentMethod
+    paymentMethod,
+    surchargeRate
   });
   const ss = resolved.shortStay;
   const lines = [];
@@ -2851,7 +2873,7 @@ function buildQuote(resolved, paymentMethod) {
     lines.push({ label: `Stay (${resolved.nights} nights)`, amount: resolved.baseAmount });
   }
   if (resolved.cleaningFee > 0) lines.push({ label: "Cleaning fee", amount: resolved.cleaningFee });
-  if (b.surcharge > 0) lines.push({ label: "Card processing (3.5%)", amount: b.surcharge });
+  if (b.surcharge > 0) lines.push({ label: `Card processing (${formatSurchargePct(surchargeRate)})`, amount: b.surcharge });
   return {
     model: "COLIVING",
     nights: resolved.nights,
@@ -3235,7 +3257,7 @@ var DEFAULT_LEASE_TEMPLATE = {
     },
     {
       heading: "7. Payment Authorization",
-      body: "A payment method is kept on file for the term of this lease. The Resident may pay each scheduled payment either by that card (subject to a 3.5% processing fee) or manually by CashApp/Zelle (no processing fee); a manual payment is held pending until confirmed. The Resident authorizes Be Nice Properties to charge the saved payment method on file for any scheduled payment not elected as manual, and for any accrued late fees, on or after each due date."
+      body: "A payment method is kept on file for the term of this lease. The Resident may pay each scheduled payment either by that card (subject to a {{cardSurchargePct}} processing fee) or manually by CashApp/Zelle (no processing fee); a manual payment is held pending until confirmed. The Resident authorizes Be Nice Properties to charge the saved payment method on file for any scheduled payment not elected as manual, and for any accrued late fees, on or after each due date."
     }
   ],
   signatureStatement: "By typing my full legal name below and submitting this Agreement, I acknowledge that I have read and agree to its terms, and I intend my typed name to be my legally binding electronic signature under the U.S. E-SIGN Act and UETA."
@@ -3268,7 +3290,8 @@ function tokenMap(data) {
     // Only state a cleaning fee when one applies; it is non-refundable.
     cleaningFeeClause: data.cleaningFeeTotal > 0 ? ` A one-time, non-refundable cleaning fee of ${fmtMoney(data.cleaningFeeTotal)} is also due at move-in.` : "",
     prorationNote: data.prorationNote,
-    lateFeePerDay: fmtMoney(LATE_FEE_PER_DAY)
+    lateFeePerDay: fmtMoney(data.lateFeePerDay),
+    cardSurchargePct: formatSurchargePct(data.cardSurchargeRate)
   };
 }
 function fill(text2, tokens) {
@@ -3306,11 +3329,68 @@ function renderSignedLeaseHtml(data, signature, template = DEFAULT_LEASE_TEMPLAT
 
 // server/lib/leaseFlow.ts
 init_storage();
+
+// server/lib/pricingSettings.ts
+init_storage();
+init_schema();
+import { z as z3 } from "zod";
+
+// server/server-log.ts
+function log(message, source = "express") {
+  const time = (/* @__PURE__ */ new Date()).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
+  console.log(`${time} [${source}] ${message}`);
+}
+
+// server/lib/pricingSettings.ts
+var pricingSettingsInputSchema = z3.object({
+  lateFeePerDay: z3.number().min(0, "lateFeePerDay must be 0\u2013500").max(500, "lateFeePerDay must be 0\u2013500").optional(),
+  cardSurchargeRate: z3.number().min(0, "cardSurchargeRate must be 0\u20130.10").max(0.1, "cardSurchargeRate must be 0\u20130.10").optional()
+}).refine((v) => v.lateFeePerDay !== void 0 || v.cardSurchargeRate !== void 0, {
+  message: "Provide lateFeePerDay and/or cardSurchargeRate"
+});
+async function getLateFeePerDay() {
+  return storage.getSettingNumber(LATE_FEE_PER_DAY_SETTING, DEFAULT_LATE_FEE_PER_DAY);
+}
+async function getCardSurchargeRate() {
+  return storage.getSettingNumber(CARD_SURCHARGE_RATE_SETTING, DEFAULT_CREDIT_CARD_RATE);
+}
+async function getPricingSettings() {
+  const [lateFeePerDay, cardSurchargeRate] = await Promise.all([getLateFeePerDay(), getCardSurchargeRate()]);
+  return { lateFeePerDay, cardSurchargeRate };
+}
+async function updatePricingSettings(input, actor) {
+  if (!actor || !actor.trim()) throw new LeaseError("actor is required", 400);
+  const parsed = pricingSettingsInputSchema.safeParse(input);
+  if (!parsed.success) throw new LeaseError(parsed.error.errors[0]?.message ?? "Invalid pricing settings", 400);
+  if (parsed.data.lateFeePerDay !== void 0) {
+    await storage.setSetting(LATE_FEE_PER_DAY_SETTING, String(parsed.data.lateFeePerDay));
+  }
+  if (parsed.data.cardSurchargeRate !== void 0) {
+    await storage.setSetting(CARD_SURCHARGE_RATE_SETTING, String(parsed.data.cardSurchargeRate));
+  }
+  log(`pricing settings updated by ${actor}: ${Object.keys(parsed.data).join(", ")}`, "uo");
+  return getPricingSettings();
+}
+function leaseLateFeePerDay(lease, fallback) {
+  const snap = lease.lateFeePerDaySnapshot;
+  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
+}
+function leaseCardSurchargeRate(lease, fallback) {
+  const snap = lease.cardSurchargeRateSnapshot;
+  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
+}
+
+// server/lib/leaseFlow.ts
 var portalTokenGen = customAlphabet2(
   "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
   32
 );
-function docDataFrom(leaseId, quote, guest, location) {
+function docDataFrom(leaseId, quote, guest, location, pricing) {
   return {
     leaseId,
     guestName: guest.name,
@@ -3329,6 +3409,8 @@ function docDataFrom(leaseId, quote, guest, location) {
     totalLeaseValue: quote.totalLeaseValue,
     depositTotal: quote.depositTotal,
     cleaningFeeTotal: quote.cleaningFeeTotal,
+    lateFeePerDay: pricing.lateFeePerDay,
+    cardSurchargeRate: pricing.cardSurchargeRate,
     prorationNote: quote.prorationNote,
     schedule: quote.schedule.map((s) => ({
       seq: s.seq,
@@ -3348,8 +3430,9 @@ async function previewLease(input) {
   });
   const property = await storage.getProperty(input.propertyId);
   if (!property) throw new LeaseError("Property not found", 404);
+  const pricing = await getPricingSettings();
   const documentHtml = renderLeaseHtml(
-    docDataFrom("PREVIEW", quote, input.guest, property.location)
+    docDataFrom("PREVIEW", quote, input.guest, property.location, pricing)
   );
   return { documentHtml };
 }
@@ -3368,6 +3451,7 @@ async function createDraftLease(input) {
     email: input.guest.email,
     phone: input.guest.phone ?? null
   });
+  const pricing = await getPricingSettings();
   const lease = await storage.createLeaseWithSchedule({
     lease: {
       propertyId: property.id,
@@ -3386,6 +3470,8 @@ async function createDraftLease(input) {
       // its own PaymentIntent at move-in). "0" when no room carries a fee.
       cleaningFeeSnapshot: String(quote.cleaningFeeTotal),
       cleaningFeeStatus: "PENDING",
+      lateFeePerDaySnapshot: String(pricing.lateFeePerDay),
+      cardSurchargeRateSnapshot: String(pricing.cardSurchargeRate),
       status: "PENDING_SIGNATURE",
       portalToken: portalTokenGen()
     },
@@ -3407,7 +3493,7 @@ async function createDraftLease(input) {
     }))
   });
   const documentHtml = renderLeaseHtml(
-    docDataFrom(lease.id, quote, input.guest, property.location)
+    docDataFrom(lease.id, quote, input.guest, property.location, pricing)
   );
   return { lease, documentHtml };
 }
@@ -3448,6 +3534,8 @@ async function signLease(input) {
     totalLeaseValue: parseFloat(lease.totalLeaseValue),
     depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
     cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
+    lateFeePerDay: leaseLateFeePerDay(lease, await getLateFeePerDay()),
+    cardSurchargeRate: leaseCardSurchargeRate(lease, await getCardSurchargeRate()),
     prorationNote: lease.prorationNote ?? "",
     schedule: schedule.map((s) => ({
       seq: s.scheduleSeq,
@@ -3587,17 +3675,6 @@ var stripePublishableConfigured = () => Boolean(process.env.VITE_STRIPE_PUBLIC_K
 
 // server/lib/dunning.ts
 init_storage();
-
-// server/server-log.ts
-function log(message, source = "express") {
-  const time = (/* @__PURE__ */ new Date()).toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true
-  });
-  console.log(`${time} [${source}] ${message}`);
-}
 
 // server/lib/telegram.ts
 function isTelegramConfigured() {
@@ -4204,8 +4281,9 @@ async function loadLeaseContext(leaseId) {
   const rooms2 = await storage.getLeaseRooms(lease.id);
   return { lease, property, rooms: rooms2 };
 }
-function chargeTotalFor(rentAmount) {
-  return calculateBreakdown({ baseAmount: rentAmount, paymentMethod: "STRIPE" }).total;
+async function chargeTotalFor(lease, base) {
+  const rate = leaseCardSurchargeRate(lease, await getCardSurchargeRate());
+  return calculateBreakdown({ baseAmount: base, paymentMethod: "STRIPE", surchargeRate: rate }).total;
 }
 async function startFirstPayment(leaseId) {
   const { lease, property, rooms: rooms2 } = await loadLeaseContext(leaseId);
@@ -4229,7 +4307,7 @@ async function startFirstPayment(leaseId) {
   if (customerId !== lease.stripeCustomerId) {
     await storage.updateLease(lease.id, { stripeCustomerId: customerId });
   }
-  const amount = chargeTotalFor(parseFloat(first.amount));
+  const amount = await chargeTotalFor(lease, parseFloat(first.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
@@ -4507,7 +4585,7 @@ async function chargeFirstWeekOffSession(leaseId, paymentMethodId) {
   const first = schedule.find((s) => s.scheduleSeq === 1);
   if (!first) throw new LeaseError("Lease has no first installment", 500);
   if (first.status === "PAID") return;
-  const amount = chargeTotalFor(parseFloat(first.amount));
+  const amount = await chargeTotalFor(lease, parseFloat(first.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
@@ -4544,7 +4622,7 @@ async function chargeCleaningFeeOffSession(leaseId, paymentMethodId) {
   const fee = parseFloat(lease.cleaningFeeSnapshot ?? "0");
   if (!(fee > 0)) return;
   if (lease.cleaningFeeStatus === "PAID") return;
-  const amount = chargeTotalFor(fee);
+  const amount = await chargeTotalFor(lease, fee);
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
@@ -5066,8 +5144,9 @@ async function getPortalView(token) {
     }))
   };
 }
-function chargeTotalFor2(rent) {
-  return calculateBreakdown({ baseAmount: rent, paymentMethod: "STRIPE" }).total;
+async function chargeTotalFor2(lease, base) {
+  const rate = leaseCardSurchargeRate(lease, await getCardSurchargeRate());
+  return calculateBreakdown({ baseAmount: base, paymentMethod: "STRIPE", surchargeRate: rate }).total;
 }
 async function payInstallmentNow(token, scheduleSeq) {
   const lease = await resolvePortalLease(token);
@@ -5086,7 +5165,7 @@ async function payInstallmentNow(token, scheduleSeq) {
   if (row.status === "PAID") throw new LeaseError("That installment is already paid", 409);
   if (row.status === "WAIVED") throw new LeaseError("That installment was waived", 409);
   if (!OPEN_FOR_PAY.has(row.status)) throw new LeaseError("That installment can't be paid now", 409);
-  const amount = chargeTotalFor2(parseFloat(row.amount));
+  const amount = await chargeTotalFor2(lease, parseFloat(row.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
@@ -5751,26 +5830,13 @@ async function getThread2(threadId) {
 }
 
 // server/lib/uoApi.ts
+init_schema();
 async function listPropertiesWithRooms() {
   const properties2 = await storage.getProperties();
   const out = [];
   for (const p of properties2) {
     const rooms2 = p.type === "COLIVING" ? await storage.getRoomsByProperty(p.id) : [];
-    out.push({
-      id: p.id,
-      name: p.name,
-      entity: p.entity,
-      type: p.type,
-      location: p.location,
-      active: p.active,
-      rooms: rooms2.map((r) => ({
-        id: r.id,
-        name: r.name,
-        roomNumber: r.roomNumber,
-        weeklyRent: r.weeklyRent,
-        status: r.status
-      }))
-    });
+    out.push({ ...p, rooms: rooms2 });
   }
   return out;
 }
@@ -5963,6 +6029,54 @@ async function waiveLateFees(args) {
     await storage.updateScheduleRow(row.id, { manualNote: note });
   }
   return { waivedCount: target.length };
+}
+function requireActor(actor) {
+  if (!actor || !actor.trim()) throw new LeaseError("actor is required", 400);
+  return actor.trim();
+}
+function firstIssue(err, fallback) {
+  return err.errors[0]?.message ?? fallback;
+}
+async function updateProperty(args) {
+  const actor = requireActor(args.actor);
+  const parsed = insertPropertySchema.partial().safeParse(args.patch);
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid property patch"), 400);
+  const keys = Object.keys(parsed.data);
+  if (keys.length === 0) throw new LeaseError("Empty patch", 400);
+  const updated = await storage.updateProperty(args.propertyId, parsed.data);
+  if (!updated) throw new LeaseError("Property not found", 404);
+  log(`property ${args.propertyId} updated by uo:${actor}: ${keys.join(", ")}`, "uo");
+  return updated;
+}
+async function updateRoom(args) {
+  const actor = requireActor(args.actor);
+  const parsed = insertRoomSchema.partial().safeParse(args.patch);
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid room patch"), 400);
+  const keys = Object.keys(parsed.data);
+  if (keys.length === 0) throw new LeaseError("Empty patch", 400);
+  const updated = await storage.updateRoom(args.roomId, parsed.data);
+  if (!updated) throw new LeaseError("Room not found", 404);
+  log(`room ${args.roomId} updated by uo:${actor}: ${keys.join(", ")}`, "uo");
+  return updated;
+}
+async function createProperty(args) {
+  const actor = requireActor(args.actor);
+  const parsed = insertPropertySchema.safeParse(args.property);
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid property"), 400);
+  const created = await storage.createProperty(parsed.data);
+  log(`property ${created.id} created by uo:${actor}`, "uo");
+  return created;
+}
+async function createRoom(args) {
+  const actor = requireActor(args.actor);
+  const parent = await storage.getProperty(args.propertyId);
+  if (!parent) throw new LeaseError("Property not found", 404);
+  if (parent.type !== "COLIVING") throw new LeaseError("Rooms can only be added to COLIVING properties", 400);
+  const parsed = insertRoomSchema.safeParse({ ...args.room, propertyId: args.propertyId });
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid room"), 400);
+  const created = await storage.createRoom(parsed.data);
+  log(`room ${created.id} created under ${args.propertyId} by uo:${actor}`, "uo");
+  return created;
 }
 
 // server/lib/manualBlocks.ts
@@ -6478,9 +6592,9 @@ function xmlEscape(value) {
 }
 async function reconciliationHandler(req, res, next) {
   try {
-    const schema = z3.object({
-      from: z3.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      to: z3.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+    const schema = z4.object({
+      from: z4.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      to: z4.string().regex(/^\d{4}-\d{2}-\d{2}$/)
     });
     const parsed = schema.safeParse(req.query);
     if (!parsed.success) {
@@ -6866,7 +6980,7 @@ ${parts.join("\n")}
       }
       const { propertyId, roomId, checkIn, checkOut, paymentMethod } = parsed.data;
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-      res.json(buildQuote(resolved, paymentMethod));
+      res.json(buildQuote(resolved, paymentMethod, await getCardSurchargeRate()));
     } catch (err) {
       if (err instanceof BookingError) return res.status(err.status).json({ message: err.message });
       next(err);
@@ -6883,7 +6997,7 @@ ${parts.join("\n")}
       }
       const { propertyId, roomId, checkIn, checkOut, guest } = parsed.data;
       const resolved = await resolveBooking({ propertyId, roomId, checkIn, checkOut });
-      const quote = buildQuote(resolved, "STRIPE");
+      const quote = buildQuote(resolved, "STRIPE", await getCardSurchargeRate());
       const reference = generateReference();
       const dueNow = quote.dueNow.total;
       const surcharge = quote.dueNow.surcharge;
@@ -6940,10 +7054,10 @@ ${parts.join("\n")}
   });
   app.post("/api/booking-intent/:id/contact", async (req, res, next) => {
     try {
-      const schema = z3.object({
-        name: z3.string().min(1, "Name required"),
-        email: z3.string().email("Valid email required"),
-        phone: z3.string().optional()
+      const schema = z4.object({
+        name: z4.string().min(1, "Name required"),
+        email: z4.string().email("Valid email required"),
+        phone: z4.string().optional()
       });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) {
@@ -7147,7 +7261,7 @@ ${parts.join("\n")}
     try {
       const seq = parseInt(req.params.seq, 10);
       if (!Number.isFinite(seq)) return res.status(400).json({ message: "Invalid installment" });
-      const schema = z3.object({ method: z3.enum(["CASHAPP", "ZELLE"]) });
+      const schema = z4.object({ method: z4.enum(["CASHAPP", "ZELLE"]) });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "method must be CASHAPP or ZELLE" });
       const instructions = await electManualInstallment(req.params.token, seq, parsed.data.method);
@@ -7173,10 +7287,10 @@ ${parts.join("\n")}
   });
   app.post("/api/portal/:token/messages", async (req, res, next) => {
     try {
-      const schema = z3.object({
-        category: z3.enum(["QUESTION", "MAINTENANCE", "OTHER"]).optional(),
-        subject: z3.string().max(200).optional(),
-        body: z3.string().min(1, "Message can't be empty").max(5e3)
+      const schema = z4.object({
+        category: z4.enum(["QUESTION", "MAINTENANCE", "OTHER"]).optional(),
+        subject: z4.string().max(200).optional(),
+        body: z4.string().min(1, "Message can't be empty").max(5e3)
       });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
@@ -7209,7 +7323,7 @@ ${parts.join("\n")}
   });
   app.post("/api/portal/:token/messages/:threadId/reply", async (req, res, next) => {
     try {
-      const schema = z3.object({ body: z3.string().min(1).max(5e3) });
+      const schema = z4.object({ body: z4.string().min(1).max(5e3) });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       const reply = await replyToThread(req.params.token, req.params.threadId, parsed.data.body);
@@ -7239,14 +7353,14 @@ ${parts.join("\n")}
   });
   app.post("/api/portal/:token/vehicle", async (req, res, next) => {
     try {
-      const schema = z3.object({
-        hasVehicle: z3.boolean(),
-        make: z3.string().max(60).nullish(),
-        model: z3.string().max(60).nullish(),
-        year: z3.number().int().min(1900).max(2100).nullish(),
-        color: z3.string().max(40).nullish(),
-        plate: z3.string().max(15).nullish(),
-        plateState: z3.enum(US_STATE_CODES).nullish()
+      const schema = z4.object({
+        hasVehicle: z4.boolean(),
+        make: z4.string().max(60).nullish(),
+        model: z4.string().max(60).nullish(),
+        year: z4.number().int().min(1900).max(2100).nullish(),
+        color: z4.string().max(40).nullish(),
+        plate: z4.string().max(15).nullish(),
+        plateState: z4.enum(US_STATE_CODES).nullish()
       });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
@@ -7315,11 +7429,17 @@ ${parts.join("\n")}
       next(err);
     }
   });
-  app.get("/api/payments/config", (_req, res) => {
-    res.json({
-      stripeEnabled: isStripeConfigured() && stripePublishableConfigured(),
-      publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY ?? null
-    });
+  app.get("/api/payments/config", async (_req, res, next) => {
+    try {
+      res.json({
+        stripeEnabled: isStripeConfigured() && stripePublishableConfigured(),
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY ?? null,
+        // Live card surcharge so the client renders the real percentage.
+        cardSurchargeRate: await getCardSurchargeRate()
+      });
+    } catch (err) {
+      next(err);
+    }
   });
   app.get("/api/admin/settings/default-threshold", requireAdmin, async (_req, res, next) => {
     try {
@@ -7331,7 +7451,7 @@ ${parts.join("\n")}
   });
   app.put("/api/admin/settings/default-threshold", requireAdmin, async (req, res, next) => {
     try {
-      const schema = z3.object({ days: z3.number().int().min(1).max(120) });
+      const schema = z4.object({ days: z4.number().int().min(1).max(120) });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: "days must be an integer 1\u2013120" });
       await storage.setSetting("defaulted_threshold_days", String(parsed.data.days));
@@ -7419,7 +7539,7 @@ ${parts.join("\n")}
   });
   app.post("/api/admin/leases/:id/reject-verification", requireAdmin, async (req, res, next) => {
     try {
-      const schema = z3.object({ reason: z3.string().min(1, "A reason is required").max(500) });
+      const schema = z4.object({ reason: z4.string().min(1, "A reason is required").max(500) });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       res.json(await rejectVerification(req.params.id, parsed.data.reason, adminActor(req)));
@@ -7444,7 +7564,7 @@ ${parts.join("\n")}
   });
   app.get("/api/lookup", async (req, res, next) => {
     try {
-      const schema = z3.object({ reference: z3.string().min(1), email: z3.string().email() });
+      const schema = z4.object({ reference: z4.string().min(1), email: z4.string().email() });
       const parsed = schema.safeParse(req.query);
       if (!parsed.success) return res.status(400).json({ message: "Provide reference and email" });
       const booking = await storage.getBookingByReference(parsed.data.reference);
@@ -7544,7 +7664,7 @@ ${parts.join("\n")}
   app.get("/api/uo/reconciliation", requireServiceToken, reconciliationHandler);
   app.post("/api/uo/leases/:id/mark-paid", requireServiceToken, async (req, res, next) => {
     try {
-      const schema = z3.object({ scheduleSeq: z3.number().int(), note: z3.string().min(1), actor: z3.string().min(1) });
+      const schema = z4.object({ scheduleSeq: z4.number().int(), note: z4.string().min(1), actor: z4.string().min(1) });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       res.json(await markPaid({ leaseId: req.params.id, ...parsed.data }));
@@ -7562,7 +7682,7 @@ ${parts.join("\n")}
   });
   app.post("/api/uo/messages/:threadId/respond", requireServiceToken, async (req, res, next) => {
     try {
-      const schema = z3.object({ body: z3.string().min(1), actor: z3.string().min(1) });
+      const schema = z4.object({ body: z4.string().min(1), actor: z4.string().min(1) });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       res.json(await respondToMessage({ threadId: req.params.threadId, ...parsed.data }));
@@ -7572,7 +7692,7 @@ ${parts.join("\n")}
   });
   app.post("/api/uo/escalations/:id/resolve", requireServiceToken, async (req, res, next) => {
     try {
-      const schema = z3.object({ actor: z3.string().min(1), status: z3.enum(["ACKNOWLEDGED", "RESOLVED"]).optional() });
+      const schema = z4.object({ actor: z4.string().min(1), status: z4.enum(["ACKNOWLEDGED", "RESOLVED"]).optional() });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       res.json(await resolveEscalation({ escalationId: req.params.id, ...parsed.data }));
@@ -7582,10 +7702,85 @@ ${parts.join("\n")}
   });
   app.post("/api/uo/leases/:id/waive-late-fee", requireServiceToken, async (req, res, next) => {
     try {
-      const schema = z3.object({ scheduleSeq: z3.number().int(), reason: z3.string().min(1), actor: z3.string().min(1) });
+      const schema = z4.object({ scheduleSeq: z4.number().int(), reason: z4.string().min(1), actor: z4.string().min(1) });
       const parsed = schema.safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
       res.json(await waiveLateFees({ leaseId: req.params.id, ...parsed.data }));
+    } catch (e) {
+      uoErr(e, res, next);
+    }
+  });
+  const pricingSettingsBody = z4.object({
+    lateFeePerDay: z4.number().optional(),
+    cardSurchargeRate: z4.number().optional(),
+    actor: z4.string().optional()
+  });
+  const getPricingSettingsHandler = async (_req, res, next) => {
+    try {
+      res.json(await getPricingSettings());
+    } catch (e) {
+      uoErr(e, res, next);
+    }
+  };
+  const putPricingSettingsHandler = (actorFrom) => async (req, res, next) => {
+    try {
+      const parsed = pricingSettingsBody.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      const { actor: _ignored, ...values } = parsed.data;
+      res.json(await updatePricingSettings(values, actorFrom(req)));
+    } catch (e) {
+      uoErr(e, res, next);
+    }
+  };
+  app.get("/api/uo/settings/pricing", requireServiceToken, getPricingSettingsHandler);
+  app.put(
+    "/api/uo/settings/pricing",
+    requireServiceToken,
+    putPricingSettingsHandler((req) => `uo:${typeof req.body?.actor === "string" && req.body.actor.trim() ? req.body.actor.trim() : "unknown"}`)
+  );
+  app.get("/api/admin/settings/pricing", requireAdmin, getPricingSettingsHandler);
+  app.put(
+    "/api/admin/settings/pricing",
+    requireAdmin,
+    putPricingSettingsHandler((req) => adminActor(req))
+  );
+  const actorBody = z4.string().min(1, "actor is required");
+  app.patch("/api/uo/properties/:id", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z4.object({ actor: actorBody, patch: z4.record(z4.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await updateProperty({ propertyId: req.params.id, ...parsed.data }));
+    } catch (e) {
+      uoErr(e, res, next);
+    }
+  });
+  app.patch("/api/uo/rooms/:id", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z4.object({ actor: actorBody, patch: z4.record(z4.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await updateRoom({ roomId: req.params.id, ...parsed.data }));
+    } catch (e) {
+      uoErr(e, res, next);
+    }
+  });
+  app.post("/api/uo/properties", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z4.object({ actor: actorBody, property: z4.record(z4.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.status(201).json(await createProperty(parsed.data));
+    } catch (e) {
+      uoErr(e, res, next);
+    }
+  });
+  app.post("/api/uo/properties/:id/rooms", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z4.object({ actor: actorBody, room: z4.record(z4.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.status(201).json(await createRoom({ propertyId: req.params.id, ...parsed.data }));
     } catch (e) {
       uoErr(e, res, next);
     }
@@ -7603,19 +7798,19 @@ ${parts.join("\n")}
   function actorLogTag(actor) {
     return actor.startsWith("uo:") ? "uo" : "admin";
   }
-  const newThreadBodySchema = z3.object({
-    bookingId: z3.string().optional(),
-    leaseId: z3.string().optional(),
-    subject: z3.string().optional(),
-    body: z3.string().min(1),
-    channels: z3.array(z3.enum(["EMAIL", "SMS"])).min(1)
+  const newThreadBodySchema = z4.object({
+    bookingId: z4.string().optional(),
+    leaseId: z4.string().optional(),
+    subject: z4.string().optional(),
+    body: z4.string().min(1),
+    channels: z4.array(z4.enum(["EMAIL", "SMS"])).min(1)
   });
-  const replyBodySchema = z3.object({
-    body: z3.string().min(1),
-    channels: z3.array(z3.enum(["EMAIL", "SMS"])).min(1)
+  const replyBodySchema = z4.object({
+    body: z4.string().min(1),
+    channels: z4.array(z4.enum(["EMAIL", "SMS"])).min(1)
   });
   const createBlockBodySchema = insertManualBlockSchema.omit({ source: true, createdBy: true });
-  const autoNotifyBodySchema = z3.object({ enabled: z3.boolean() });
+  const autoNotifyBodySchema = z4.object({ enabled: z4.boolean() });
   function messageHandlers(source, actorFrom) {
     return {
       listThreads: async (req, res, next) => {

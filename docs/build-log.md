@@ -3534,3 +3534,81 @@ flow through to totals with no code change needed:
     30d  weekly $1,510.00  monthly $1,410.00   (saves $100)
     60d  weekly $3,020.00  monthly $2,820.00   (saves $200)
     90d  weekly $4,530.00  monthly $4,230.00   (saves $300)
+
+## 2026-09-08 (evening) — UO becomes the primary editor of BNP inventory + prices
+
+**Why.** UO's Pricing tab wrote BNP rate columns straight into BNP's Neon DB through
+a hand-written schema mirror; the biweekly tier added this morning was invisible to
+it within the day. Spec: docs/superpowers/specs/2026-09-08-uo-pricing-writeback-design.md.
+
+**What was built (BNP side)**
+- `/api/uo/*` write-backs: `PATCH /api/uo/properties/:id`, `PATCH /api/uo/rooms/:id`,
+  `POST /api/uo/properties`, `POST /api/uo/properties/:id/rooms` — body `{actor, …}`,
+  validated by the SAME `insertPropertySchema`/`insertRoomSchema` the admin uses.
+  `GET /api/uo/properties` now returns full rows (all rate tiers) with rooms nested.
+- Late fee ($/day) and card surcharge (fraction) moved from constants to `app_settings`
+  keys `late_fee_per_day` / `card_surcharge_rate` (`server/lib/pricingSettings.ts`),
+  `GET/PUT /api/uo/settings/pricing` + `/api/admin/settings/pricing`,
+  `cardSurchargeRate` on `/api/payments/config`.
+- Leases snapshot both at creation (`late_fee_per_day_snapshot`,
+  `card_surcharge_rate_snapshot`); dunning, portal/lease charges and the lease
+  document read the snapshot first. A settings edit changes NEW leases only.
+- Client copy renders the live percentage (`client/src/lib/usePricingConfig.ts`).
+
+**Files touched** — `git diff --stat main...HEAD -- . ':!.superpowers'` (Tasks 1-7 on this branch):
+```
+client/src/lib/usePricingConfig.ts                 |   22 +
+client/src/pages/checkout.tsx                      |    4 +-
+client/src/pages/lease-booking.tsx                 |    4 +-
+client/src/pages/portal.tsx                        |    4 +-
+docs/superpowers/plans/2026-09-08-uo-pricing-writeback.md    | 2018 ++++++++++++++++++++
+docs/superpowers/specs/2026-09-08-uo-pricing-writeback-design.md |  257 +++
+scripts/push-pricing-snapshots.mjs                 |   34 +
+server/lib/booking.test.ts                         |    8 +
+server/lib/booking.ts                              |    9 +-
+server/lib/dunning.test.ts                         |   38 +-
+server/lib/dunning.ts                              |   27 +-
+server/lib/leaseDocument.test.ts                   |    9 +
+server/lib/leaseDocument.ts                        |   12 +-
+server/lib/leaseFlow.test.ts                       |   26 +
+server/lib/leaseFlow.ts                            |   23 +-
+server/lib/leasePayments.test.ts                   |    2 +
+server/lib/leasePayments.ts                        |   17 +-
+server/lib/portal.test.ts                          |   17 +
+server/lib/portal.ts                               |    8 +-
+server/lib/pricingSettings.test.ts                 |   73 +
+server/lib/pricingSettings.ts                      |   85 +
+server/lib/stripe.ts                               |    5 +-
+server/lib/uoApi.test.ts                           |   83 +
+server/lib/uoApi.ts                                |   91 +-
+server/routes.ts                                   |   89 +-
+server/storage.settings.test.ts                    |   38 +
+server/storage.ts                                  |   12 +-
+shared/pricing.test.ts                             |   24 +-
+shared/pricing.ts                                  |   26 +-
+shared/schema.ts                                   |   20 +-
+30 files changed, 3012 insertions(+), 73 deletions(-)
+```
+Plus this task's own changes: `.env.example` (+2 doc comment), `docs/build-log.md` (this entry),
+`api/index.js`, `api/cron/sweep.js`, `api/cron/calendar.js` (regenerated bundle, `npm run build:api`).
+
+**Tests + results** — `npx tsc` 0 · `npx vitest run` 627 passed (53 test files, 0 failures) ·
+`npm run build` 0 · `npm run build:api` 0.
+
+**Owner steps (in order)**
+1. `node scripts/push-pricing-snapshots.mjs` against production (additive; re-runnable).
+2. Deploy BNP.
+3. Deploy UO (companion branch `feat/uo-pricing-writeback` in the Unified-Ops repo).
+4. Verify: edit a room's biweekly rate in UO → BNP quote for 14 nights on that room reflects it.
+
+**Legal flag** — editable late fee / surcharge; snapshots protect signed leases; permissibility per jurisdiction not assessed here.
+
+**Deferred / follow-ups**
+- `leasePayments.ts` has no snapshot-vs-live surcharge regression test by value (`portal.ts` has one).
+- `chargeTotalFor` duplicated in `leasePayments.ts` and `portal.ts`.
+- Dunning re-reads pricing settings per schedule row; hoist above the row loop.
+- No `signLease` render test for a legacy lease with null snapshots.
+- drizzle-zod enum refinement drops DB-default optionality for `rooms.status` / `properties.type`
+  in the insert schemas; admin and UO create routes both require `status` explicitly (pre-existing).
+- `PaymentsConfig` type is local to `client/src/lib/usePricingConfig.ts`.
+- UO create/assign/delete inventory flows still write BNP's DB directly (spec follow-up).

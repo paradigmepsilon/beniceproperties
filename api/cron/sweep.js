@@ -15,17 +15,19 @@ __export(schema_exports, {
   BOOKING_STATUSES: () => BOOKING_STATUSES,
   CADENCE_DAYS: () => CADENCE_DAYS,
   CADENCE_WEEKS: () => CADENCE_WEEKS,
+  CARD_SURCHARGE_RATE_SETTING: () => CARD_SURCHARGE_RATE_SETTING,
   CHECKOUT_HOLD_LEASE_STATUSES: () => CHECKOUT_HOLD_LEASE_STATUSES,
   CHECKOUT_HOLD_MINUTES: () => CHECKOUT_HOLD_MINUTES,
   COLIVING_MIN_DAYS: () => COLIVING_MIN_DAYS,
   DEFAULT_DEFAULTED_THRESHOLD_DAYS: () => DEFAULT_DEFAULTED_THRESHOLD_DAYS,
+  DEFAULT_LATE_FEE_PER_DAY: () => DEFAULT_LATE_FEE_PER_DAY,
   DEPOSIT_HELD_LEASE_STATUSES: () => DEPOSIT_HELD_LEASE_STATUSES,
   DEPOSIT_STATUSES: () => DEPOSIT_STATUSES,
   ESCALATION_KINDS: () => ESCALATION_KINDS,
   ESCALATION_SEVERITIES: () => ESCALATION_SEVERITIES,
   ESCALATION_STATUSES: () => ESCALATION_STATUSES,
   GUEST_AUTO_NOTIFICATIONS_SETTING: () => GUEST_AUTO_NOTIFICATIONS_SETTING,
-  LATE_FEE_PER_DAY: () => LATE_FEE_PER_DAY,
+  LATE_FEE_PER_DAY_SETTING: () => LATE_FEE_PER_DAY_SETTING,
   LATE_FEE_STATUSES: () => LATE_FEE_STATUSES,
   LEASE_ENDING_NOTICE_DAYS: () => LEASE_ENDING_NOTICE_DAYS,
   LEASE_REQUIRED_ABOVE_DAYS: () => LEASE_REQUIRED_ABOVE_DAYS,
@@ -150,7 +152,7 @@ function requiresLease(termDays) {
 function isDirectCoLivingStay(termDays) {
   return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
-var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
+var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, DEFAULT_LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, LATE_FEE_PER_DAY_SETTING, CARD_SURCHARGE_RATE_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
 var init_schema = __esm({
   "shared/schema.ts"() {
     "use strict";
@@ -287,7 +289,7 @@ var init_schema = __esm({
     CHECKOUT_HOLD_MINUTES = 30;
     COLIVING_MIN_DAYS = 7;
     LEASE_REQUIRED_ABOVE_DAYS = 28;
-    LATE_FEE_PER_DAY = 25;
+    DEFAULT_LATE_FEE_PER_DAY = 25;
     NOTIFICATION_KINDS = [
       "REMINDER_7D",
       // 7 days before due
@@ -703,6 +705,13 @@ var init_schema = __esm({
         cleaningFeeStatus: text("cleaning_fee_status").notNull().default("PENDING"),
         cleaningFeeStripePaymentIntentId: text("cleaning_fee_stripe_payment_intent_id"),
         cleaningFeePaidAt: timestamp("cleaning_fee_paid_at"),
+        // --- Pricing terms frozen at creation (added 2026-09-08). The late fee and
+        // card surcharge are admin-editable settings now; these snapshots keep every
+        // signed lease on the terms its agreement states. Null on pre-2026-09-08
+        // leases → resolvers fall back to the current setting (== the old constants
+        // until someone changes them). Additive, nullable. ---
+        lateFeePerDaySnapshot: decimal("late_fee_per_day_snapshot", { precision: 10, scale: 2 }),
+        cardSurchargeRateSnapshot: decimal("card_surcharge_rate_snapshot", { precision: 6, scale: 4 }),
         // --- Tenant identity verification (driver's license review). The tenant
         // uploads a license from the portal; an admin reviews it against signedName
         // and APPROVES to activate the lease. The license image lives in R2 (private);
@@ -886,6 +895,8 @@ var init_schema = __esm({
     });
     insertAppSettingSchema = createInsertSchema(appSettings).omit({ updatedAt: true });
     GUEST_AUTO_NOTIFICATIONS_SETTING = "guest_auto_notifications";
+    LATE_FEE_PER_DAY_SETTING = "late_fee_per_day";
+    CARD_SURCHARGE_RATE_SETTING = "card_surcharge_rate";
     uoEscalations = pgTable(
       "uo_escalations",
       {
@@ -1326,6 +1337,7 @@ var init_leaseSchedule = __esm({
 var storage_exports = {};
 __export(storage_exports, {
   StorageError: () => StorageError,
+  parseSettingNumber: () => parseSettingNumber,
   storage: () => storage
 });
 import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
@@ -1343,6 +1355,11 @@ function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
       gte(leases.createdAt, windowStart)
     )
   );
+}
+function parseSettingNumber(value, fallback) {
+  if (value == null || value.trim() === "") return fallback;
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
 }
 var NON_TERMINAL_LEASE_STATUSES, StorageError, Storage, storage;
 var init_storage = __esm({
@@ -1852,9 +1869,7 @@ var init_storage = __esm({
       }
       async getSettingNumber(key, fallback) {
         const row = await this.getSetting(key);
-        if (!row) return fallback;
-        const n = parseInt(row.value, 10);
-        return Number.isFinite(n) ? n : fallback;
+        return parseSettingNumber(row?.value, fallback);
       }
       async setSetting(key, value) {
         const existing = await this.getSetting(key);
@@ -2230,7 +2245,11 @@ init_storage();
 import Stripe from "stripe";
 
 // shared/pricing.ts
-var CREDIT_CARD_RATE = 0.035;
+var DEFAULT_CREDIT_CARD_RATE = 0.035;
+var formatSurchargePct = (rate) => {
+  const pct = Math.round(rate * 1e4) / 100;
+  return `${pct}%`;
+};
 var TAX_RATE = 0;
 var DEFAULT_CLEANING_FEE = 0;
 var roundCurrency = (v) => Math.round(v * 100) / 100;
@@ -2239,14 +2258,15 @@ var calculateBreakdown = ({
   cleaningFee = DEFAULT_CLEANING_FEE,
   extrasTotal = 0,
   promoDiscount = 0,
-  paymentMethod
+  paymentMethod,
+  surchargeRate = DEFAULT_CREDIT_CARD_RATE
 }) => {
   const cf = roundCurrency(cleaningFee);
   const extras = roundCurrency(extrasTotal);
   const discount = roundCurrency(Math.max(0, promoDiscount));
   const subtotal = roundCurrency(Math.max(0, baseAmount + cf + extras - discount));
   const tax = roundCurrency(subtotal * TAX_RATE);
-  const surcharge = paymentMethod === "STRIPE" ? roundCurrency((subtotal + tax) * CREDIT_CARD_RATE) : 0;
+  const surcharge = paymentMethod === "STRIPE" ? roundCurrency((subtotal + tax) * surchargeRate) : 0;
   const total = roundCurrency(subtotal + tax + surcharge);
   return {
     baseAmount: roundCurrency(baseAmount),
@@ -2338,12 +2358,39 @@ async function chargeSavedCard(opts) {
   );
 }
 
+// server/lib/pricingSettings.ts
+init_storage();
+init_schema();
+import { z as z2 } from "zod";
+
 // server/lib/lease.ts
 init_leaseSchedule();
 init_rateSelection();
 init_schema();
 init_storage();
 init_ranges();
+
+// server/lib/pricingSettings.ts
+var pricingSettingsInputSchema = z2.object({
+  lateFeePerDay: z2.number().min(0, "lateFeePerDay must be 0\u2013500").max(500, "lateFeePerDay must be 0\u2013500").optional(),
+  cardSurchargeRate: z2.number().min(0, "cardSurchargeRate must be 0\u20130.10").max(0.1, "cardSurchargeRate must be 0\u20130.10").optional()
+}).refine((v) => v.lateFeePerDay !== void 0 || v.cardSurchargeRate !== void 0, {
+  message: "Provide lateFeePerDay and/or cardSurchargeRate"
+});
+async function getLateFeePerDay() {
+  return storage.getSettingNumber(LATE_FEE_PER_DAY_SETTING, DEFAULT_LATE_FEE_PER_DAY);
+}
+async function getCardSurchargeRate() {
+  return storage.getSettingNumber(CARD_SURCHARGE_RATE_SETTING, DEFAULT_CREDIT_CARD_RATE);
+}
+function leaseLateFeePerDay(lease, fallback) {
+  const snap = lease.lateFeePerDaySnapshot;
+  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
+}
+function leaseCardSurchargeRate(lease, fallback) {
+  const snap = lease.cardSurchargeRateSnapshot;
+  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
+}
 
 // server/lib/dunning.ts
 init_storage();
@@ -2641,7 +2688,9 @@ async function maybeSendReminder(lease, guest, row, past, today, result) {
     phone: guest.phone,
     context: { leaseId: lease.id, guestId: guest.id, kind },
     subject: `Rent reminder \u2014 payment due ${when}`,
-    body: `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} is due ${when} (${row.dueDate}). ` + (row.paymentMethod === "CARD_ON_FILE" ? "It will be charged automatically to your card on file, plus a 3.5% card processing fee." : "Please send your payment by the due date.") + `
+    body: `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} is due ${when} (${row.dueDate}). ` + (row.paymentMethod === "CARD_ON_FILE" ? `It will be charged automatically to your card on file, plus a ${formatSurchargePct(
+      leaseCardSurchargeRate(lease, await getCardSurchargeRate())
+    )} card processing fee.` : "Please send your payment by the due date.") + `
 
 Pay now, switch to CashApp/Zelle, or view your full schedule: ${portalUrl(lease)}`,
     smsBody: `BNP: rent $${row.amount} (installment #${row.scheduleSeq}) due ${when}.` + (payUrl ? ` Pay or view: ${payUrl}` : "")
@@ -2661,11 +2710,12 @@ async function handleOverdue(lease, property, guest, rooms2, row, past, today, t
   if (row.status !== "LATE" && row.status !== "FAILED") {
     await storage.updateScheduleRow(row.id, { status: "LATE" });
   }
+  const lateFeePerDay = leaseLateFeePerDay(lease, await getLateFeePerDay());
   const fee = await storage.accrueLateFeeOnce({
     leaseId: lease.id,
     scheduleSeq: row.scheduleSeq,
     accrualDate: today,
-    amount: LATE_FEE_PER_DAY
+    amount: lateFeePerDay
   });
   if (fee) result.lateFeesAccrued += 1;
   if (past <= OVERDUE_MESSAGE_DAYS) {
@@ -2682,10 +2732,10 @@ async function handleOverdue(lease, property, guest, rooms2, row, past, today, t
         phone: guest.phone,
         context: { leaseId: lease.id, guestId: guest.id, kind },
         subject: `Payment overdue \u2014 installment #${row.scheduleSeq}`,
-        body: `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of $${LATE_FEE_PER_DAY.toFixed(2)}/day is accruing until it is paid.
+        body: `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of $${lateFeePerDay.toFixed(2)}/day is accruing until it is paid.
 
 Pay now to stop further fees \u2014 by card, or by CashApp/Zelle: ${portalUrl(lease)}`,
-        smsBody: `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} overdue; $${LATE_FEE_PER_DAY.toFixed(0)}/day late fee accruing.` + (await payLink(lease) ? ` Pay: ${await payLink(lease)}` : "")
+        smsBody: `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} overdue; $${lateFeePerDay.toFixed(0)}/day late fee accruing.` + (await payLink(lease) ? ` Pay: ${await payLink(lease)}` : "")
       });
       await storage.recordNotification({
         leaseId: lease.id,
@@ -2976,8 +3026,9 @@ async function runLeaseEndingNotices(today = ymd(/* @__PURE__ */ new Date())) {
 // server/lib/leasePayments.ts
 init_dates();
 var CHARGEABLE_STATUSES = /* @__PURE__ */ new Set(["SCHEDULED", "DUE"]);
-function chargeTotalFor(rentAmount) {
-  return calculateBreakdown({ baseAmount: rentAmount, paymentMethod: "STRIPE" }).total;
+async function chargeTotalFor(lease, base) {
+  const rate = leaseCardSurchargeRate(lease, await getCardSurchargeRate());
+  return calculateBreakdown({ baseAmount: base, paymentMethod: "STRIPE", surchargeRate: rate }).total;
 }
 async function runScheduledRentSweep(today = todayIso()) {
   const result = { considered: 0, charged: 0, failed: 0, skipped: 0 };
@@ -3013,7 +3064,7 @@ async function runScheduledRentSweep(today = todayIso()) {
   return result;
 }
 async function chargeInstallment(lease, property, rooms2, row, result) {
-  const amount = chargeTotalFor(parseFloat(row.amount));
+  const amount = await chargeTotalFor(lease, parseFloat(row.amount));
   const metadata = buildLeaseChargeMetadata({
     entity: property.entity,
     property,
