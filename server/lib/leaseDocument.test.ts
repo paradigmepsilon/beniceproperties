@@ -25,6 +25,8 @@ const DATA: LeaseDocData = {
   totalLeaseValue: 1040,
   depositTotal: 260,
   cleaningFeeTotal: 75,
+  lateFeePerDay: 25,
+  cardSurchargeRate: 0.035,
   prorationNote: "4 weekly installment(s) of $260.00, no proration. First payment due on the move-in date.",
   schedule: [
     { seq: 1, dueDate: "2026-07-01", amount: 260, prorated: false },
@@ -64,6 +66,13 @@ describe("renderLeaseHtml (review)", () => {
     const html = renderLeaseHtml(DATA);
     expect(html).toMatch(/\$25\.00 per day/);
     expect(html).toMatch(/day after the due date/i);
+  });
+
+  it("states the late fee and surcharge the lease was created under", () => {
+    const html = renderLeaseHtml({ ...DATA, lateFeePerDay: 40, cardSurchargeRate: 0.03 });
+    expect(html).toMatch(/\$40\.00 per day/);
+    expect(html).toMatch(/subject to a 3% processing fee/);
+    expect(html).not.toMatch(/3\.5%/);
   });
 
   it("renders every schedule installment", () => {

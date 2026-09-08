@@ -261,8 +261,6 @@ export function isDirectCoLivingStay(termDays: number): boolean {
  * (leases.late_fee_per_day_snapshot) so a later edit never changes a signed lease.
  */
 export const DEFAULT_LATE_FEE_PER_DAY = 25.0;
-/** @deprecated use DEFAULT_LATE_FEE_PER_DAY; removed once dunning + leaseDocument read the setting. */
-export const LATE_FEE_PER_DAY = DEFAULT_LATE_FEE_PER_DAY;
 
 // --- Phase 5: dunning / reminders / escalations ---
 

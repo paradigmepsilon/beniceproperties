@@ -74,7 +74,9 @@ function row(seq: number, dueDate: string, overrides = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockStorage.getSettingNumber.mockResolvedValue(7);
+  mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+    k === "defaulted_threshold_days" ? 7 : fb,
+  );
   mockStorage.getSetting.mockResolvedValue(undefined); // SMS links on by default
   mockStorage.getProperty.mockResolvedValue(PROP);
   mockStorage.getGuest.mockResolvedValue(GUEST);
@@ -172,6 +174,36 @@ describe("overdue + late fees", () => {
     const res = await runDunningSweep("2026-07-10");
     expect(res.lateFeesAccrued).toBe(0);
   });
+
+  it("accrues the current setting's late fee when the lease has no snapshot", async () => {
+    mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+      k === "late_fee_per_day" ? 40 : k === "defaulted_threshold_days" ? 7 : fb,
+    );
+    mockStorage.getLeases.mockResolvedValue([activeLease()]);
+    mockStorage.getScheduleByLease.mockResolvedValue([row(2, "2026-07-09")]);
+    const res = await runDunningSweep("2026-07-10"); // 1 day past
+
+    const fee = mockStorage.accrueLateFeeOnce.mock.calls[0][0];
+    expect(fee).toMatchObject({ leaseId: "lease-1", scheduleSeq: 2, accrualDate: "2026-07-10", amount: 40 });
+    expect(res.lateFeesAccrued).toBe(1);
+    const msg = mockNotify.notifyGuest.mock.calls[0][0];
+    expect(msg.body).toContain("$40.00/day");
+  });
+
+  it("accrues the lease's snapshotted late fee instead of the current setting", async () => {
+    mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+      k === "late_fee_per_day" ? 40 : k === "defaulted_threshold_days" ? 7 : fb,
+    );
+    mockStorage.getLeases.mockResolvedValue([activeLease({ lateFeePerDaySnapshot: "20.00" })]);
+    mockStorage.getScheduleByLease.mockResolvedValue([row(2, "2026-07-09")]);
+    const res = await runDunningSweep("2026-07-10"); // 1 day past
+
+    const fee = mockStorage.accrueLateFeeOnce.mock.calls[0][0];
+    expect(fee).toMatchObject({ leaseId: "lease-1", scheduleSeq: 2, accrualDate: "2026-07-10", amount: 20 });
+    expect(res.lateFeesAccrued).toBe(1);
+    const msg = mockNotify.notifyGuest.mock.calls[0][0];
+    expect(msg.body).toContain("$20.00/day");
+  });
 });
 
 describe("default", () => {
@@ -191,7 +223,9 @@ describe("default", () => {
   it("respects a custom (configured) threshold", async () => {
     mockStorage.getLeases.mockResolvedValue([activeLease()]);
     mockStorage.getScheduleByLease.mockResolvedValue([row(2, "2026-07-08", { status: "LATE" })]);
-    mockStorage.getSettingNumber.mockResolvedValue(3); // 3-day threshold
+    mockStorage.getSettingNumber.mockImplementation(async (k: string, fb: number) =>
+      k === "defaulted_threshold_days" ? 3 : fb,
+    ); // 3-day threshold
     const res = await runDunningSweep("2026-07-10"); // 2 days past → no default yet
     expect(res.defaultsRaised).toBe(0);
     expect(mockStorage.updateLease).not.toHaveBeenCalledWith("lease-1", { status: "DEFAULTED" });

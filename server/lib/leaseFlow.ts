@@ -26,7 +26,13 @@ import {
   type LeaseDocData,
 } from "./leaseDocument";
 import { storage } from "../storage";
-import { getPricingSettings } from "./pricingSettings";
+import {
+  getPricingSettings,
+  getLateFeePerDay,
+  getCardSurchargeRate,
+  leaseLateFeePerDay,
+  leaseCardSurchargeRate,
+} from "./pricingSettings";
 
 // Unguessable guest-portal token (URL-safe, 32 chars). The guest's self-serve
 // link is /portal/<token>.
@@ -58,6 +64,7 @@ function docDataFrom(
   quote: Awaited<ReturnType<typeof buildLeaseQuote>>,
   guest: { name: string; email: string },
   location: string,
+  pricing: { lateFeePerDay: number; cardSurchargeRate: number },
 ): LeaseDocData {
   return {
     leaseId,
@@ -77,6 +84,8 @@ function docDataFrom(
     totalLeaseValue: quote.totalLeaseValue,
     depositTotal: quote.depositTotal,
     cleaningFeeTotal: quote.cleaningFeeTotal,
+    lateFeePerDay: pricing.lateFeePerDay,
+    cardSurchargeRate: pricing.cardSurchargeRate,
     prorationNote: quote.prorationNote,
     schedule: quote.schedule.map((s) => ({
       seq: s.seq,
@@ -103,10 +112,11 @@ export async function previewLease(input: CreateDraftLeaseInput): Promise<{ docu
   });
   const property = await storage.getProperty(input.propertyId);
   if (!property) throw new LeaseError("Property not found", 404);
+  const pricing = await getPricingSettings();
 
   // Placeholder id — this document is not yet backed by a persisted lease.
   const documentHtml = renderLeaseHtml(
-    docDataFrom("PREVIEW", quote, input.guest, property.location),
+    docDataFrom("PREVIEW", quote, input.guest, property.location, pricing),
   );
   return { documentHtml };
 }
@@ -176,7 +186,7 @@ export async function createDraftLease(input: CreateDraftLeaseInput): Promise<Cr
   });
 
   const documentHtml = renderLeaseHtml(
-    docDataFrom(lease.id, quote, input.guest, property.location),
+    docDataFrom(lease.id, quote, input.guest, property.location, pricing),
   );
 
   return { lease, documentHtml };
@@ -247,6 +257,8 @@ export async function signLease(input: SignLeaseInput): Promise<SignLeaseResult>
     totalLeaseValue: parseFloat(lease.totalLeaseValue),
     depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
     cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
+    lateFeePerDay: leaseLateFeePerDay(lease, await getLateFeePerDay()),
+    cardSurchargeRate: leaseCardSurchargeRate(lease, await getCardSurchargeRate()),
     prorationNote: lease.prorationNote ?? "",
     schedule: schedule.map((s) => ({
       seq: s.scheduleSeq,

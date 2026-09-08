@@ -22,7 +22,8 @@
 // from the lease data passed in.
 // =============================================================================
 
-import { CADENCE_DAYS, LATE_FEE_PER_DAY } from "@shared/schema";
+import { CADENCE_DAYS } from "@shared/schema";
+import { formatSurchargePct } from "@shared/pricing";
 
 export interface LeaseDocRoom {
   name: string;
@@ -58,6 +59,10 @@ export interface LeaseDocData {
   depositTotal: number;
   /** One-time non-refundable cleaning fee due at move-in (sum across rooms). */
   cleaningFeeTotal: number;
+  /** Late fee per day this lease was created under (snapshot), in dollars. */
+  lateFeePerDay: number;
+  /** Card surcharge fraction this lease was created under (snapshot). */
+  cardSurchargeRate: number;
   prorationNote: string;
   schedule: LeaseDocScheduleLine[];
 }
@@ -135,7 +140,7 @@ export const DEFAULT_LEASE_TEMPLATE = {
       heading: "7. Payment Authorization",
       body:
         "A payment method is kept on file for the term of this lease. The Resident may pay each " +
-        "scheduled payment either by that card (subject to a 3.5% processing fee) or manually by " +
+        "scheduled payment either by that card (subject to a {{cardSurchargePct}} processing fee) or manually by " +
         "CashApp/Zelle (no processing fee); a manual payment is held pending until confirmed. The " +
         "Resident authorizes Be Nice Properties to charge the saved payment method on file for any " +
         "scheduled payment not elected as manual, and for any accrued late fees, on or after each " +
@@ -192,7 +197,8 @@ function tokenMap(data: LeaseDocData): Record<string, string> {
         ? ` A one-time, non-refundable cleaning fee of ${fmtMoney(data.cleaningFeeTotal)} is also due at move-in.`
         : "",
     prorationNote: data.prorationNote,
-    lateFeePerDay: fmtMoney(LATE_FEE_PER_DAY),
+    lateFeePerDay: fmtMoney(data.lateFeePerDay),
+    cardSurchargePct: formatSurchargePct(data.cardSurchargeRate),
   };
 }
 

@@ -30,11 +30,14 @@ import { storage } from "../storage";
 import { notifyGuest, notifyAdmin } from "./notifications";
 import { chargeSavedCard } from "./stripe";
 import { buildLeaseChargeMetadata } from "./paymentMetadata";
+import { OVERDUE_MESSAGE_DAYS, DEFAULT_DEFAULTED_THRESHOLD_DAYS } from "@shared/schema";
 import {
-  LATE_FEE_PER_DAY,
-  OVERDUE_MESSAGE_DAYS,
-  DEFAULT_DEFAULTED_THRESHOLD_DAYS,
-} from "@shared/schema";
+  getLateFeePerDay,
+  getCardSurchargeRate,
+  leaseLateFeePerDay,
+  leaseCardSurchargeRate,
+} from "./pricingSettings";
+import { formatSurchargePct } from "@shared/pricing";
 import { todayIso } from "@shared/dates";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow, Guest } from "@shared/schema";
@@ -159,7 +162,9 @@ async function maybeSendReminder(
       `Hi ${guest.name}, your rent payment of $${row.amount} for installment #${row.scheduleSeq} ` +
       `is due ${when} (${row.dueDate}). ` +
       (row.paymentMethod === "CARD_ON_FILE"
-        ? "It will be charged automatically to your card on file, plus a 3.5% card processing fee."
+        ? `It will be charged automatically to your card on file, plus a ${formatSurchargePct(
+            leaseCardSurchargeRate(lease, await getCardSurchargeRate()),
+          )} card processing fee.`
         : "Please send your payment by the due date.") +
       `\n\nPay now, switch to CashApp/Zelle, or view your full schedule: ${portalUrl(lease)}`,
     smsBody:
@@ -195,13 +200,15 @@ async function handleOverdue(
     await storage.updateScheduleRow(row.id, { status: "LATE" });
   }
 
-  // --- Late fee: $25/day from the day after due, accruing indefinitely. One row
-  // per day (idempotent). past=1 → first late day. ---
+  // --- Late fee: the lease's snapshotted per-day rate (else the current
+  // setting) from the day after due, accruing indefinitely. One row per day
+  // (idempotent). past=1 → first late day. ---
+  const lateFeePerDay = leaseLateFeePerDay(lease, await getLateFeePerDay());
   const fee = await storage.accrueLateFeeOnce({
     leaseId: lease.id,
     scheduleSeq: row.scheduleSeq,
     accrualDate: today,
-    amount: LATE_FEE_PER_DAY,
+    amount: lateFeePerDay,
   });
   if (fee) result.lateFeesAccrued += 1;
 
@@ -223,11 +230,11 @@ async function handleOverdue(
         body:
           `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, ` +
           `due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of ` +
-          `$${LATE_FEE_PER_DAY.toFixed(2)}/day is accruing until it is paid.` +
+          `$${lateFeePerDay.toFixed(2)}/day is accruing until it is paid.` +
           `\n\nPay now to stop further fees — by card, or by CashApp/Zelle: ${portalUrl(lease)}`,
         smsBody:
           `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} ` +
-          `overdue; $${LATE_FEE_PER_DAY.toFixed(0)}/day late fee accruing.` +
+          `overdue; $${lateFeePerDay.toFixed(0)}/day late fee accruing.` +
           ((await payLink(lease)) ? ` Pay: ${await payLink(lease)}` : ""),
       });
       await storage.recordNotification({
