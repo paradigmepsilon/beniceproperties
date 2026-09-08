@@ -445,6 +445,14 @@ export interface IStorage {
   }>;
 }
 
+/** Parse an app_settings value as a number. Decimal-safe (parseFloat, not parseInt —
+ *  "0.035" must not read back as 0). Non-numeric/blank → fallback. */
+export function parseSettingNumber(value: string | undefined | null, fallback: number): number {
+  if (value == null || value.trim() === "") return fallback;
+  const n = parseFloat(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 class Storage implements IStorage {
   // --- Hero images (BT-22) ---
   async getActiveHeroImages(): Promise<HeroImage[]> {
@@ -1247,9 +1255,7 @@ class Storage implements IStorage {
 
   async getSettingNumber(key: string, fallback: number): Promise<number> {
     const row = await this.getSetting(key);
-    if (!row) return fallback;
-    const n = parseInt(row.value, 10);
-    return Number.isFinite(n) ? n : fallback;
+    return parseSettingNumber(row?.value, fallback);
   }
 
   async setSetting(key: string, value: string): Promise<AppSetting> {
