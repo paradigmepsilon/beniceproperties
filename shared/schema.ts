@@ -254,8 +254,15 @@ export function isDirectCoLivingStay(termDays: number): boolean {
   return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
 
-/** Flat daily late fee, in dollars (spec: $25/day, no cap). */
-export const LATE_FEE_PER_DAY = 25.0;
+/**
+ * Default flat daily late fee, in dollars (spec: $25/day, no cap). Admin-editable
+ * since 2026-09-08 via app_settings `late_fee_per_day`; this is only the
+ * fallback. Each lease snapshots the value in force when it was created
+ * (leases.late_fee_per_day_snapshot) so a later edit never changes a signed lease.
+ */
+export const DEFAULT_LATE_FEE_PER_DAY = 25.0;
+/** @deprecated use DEFAULT_LATE_FEE_PER_DAY; removed once dunning + leaseDocument read the setting. */
+export const LATE_FEE_PER_DAY = DEFAULT_LATE_FEE_PER_DAY;
 
 // --- Phase 5: dunning / reminders / escalations ---
 
@@ -1139,6 +1146,10 @@ export const insertAppSettingSchema = createInsertSchema(appSettings).omit({ upd
  */
 /** Master opt-OUT for automated guest sends. Absent/any-other-value = ON. */
 export const GUEST_AUTO_NOTIFICATIONS_SETTING = "guest_auto_notifications";
+/** Flat daily late fee in dollars (decimal string). Fallback DEFAULT_LATE_FEE_PER_DAY. */
+export const LATE_FEE_PER_DAY_SETTING = "late_fee_per_day";
+/** Card surcharge as a fraction, e.g. "0.035". Fallback DEFAULT_CREDIT_CARD_RATE (shared/pricing.ts). */
+export const CARD_SURCHARGE_RATE_SETTING = "card_surcharge_rate";
 
 export type AppSetting = typeof appSettings.$inferSelect;
 export type InsertAppSetting = z.infer<typeof insertAppSettingSchema>;

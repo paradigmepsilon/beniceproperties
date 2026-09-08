@@ -19,12 +19,21 @@
 // -----------------------------------------------------------------------------
 
 /**
- * Stripe processing surcharge, ADDED to the guest's total as a visible line item
- * for STRIPE payments only. 3.5% flat (matches TRAD's CREDIT_CARD_RATE). Slightly
- * over-recovers Stripe's published 2.9% + $0.30 on most bookings; intentional and
- * consistent across the portfolio. Tune before going live if desired.
+ * Default Stripe processing surcharge, ADDED to the guest's total as a visible
+ * line item for STRIPE payments only. 3.5% flat (matches TRAD). Admin-editable
+ * since 2026-09-08 via app_settings `card_surcharge_rate` (see
+ * server/lib/pricingSettings.ts); callers on the server pass the live value as
+ * `surchargeRate`, and each lease snapshots the rate it was created under.
  */
-export const CREDIT_CARD_RATE = 0.035;
+export const DEFAULT_CREDIT_CARD_RATE = 0.035;
+/** @deprecated alias kept for the client bundle; prefer the live rate from /api/payments/config. */
+export const CREDIT_CARD_RATE = DEFAULT_CREDIT_CARD_RATE;
+
+/** "0.035" → "3.5%", "0.03" → "3%". Shared by server quote labels, lease doc, client copy. */
+export const formatSurchargePct = (rate: number): string => {
+  const pct = Math.round(rate * 10000) / 100;
+  return `${pct}%`;
+};
 
 /**
  * Tax rate. v1 = 0 (lodging/occupancy tax handled OUTSIDE the app for now).
@@ -54,6 +63,8 @@ export interface BreakdownInput {
   promoDiscount?: number;
   /** LOAD-BEARING: STRIPE adds the surcharge line; CASHAPP/ZELLE do not. */
   paymentMethod: PaymentMethod;
+  /** Card surcharge fraction; defaults to DEFAULT_CREDIT_CARD_RATE. Server passes the live setting. */
+  surchargeRate?: number;
 }
 
 export interface BreakdownResult {
@@ -65,7 +76,7 @@ export interface BreakdownResult {
   subtotal: number;
   /** TAX_RATE × subtotal. */
   tax: number;
-  /** CREDIT_CARD_RATE × (subtotal + tax) for STRIPE; 0 for CASHAPP/ZELLE. */
+  /** surchargeRate × (subtotal + tax) for STRIPE; 0 for CASHAPP/ZELLE. */
   surcharge: number;
   /** subtotal + tax + surcharge — exactly what is charged. */
   total: number;
@@ -99,6 +110,7 @@ export const calculateBreakdown = ({
   extrasTotal = 0,
   promoDiscount = 0,
   paymentMethod,
+  surchargeRate = DEFAULT_CREDIT_CARD_RATE,
 }: BreakdownInput): BreakdownResult => {
   const cf = roundCurrency(cleaningFee);
   const extras = roundCurrency(extrasTotal);
@@ -108,7 +120,7 @@ export const calculateBreakdown = ({
   const tax = roundCurrency(subtotal * TAX_RATE);
 
   const surcharge =
-    paymentMethod === "STRIPE" ? roundCurrency((subtotal + tax) * CREDIT_CARD_RATE) : 0;
+    paymentMethod === "STRIPE" ? roundCurrency((subtotal + tax) * surchargeRate) : 0;
 
   const total = roundCurrency(subtotal + tax + surcharge);
 

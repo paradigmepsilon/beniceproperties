@@ -3,7 +3,7 @@
 // charged, surcharge is a visible line for STRIPE and dropped for CashApp/Zelle.
 
 import { describe, it, expect } from "vitest";
-import { calculateBreakdown, calculateWeeklyCharge, CREDIT_CARD_RATE } from "./pricing";
+import { calculateBreakdown, calculateWeeklyCharge, CREDIT_CARD_RATE, DEFAULT_CREDIT_CARD_RATE, formatSurchargePct } from "./pricing";
 
 describe("calculateBreakdown", () => {
   it("adds a 3.5% surcharge for STRIPE", () => {
@@ -45,5 +45,27 @@ describe("calculateWeeklyCharge", () => {
   it("is rent-only and method-aware", () => {
     expect(calculateWeeklyCharge(250, "ZELLE").total).toBe(250);
     expect(calculateWeeklyCharge(250, "STRIPE").total).toBe(258.75); // 250 × 1.035
+  });
+});
+
+describe("surchargeRate override", () => {
+  it("defaults to 3.5% and honours an explicit rate", () => {
+    expect(DEFAULT_CREDIT_CARD_RATE).toBe(0.035);
+    const b = calculateBreakdown({ baseAmount: 100, paymentMethod: "STRIPE", surchargeRate: 0.03 });
+    expect(b.surcharge).toBe(3);
+    expect(b.total).toBe(103);
+  });
+  it("still charges nothing for CashApp/Zelle whatever the rate", () => {
+    const b = calculateBreakdown({ baseAmount: 100, paymentMethod: "ZELLE", surchargeRate: 0.05 });
+    expect(b.surcharge).toBe(0);
+  });
+});
+
+describe("formatSurchargePct", () => {
+  it("renders whole and fractional percents without trailing zeros", () => {
+    expect(formatSurchargePct(0.035)).toBe("3.5%");
+    expect(formatSurchargePct(0.03)).toBe("3%");
+    expect(formatSurchargePct(0.0299)).toBe("2.99%");
+    expect(formatSurchargePct(0)).toBe("0%");
   });
 });
