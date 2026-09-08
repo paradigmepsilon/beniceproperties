@@ -41,6 +41,7 @@ import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { money } from "@/lib/format";
 import { busyToDisabledMatchers, rangeHitsBusy, datesBookable } from "@/lib/availability";
+import { usePricingConfig } from "@/lib/usePricingConfig";
 
 type Cadence = (typeof PAYMENT_CADENCES)[number];
 
@@ -74,6 +75,7 @@ function cleanError(err: unknown): string {
 
 export default function LeaseBooking() {
   const [, navigate] = useLocation();
+  const { surchargePct } = usePricingConfig();
   // Wouter v3 useLocation() returns the pathname only; the query lives in useSearch().
   const search = useSearch();
   const params = useMemo(() => new URLSearchParams(search), [search]);
@@ -497,7 +499,7 @@ export default function LeaseBooking() {
                         date ({quote.startDate}) your first {CADENCE_ADJECTIVE[quote.cadence]} payment
                         {quote.cleaningFeeTotal > 0 ? " plus the one-time cleaning fee are" : " is"} due,
                         and the rest follows your schedule above. You can pay each installment by card
-                        (3.5% fee) or by CashApp/Zelle (no fee).
+                        ({surchargePct} fee) or by CashApp/Zelle (no fee).
                       </p>
                     )}
 

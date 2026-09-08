@@ -22,6 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
 import { todayIso } from "@shared/dates";
+import { usePricingConfig } from "@/lib/usePricingConfig";
 
 /** Mirrors OPEN_FOR_PAY in server/lib/portal.ts. Keep the two in sync. */
 const OPEN_FOR_PAY = new Set(["SCHEDULED", "DUE", "LATE", "FAILED"]);
@@ -128,6 +129,7 @@ export default function Portal() {
   const { token } = useParams();
   const { toast } = useToast();
   const qc = useQueryClient();
+  const { surchargePct } = usePricingConfig();
   const key = ["/api/portal", token!];
 
   const { data, isLoading, error } = useQuery<PortalView>({
@@ -488,7 +490,7 @@ export default function Portal() {
               <p className="pt-2 text-xs text-muted-foreground">{lease.prorationNote}</p>
             )}
             <p className="pt-1 text-xs text-muted-foreground">
-              Card payments include a 3.5% processing fee. CashApp/Zelle has no fee. Your payment is
+              Card payments include a {surchargePct} processing fee. CashApp/Zelle has no fee. Your payment is
               held pending until we confirm it.
             </p>
           </CardContent>

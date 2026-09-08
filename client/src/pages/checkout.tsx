@@ -32,6 +32,7 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
 import { identify, track } from "@/lib/analytics";
+import { usePricingConfig } from "@/lib/usePricingConfig";
 
 // Short stays are card-only (Stripe), mirroring TRAD. The 3.5% card surcharge
 // still shows as a line item in the quote below.
@@ -47,6 +48,7 @@ interface IntentState {
 export default function Checkout() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  const { surchargePct } = usePricingConfig();
 
   // Wouter v3 useLocation() returns the pathname only; the query lives in useSearch().
   const search = useSearch();
@@ -245,7 +247,7 @@ export default function Checkout() {
                       </div>
                       {quote.recurring.surcharge > 0 && (
                         <div className="flex justify-between">
-                          <span>Card processing (3.5%)</span>
+                          <span>Card processing ({surchargePct})</span>
                           <span>{money(quote.recurring.surcharge)}</span>
                         </div>
                       )}
