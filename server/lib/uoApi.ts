@@ -19,32 +19,26 @@ import { activateVerifiedLease } from "./leasePayments";
 import { sendStaffMessage } from "./adminMessages";
 import { log } from "../server-log";
 import { LeaseError } from "./lease";
-import type { Lease, Property, LeaseRoom } from "@shared/schema";
+import { insertPropertySchema, insertRoomSchema } from "@shared/schema";
+import type { Lease, Property, Room, LeaseRoom } from "@shared/schema";
 
 // ---------------------------------------------------------------------------
 // READS
 // ---------------------------------------------------------------------------
 
-export async function listPropertiesWithRooms() {
+/**
+ * Every property with its rooms — FULL rows (all rate tiers, weekday prices,
+ * photos, address, iCal URL…). UO's inventory editor needs the whole record, and
+ * exposing it here is what lets UO stop reading BNP's DB for edits. Rooms only
+ * for COLIVING; other types get [] without a query. Authenticated operator
+ * surface — the iCal URL is secret-ish but UO already manages it.
+ */
+export async function listPropertiesWithRooms(): Promise<Array<Property & { rooms: Room[] }>> {
   const properties = await storage.getProperties();
-  const out = [];
+  const out: Array<Property & { rooms: Room[] }> = [];
   for (const p of properties) {
     const rooms = p.type === "COLIVING" ? await storage.getRoomsByProperty(p.id) : [];
-    out.push({
-      id: p.id,
-      name: p.name,
-      entity: p.entity,
-      type: p.type,
-      location: p.location,
-      active: p.active,
-      rooms: rooms.map((r) => ({
-        id: r.id,
-        name: r.name,
-        roomNumber: r.roomNumber,
-        weeklyRent: r.weeklyRent,
-        status: r.status,
-      })),
-    });
+    out.push({ ...p, rooms });
   }
   return out;
 }
@@ -302,4 +296,70 @@ export async function waiveLateFees(args: { leaseId: string; scheduleSeq: number
     await storage.updateScheduleRow(row.id, { manualNote: note });
   }
   return { waivedCount: target.length };
+}
+
+// ---------------------------------------------------------------------------
+// PROPERTY / ROOM WRITE-BACKS (2026-09-08). UO is the primary editor of BNP
+// inventory and prices; these are the same Zod schemas the BNP admin routes
+// use, so admin and UO can never accept different field sets. Logs name the
+// actor and the changed KEYS only (a patch may carry the tokenised iCal URL).
+// ---------------------------------------------------------------------------
+
+function requireActor(actor: string): string {
+  if (!actor || !actor.trim()) throw new LeaseError("actor is required", 400);
+  return actor.trim();
+}
+
+function firstIssue(err: { errors: Array<{ message: string }> }, fallback: string): string {
+  return err.errors[0]?.message ?? fallback;
+}
+
+export async function updateProperty(args: { propertyId: string; patch: unknown; actor: string }): Promise<Property> {
+  const actor = requireActor(args.actor);
+  const parsed = insertPropertySchema.partial().safeParse(args.patch);
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid property patch"), 400);
+  const keys = Object.keys(parsed.data);
+  if (keys.length === 0) throw new LeaseError("Empty patch", 400);
+  const updated = await storage.updateProperty(args.propertyId, parsed.data);
+  if (!updated) throw new LeaseError("Property not found", 404);
+  log(`property ${args.propertyId} updated by uo:${actor}: ${keys.join(", ")}`, "uo");
+  return updated;
+}
+
+export async function updateRoom(args: { roomId: string; patch: unknown; actor: string }): Promise<Room> {
+  const actor = requireActor(args.actor);
+  const parsed = insertRoomSchema.partial().safeParse(args.patch);
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid room patch"), 400);
+  const keys = Object.keys(parsed.data);
+  if (keys.length === 0) throw new LeaseError("Empty patch", 400);
+  const updated = await storage.updateRoom(args.roomId, parsed.data);
+  if (!updated) throw new LeaseError("Room not found", 404);
+  log(`room ${args.roomId} updated by uo:${actor}: ${keys.join(", ")}`, "uo");
+  return updated;
+}
+
+export async function createProperty(args: { property: unknown; actor: string }): Promise<Property> {
+  const actor = requireActor(args.actor);
+  const parsed = insertPropertySchema.safeParse(args.property);
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid property"), 400);
+  const created = await storage.createProperty(parsed.data);
+  log(`property ${created.id} created by uo:${actor}`, "uo");
+  return created;
+}
+
+export async function createRoom(args: { propertyId: string; room: unknown; actor: string }): Promise<Room> {
+  const actor = requireActor(args.actor);
+  const parent = await storage.getProperty(args.propertyId);
+  if (!parent) throw new LeaseError("Property not found", 404);
+  if (parent.type !== "COLIVING") throw new LeaseError("Rooms can only be added to COLIVING properties", 400);
+  // insertRoomSchema's `status: z.enum(ROOM_STATUSES)` refinement (needed for
+  // the enum) replaces drizzle-zod's inferred-from-default optionality, so a
+  // status-less create would otherwise 400 on a field the DB itself defaults
+  // to AVAILABLE. Seed it here so createRoom mirrors the DB default; an
+  // explicit status in the payload still wins (spread order).
+  const parsed = insertRoomSchema.safeParse({ status: "AVAILABLE", ...(args.room as object), propertyId: args.propertyId });
+  if (!parsed.success) throw new LeaseError(firstIssue(parsed.error, "Invalid room"), 400);
+  const created = await storage.createRoom(parsed.data);
+  log(`room ${created.id} created under ${args.propertyId} by uo:${actor}`, "uo");
+  return created;
 }

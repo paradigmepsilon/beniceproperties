@@ -1632,6 +1632,41 @@ export async function registerRoutes(app: Express): Promise<void> {
     putPricingSettingsHandler((req) => adminActor(req)),
   );
 
+  // --- Property / room write-backs (UO is the primary inventory + price editor) ---
+  const actorBody = z.string().min(1, "actor is required");
+  app.patch("/api/uo/properties/:id", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ actor: actorBody, patch: z.record(z.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await uo.updateProperty({ propertyId: req.params.id, ...parsed.data }));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.patch("/api/uo/rooms/:id", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ actor: actorBody, patch: z.record(z.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.json(await uo.updateRoom({ roomId: req.params.id, ...parsed.data }));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.post("/api/uo/properties", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ actor: actorBody, property: z.record(z.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.status(201).json(await uo.createProperty(parsed.data));
+    } catch (e) { uoErr(e, res, next); }
+  });
+  app.post("/api/uo/properties/:id/rooms", requireServiceToken, async (req, res, next) => {
+    try {
+      const schema = z.object({ actor: actorBody, room: z.record(z.unknown()) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      res.status(201).json(await uo.createRoom({ propertyId: req.params.id, ...parsed.data }));
+    } catch (e) { uoErr(e, res, next); }
+  });
+
   // =========================================================================
   // TASK 6 — staff messaging (guest_messages threads), manual blocks
   // (off-platform/maintenance holds), the Airbnb iCal refresh trigger, the

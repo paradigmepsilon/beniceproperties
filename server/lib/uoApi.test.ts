@@ -10,6 +10,9 @@ const mockStorage = vi.hoisted(() => ({
   getLease: vi.fn(),
   getLeases: vi.fn(),
   getProperty: vi.fn(),
+  getProperties: vi.fn(),
+  getRoomsByProperty: vi.fn(),
+  getRoom: vi.fn(),
   getLeaseRooms: vi.fn(),
   getScheduleByLease: vi.fn(),
   getLateFeesByLease: vi.fn(),
@@ -18,6 +21,10 @@ const mockStorage = vi.hoisted(() => ({
   updateEscalation: vi.fn(),
   updateLease: vi.fn(),
   updateLateFee: vi.fn(),
+  updateProperty: vi.fn(),
+  updateRoom: vi.fn(),
+  createProperty: vi.fn(),
+  createRoom: vi.fn(),
 }));
 vi.mock("../storage", () => ({ storage: mockStorage }));
 
@@ -33,6 +40,11 @@ import {
   respondToMessage,
   waiveLateFees,
   listPaymentsWithMetadata,
+  listPropertiesWithRooms,
+  updateProperty,
+  updateRoom,
+  createProperty,
+  createRoom,
 } from "./uoApi";
 import { LeaseError } from "./lease";
 
@@ -199,5 +211,71 @@ describe("listPaymentsWithMetadata", () => {
     expect((rent.metadata as any).entity).toBe("BNP");
     expect((rent.metadata as any).property_name).toBe("Old Bill Cook");
     expect((fee.metadata as any).payment_kind).toBe("LATE_FEE");
+  });
+});
+
+describe("listPropertiesWithRooms", () => {
+  it("returns full property rows with full room rows nested", async () => {
+    const prop = { ...PROP, biweeklyRate: "700.00", airbnbIcalUrl: "https://x/ical" };
+    const room = { id: "r1", propertyId: "prop-1", name: "Room 1", weeklyRent: "350.00", biweeklyRate: "650.00", cleaningFee: "0", status: "AVAILABLE" };
+    mockStorage.getProperties.mockResolvedValue([prop]);
+    mockStorage.getRoomsByProperty.mockResolvedValue([room]);
+    const out = await listPropertiesWithRooms();
+    expect(out[0]).toMatchObject({ ...prop, rooms: [room] });
+  });
+  it("gives non-COLIVING properties an empty rooms array without querying", async () => {
+    mockStorage.getProperties.mockResolvedValue([{ ...PROP, type: "STR" }]);
+    const out = await listPropertiesWithRooms();
+    expect(out[0].rooms).toEqual([]);
+    expect(mockStorage.getRoomsByProperty).not.toHaveBeenCalled();
+  });
+});
+
+describe("updateProperty / updateRoom write-backs", () => {
+  beforeEach(() => {
+    mockStorage.updateProperty.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, ...patch }));
+    mockStorage.updateRoom.mockImplementation(async (id: string, patch: Record<string, unknown>) => ({ id, ...patch }));
+  });
+  it("validates through insertPropertySchema.partial() and returns the updated row", async () => {
+    const out = await updateProperty({ propertyId: "prop-1", patch: { biweeklyRate: "700.00", monPrice: "120.00" }, actor: "alex@x.com" });
+    expect(mockStorage.updateProperty).toHaveBeenCalledWith("prop-1", { biweeklyRate: "700.00", monPrice: "120.00" });
+    expect(out).toMatchObject({ id: "prop-1", biweeklyRate: "700.00" });
+  });
+  it("rejects an invalid field value with 400", async () => {
+    await expect(updateProperty({ propertyId: "prop-1", patch: { type: "CASTLE" }, actor: "a" })).rejects.toMatchObject({ status: 400 });
+    expect(mockStorage.updateProperty).not.toHaveBeenCalled();
+  });
+  it("rejects an empty patch and a missing actor", async () => {
+    await expect(updateProperty({ propertyId: "prop-1", patch: {}, actor: "a" })).rejects.toMatchObject({ status: 400 });
+    await expect(updateProperty({ propertyId: "prop-1", patch: { name: "X" }, actor: "" })).rejects.toMatchObject({ status: 400 });
+  });
+  it("404s when the row does not exist", async () => {
+    mockStorage.updateProperty.mockResolvedValue(undefined);
+    await expect(updateProperty({ propertyId: "nope", patch: { name: "X" }, actor: "a" })).rejects.toMatchObject({ status: 404 });
+  });
+  it("updates a room's cleaning fee and biweekly rate", async () => {
+    const out = await updateRoom({ roomId: "r1", patch: { cleaningFee: "50.00", biweeklyRate: "650.00" }, actor: "a" });
+    expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { cleaningFee: "50.00", biweeklyRate: "650.00" });
+    expect(out).toMatchObject({ id: "r1", cleaningFee: "50.00" });
+  });
+  it("rejects a bad room status", async () => {
+    await expect(updateRoom({ roomId: "r1", patch: { status: "ON_FIRE" }, actor: "a" })).rejects.toMatchObject({ status: 400 });
+  });
+});
+
+describe("createProperty / createRoom write-backs", () => {
+  it("creates a property through insertPropertySchema", async () => {
+    mockStorage.createProperty.mockImplementation(async (p: Record<string, unknown>) => ({ id: "new", ...p }));
+    const out = await createProperty({ property: { name: "Third House", location: "Atlanta", type: "COLIVING" }, actor: "a" });
+    expect(out).toMatchObject({ id: "new", name: "Third House" });
+  });
+  it("creates a room only under a COLIVING parent", async () => {
+    mockStorage.getProperty.mockResolvedValue({ ...PROP, type: "STR" });
+    await expect(createRoom({ propertyId: "prop-1", room: { name: "R", weeklyRent: "300", depositAmount: "300" }, actor: "a" })).rejects.toMatchObject({ status: 400 });
+    mockStorage.getProperty.mockResolvedValue({ ...PROP, type: "COLIVING" });
+    mockStorage.createRoom.mockImplementation(async (r: Record<string, unknown>) => ({ id: "r9", ...r }));
+    const out = await createRoom({ propertyId: "prop-1", room: { name: "R", weeklyRent: "300", depositAmount: "300" }, actor: "a" });
+    expect(mockStorage.createRoom).toHaveBeenCalledWith(expect.objectContaining({ propertyId: "prop-1", name: "R" }));
+    expect(out.id).toBe("r9");
   });
 });
