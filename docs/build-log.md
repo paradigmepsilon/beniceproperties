@@ -3867,3 +3867,31 @@ are live contradictions until one side is edited (each is a one-line change):
   a UO-side save that PUTs `/api/uo/properties/:id/access-info` would retire the script.
 - `check:api` is referenced in `scripts/build-api.mjs` comments but is not a package script.
 - `parking` / `ending-early` house-rules sections await owner copy.
+
+### Addendum — 2026-09-09, owner-authorized production run (executed)
+
+Owner decisions applied: **quiet hours 10 PM–7 AM** (page now matches RBA), **no pets** (page
+unchanged; RBA's legally-required-accommodation carve-out kept verbatim — assistance animals are
+not pets), **late fee $25** (RBA text edited from $50; version string NOT bumped — owner to
+re-issue with counsel if they want a 2026.4), **counsel review confirmed** for BNP-RBA-2026.3.
+
+Executed, in order:
+1. Commit `e4c71e8` on `feat/booking-approval-gate`.
+2. `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME` added to Vercel
+   **production** by piping UO's `.env` values (never displayed).
+3. `backup-tables.mjs bookings payments leases` → `docs/migration-backups/2026-09-09-*.json`
+   (gitignored). `push-pricing-snapshots.mjs` ✔ then `push-booking-gate.mjs` ✔ against production
+   Neon; verified: 5 `*_snapshot` columns on `leases`, all 4 gate tables present.
+4. `scripts/access-info.local.json` prefilled (addresses → directions, UO parking notes, 4:00 PM /
+   11:00 AM) and **applied** for HUTCHENS HOME + OBC Home. UO's `wifi` field is a uniform
+   letters-only placeholder on every listing, so **`wifiSsid` is still missing on both** — approve
+   returns 409 until the owner adds wifi name (+ password) and re-runs `--apply`.
+5. `main` fast-forwarded to `e4c71e8` (pricing + gate branches, 23 commits), pushed; Vercel prod
+   deploy Ready. Live: `/api/properties` 200 · `/api/cron/sweep` without bearer → 401 ·
+   `www.beniceproperties.com/house-rules` shows 10 PM–7 AM, no pets, "Last updated 2026-09-09".
+
+**Not done:** Telegram env (no BNP bot; alerts log only) · UO companion branch
+`feat/uo-pricing-writeback` in the Unified-Ops repo is still unmerged/undeployed (was not in the
+authorized list) · wifi per property.
+
+MIGRATION-2026-09-09: COMPLETE — pricing snapshots + booking gate live
