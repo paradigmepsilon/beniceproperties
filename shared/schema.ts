@@ -28,6 +28,7 @@ import {
   boolean,
   jsonb,
   index,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -81,7 +82,11 @@ export const BOOKING_STATUSES = [
 export const NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT"] as const;
 export const PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"] as const;
 export const PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"] as const;
-export const PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED"] as const;
+// REFUNDED: the money went back to the guest. A value-only change on a plain
+// text column. Keeping it a STATUS rather than a negative-amount `payments` row
+// is deliberate — two rows sharing one stripe_ref would break
+// getPaymentByStripeRef, which destructures `const [row] =` with no ORDER BY.
+export const PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED", "REFUNDED"] as const;
 
 // --- Entity owning a property. Sources the Stripe metadata `entity` field from
 // data, never hard-coded. TRAD is a subset of BNP and shares one Stripe account;
@@ -291,6 +296,14 @@ export const ESCALATION_KINDS = [
   "VERIFICATION_PENDING", // a tenant uploaded a license awaiting admin review
   "BOOKING_CONFLICT", // a paid booking landed on dates that were taken
   "CALENDAR_SYNC_FAILED", // iCal sync couldn't refresh a listing's external calendar
+  // --- Short-stay approval gate ---
+  "GATE_AWAITING_APPROVAL", // LOW: guest submitted ID + signature; a human must review
+  // HIGH: check-in has arrived and the docs are STILL incomplete. Raised instead
+  // of auto-declining — a guest arriving today must never have their booking
+  // cancelled and refunded out from under them by a scheduled job.
+  "GATE_INCOMPLETE_AT_CHECKIN",
+  "REFUND_FAILED", // HIGH: a decline cancelled the booking but Stripe refused the refund
+  "ACCESS_INFO_MISSING", // HIGH: a guest arrives tomorrow and the property has no door code/wifi
 ] as const;
 export const ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"] as const;
 export const ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"] as const;
@@ -1009,6 +1022,233 @@ export type Vehicle = typeof vehicles.$inferSelect;
 export type InsertVehicle = z.infer<typeof insertVehicleSchema>;
 
 // =============================================================================
+// booking_gate — the approval gate for a short co-living stay (7–28 nights).
+//
+// A 1:1 SIDE TABLE, not columns on `bookings`, and that is a security decision:
+// GET /api/lookup returns a whole booking row behind a reference+email
+// challenge, so a `door_code` column would be published by that endpoint the
+// day it was added. Keeping the code here makes the leak impossible rather than
+// merely forbidden — the same reasoning `vehicles` uses for lease data.
+//
+// booking_id is the PRIMARY KEY, so "exactly one gate per booking" is a
+// database guarantee and ensureBookingGate can be a plain ON CONFLICT DO NOTHING.
+// =============================================================================
+export const bookingGate = pgTable("booking_gate", {
+  bookingId: varchar("booking_id")
+    .primaryKey()
+    .references(() => bookings.id),
+
+  // Unguessable credential for the guest's document page — the token IS the
+  // auth, mirroring leases.portal_token. 24 chars of base62 (~143 bits): long
+  // enough to be unguessable, short enough that
+  // "…/stay/<token>/extend" fits a single 160-char GSM-7 SMS segment.
+  gateToken: text("gate_token").notNull(),
+
+  // When the 72h silence clock expires. STORED, not derived, so the sweep is one
+  // indexable comparison, the rule is auditable after the fact, and an admin can
+  // grant an extension with no code change. Rewritten on every fix-request, so
+  // "silence" means since WE last asked, not since booking.
+  docsDeadlineAt: timestamp("docs_deadline_at"),
+
+  // --- Rental agreement (typed e-signature, E-SIGN/UETA) ---
+  agreementSignedName: text("agreement_signed_name"),
+  agreementSignedAt: timestamp("agreement_signed_at"),
+  agreementSignedIp: text("agreement_signed_ip"),
+  // Route string, e.g. /api/stay/<token>/agreement. Named honestly, unlike
+  // leases.signed_pdf_url — there is no PDF library in this app.
+  agreementDocumentUrl: text("agreement_document_url"),
+  // The frozen artifact, self-contained HTML stored inline (no blob store).
+  agreementDocumentHtml: text("agreement_document_html"),
+
+  // --- Driver's license (VERIFICATION_STATUSES; mirrors the lease columns) ---
+  verificationStatus: text("verification_status").notNull().default("NOT_SUBMITTED"),
+  // R2 object key only — the IMAGE never touches this database.
+  licenseR2Key: text("license_r2_key"),
+  licenseUploadedAt: timestamp("license_uploaded_at"),
+  verificationReviewedAt: timestamp("verification_reviewed_at"),
+  verificationReviewedBy: text("verification_reviewed_by"),
+  verificationRejectionReason: text("verification_rejection_reason"),
+
+  // --- Admin decision ---
+  approvedAt: timestamp("approved_at"),
+  approvedBy: text("approved_by"),
+  // The admin affirms the licence name matches the renter. Recorded because it
+  // is the substance of the review, not a UI nicety.
+  nameMatchesAck: boolean("name_matches_ack").notNull().default(false),
+
+  // SENSITIVE — a property access code. Never log it, never send it to Telegram,
+  // never put it in an SMS, an error message, an escalation detail, or a test
+  // fixture. Only two surfaces render it: the welcome email and the token-gated
+  // stay page. See shared/doorCode.ts.
+  doorCode: text("door_code"),
+
+  // --- Non-terminal bounce-back ---
+  fixRequestedAt: timestamp("fix_requested_at"),
+  fixRequestedBy: text("fix_requested_by"),
+  fixRequestedReason: text("fix_requested_reason"),
+  // Round counter. Used as lifecycle_events.schedule_seq so a SECOND fix request
+  // can send a fresh nudge instead of being deduped against the first.
+  fixRequestCount: integer("fix_request_count").notNull().default(0),
+
+  // --- Terminal decline (the booking itself becomes CANCELLED) ---
+  cancelReason: text("cancel_reason"),
+  // "system:gate-sweep" for an auto-decline, otherwise an admin email.
+  cancelledBy: text("cancelled_by"),
+
+  // --- Extension audit ---
+  // The check_out this stay was originally sold with, set the first time the
+  // booking is extended so the original term is never lost.
+  originalCheckOut: date("original_check_out"),
+  // Monotonic extension ordinal. Used as lifecycle_events.schedule_seq for the
+  // checkout reminders, so extending a stay RE-ARMS them — lifecycle_events has
+  // no date in its key, so without this an extended stay would silently never
+  // be reminded again, and therefore never offered another extension.
+  extensionCount: integer("extension_count").notNull().default(0),
+
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type BookingGate = typeof bookingGate.$inferSelect;
+export type InsertBookingGate = typeof bookingGate.$inferInsert;
+
+// =============================================================================
+// payment_refunds — one row per Stripe refund. The `payments` row flips to
+// REFUNDED; this is the audit trail of how and by whom.
+//
+// UNIQUE(stripe_refund_id) makes double-recording structurally impossible, which
+// matters because a Stripe idempotency key only lives 24 hours and the ghost
+// sweep retries daily.
+// =============================================================================
+export const REFUND_KINDS = [
+  "GATE_DECLINE", // an admin declined a gated stay
+  "GATE_AUTO_DECLINE", // the 72h sweep declined it with no human in the loop
+  "CONFLICT", // admin cancelled a paid CONFLICT booking
+  "DEPOSIT_RETURN", // refundable lease deposit returned at move-out
+  "ADMIN", // any other deliberate admin refund
+] as const;
+
+export const paymentRefunds = pgTable(
+  "payment_refunds",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    paymentId: varchar("payment_id")
+      .notNull()
+      .references(() => payments.id),
+    bookingId: varchar("booking_id").references(() => bookings.id),
+    // Not an FK: lease refunds are recorded here too, and the column exists so
+    // reconciliation can group by lease without a second table.
+    leaseId: varchar("lease_id"),
+    stripeRefundId: text("stripe_refund_id").notNull(),
+    stripePaymentIntentId: text("stripe_payment_intent_id").notNull(),
+    amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+    // REFUND_KINDS
+    kind: text("kind").notNull(),
+    // Operator-supplied. Must never contain guest contact details or a door code.
+    reason: text("reason"),
+    // Admin email, or "system:gate-sweep" when no human was involved.
+    actor: text("actor").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    stripeRefundIdx: uniqueIndex("payment_refunds_stripe_uidx").on(table.stripeRefundId),
+    paymentIdx: index("payment_refunds_payment_idx").on(table.paymentId),
+    bookingIdx: index("payment_refunds_booking_idx").on(table.bookingId),
+  }),
+);
+
+export type PaymentRefund = typeof paymentRefunds.$inferSelect;
+export type InsertPaymentRefund = typeof paymentRefunds.$inferInsert;
+
+// =============================================================================
+// Access info — what a guest needs to get in. SEPARATE TABLES, deliberately
+// against the convention of putting fields on `properties`/`rooms`.
+//
+// GET /api/properties and GET /api/properties/:id return property rows built
+// from db.select(). An `access_info` column there would publish the wifi
+// password on the PUBLIC API the moment it was added, and the hazard would
+// silently return the next time anyone wrote a new public endpoint over
+// `properties`. A separate table cannot be leaked by accident.
+//
+// jsonb, so adding a field needs no migration (EXPANSION RULE).
+// =============================================================================
+
+/** Property-level arrival information. Two fields are SENSITIVE — see below. */
+export interface PropertyAccessInfo {
+  wifiSsid?: string;
+  /** SENSITIVE. */
+  wifiPassword?: string;
+  /** SENSITIVE — gate or lobby code shared by the whole building. */
+  buildingEntry?: string;
+  directions?: string;
+  parking?: string;
+  /** Free text, e.g. "4:00 PM". No check-in TIME column exists on bookings. */
+  checkInFrom?: string;
+  checkOutBy?: string;
+  notes?: string;
+}
+
+/** Room-level "how do I find my actual room once I'm inside". */
+export interface RoomAccessInfo {
+  findingNotes?: string;
+  floor?: string;
+  doorLabel?: string;
+  notes?: string;
+}
+
+/**
+ * Keys whose VALUES must never appear in a log line, a Telegram message, an SMS
+ * body, or an escalation detail. The door code on booking_gate is the third.
+ */
+export const SENSITIVE_ACCESS_FIELDS = ["wifiPassword", "buildingEntry"] as const;
+
+export const propertyAccessInfoSchema: z.ZodType<PropertyAccessInfo> = z
+  .object({
+    wifiSsid: z.string().max(200).optional(),
+    wifiPassword: z.string().max(200).optional(),
+    buildingEntry: z.string().max(200).optional(),
+    directions: z.string().max(4000).optional(),
+    parking: z.string().max(2000).optional(),
+    checkInFrom: z.string().max(50).optional(),
+    checkOutBy: z.string().max(50).optional(),
+    notes: z.string().max(4000).optional(),
+  })
+  .strict();
+
+export const roomAccessInfoSchema: z.ZodType<RoomAccessInfo> = z
+  .object({
+    findingNotes: z.string().max(2000).optional(),
+    floor: z.string().max(50).optional(),
+    doorLabel: z.string().max(100).optional(),
+    notes: z.string().max(2000).optional(),
+  })
+  .strict();
+
+export const propertyAccessInfo = pgTable("property_access_info", {
+  propertyId: varchar("property_id")
+    .primaryKey()
+    .references(() => properties.id),
+  info: jsonb("info").$type<PropertyAccessInfo>().notNull().default({}),
+  updatedBy: text("updated_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const roomAccessInfo = pgTable("room_access_info", {
+  roomId: varchar("room_id")
+    .primaryKey()
+    .references(() => rooms.id),
+  info: jsonb("info").$type<RoomAccessInfo>().notNull().default({}),
+  updatedBy: text("updated_by"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export type PropertyAccessInfoRow = typeof propertyAccessInfo.$inferSelect;
+export type RoomAccessInfoRow = typeof roomAccessInfo.$inferSelect;
+
+
+// =============================================================================
 // payment_schedule — the installment plan generated from a lease's term +
 // cadence. schedule_seq is 1-based; row 1 is always due on the booking date
 // (first payment due on booking). Generated by shared/leaseSchedule.ts so the
@@ -1281,6 +1521,24 @@ export const LIFECYCLE_EVENT_TYPES = [
   "ADMIN_NEW_BOOKING", // short-stay booking materialized (admin)
   "LEASE_HOLD_RELEASED", // hold expired — room released back to inventory
   "FIRST_PAYMENT_REMINDER", // signed, deposit unpaid — nudge before the hold lapses
+
+  // --- Short-stay approval gate (booking-scoped; scheduleSeq carries a ROUND
+  // number, not an installment — see the note on lifecycleEvents.scheduleSeq).
+  "STAY_DOCS_REQUIRED", // paid, gated — here is what is still outstanding (guest)
+  "STAY_DOCS_COMPLETE", // both docs in, under review (guest)
+  "STAY_ADMIN_AWAITING_APPROVAL", // both docs in (admin: email + Telegram)
+  "STAY_FIX_REQUESTED", // admin bounced a document; non-terminal (guest)
+  "STAY_APPROVED_WELCOME", // approved — dates, door code, wifi, directions (guest)
+  "STAY_GHOST_NUDGE_1", // day 1 of silence (guest)
+  "STAY_GHOST_NUDGE_2", // day 2 of silence — "cancelled tomorrow" (guest)
+  "STAY_DECLINED_REFUNDED", // terminal: cancelled and refunded in full (guest)
+  "STAY_ADMIN_AUTO_DECLINED", // the sweep refunded without a human (admin)
+  "STAY_CHECKOUT_48H", // 2 days out, carries the extension offer (guest)
+  "STAY_CHECKOUT_24H", // 1 day out, checkout time (guest)
+  "STAY_EXTENDED", // extension paid and applied (guest)
+  "STAY_ADMIN_EXTENDED", // extension paid and applied (admin)
+  "STAY_ADMIN_EXTENSION_CONFLICT", // extension PAID but the dates were taken (admin)
+  "STR_PRE_ARRIVAL", // day-before check-in details (guest) — closes the promise
 ] as const;
 
 export const LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"] as const;

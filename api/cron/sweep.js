@@ -53,15 +53,18 @@ __export(schema_exports, {
   PAYMENT_TYPES: () => PAYMENT_TYPES,
   PROPERTY_ENTITIES: () => PROPERTY_ENTITIES,
   PROPERTY_TYPES: () => PROPERTY_TYPES,
+  REFUND_KINDS: () => REFUND_KINDS,
   ROOM_STATUSES: () => ROOM_STATUSES,
   ROOM_UNBOOKABLE_STATUSES: () => ROOM_UNBOOKABLE_STATUSES,
   SCHEDULE_PAYMENT_METHODS: () => SCHEDULE_PAYMENT_METHODS,
   SCHEDULE_STATUSES: () => SCHEDULE_STATUSES,
+  SENSITIVE_ACCESS_FIELDS: () => SENSITIVE_ACCESS_FIELDS,
   US_STATE_CODES: () => US_STATE_CODES,
   VERIFICATION_STATUSES: () => VERIFICATION_STATUSES,
   adminUsers: () => adminUsers,
   allowedCadencesForTerm: () => allowedCadencesForTerm,
   appSettings: () => appSettings,
+  bookingGate: () => bookingGate,
   bookingIntents: () => bookingIntents,
   bookings: () => bookings,
   externalBookings: () => externalBookings,
@@ -109,10 +112,15 @@ __export(schema_exports, {
   newsletterSubscribers: () => newsletterSubscribers,
   notificationLog: () => notificationLog,
   partnerInquiries: () => partnerInquiries,
+  paymentRefunds: () => paymentRefunds,
   paymentSchedule: () => paymentSchedule,
   payments: () => payments,
   properties: () => properties,
+  propertyAccessInfo: () => propertyAccessInfo,
+  propertyAccessInfoSchema: () => propertyAccessInfoSchema,
   requiresLease: () => requiresLease,
+  roomAccessInfo: () => roomAccessInfo,
+  roomAccessInfoSchema: () => roomAccessInfoSchema,
   rooms: () => rooms,
   subscriptions: () => subscriptions,
   uoEscalations: () => uoEscalations,
@@ -129,7 +137,8 @@ import {
   date,
   boolean,
   jsonb,
-  index
+  index,
+  uniqueIndex
 } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -152,7 +161,7 @@ function requiresLease(termDays) {
 function isDirectCoLivingStay(termDays) {
   return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
-var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, DEFAULT_LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, LATE_FEE_PER_DAY_SETTING, CARD_SURCHARGE_RATE_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
+var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, DEFAULT_LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, bookingGate, REFUND_KINDS, paymentRefunds, SENSITIVE_ACCESS_FIELDS, propertyAccessInfoSchema, roomAccessInfoSchema, propertyAccessInfo, roomAccessInfo, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, LATE_FEE_PER_DAY_SETTING, CARD_SURCHARGE_RATE_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
 var init_schema = __esm({
   "shared/schema.ts"() {
     "use strict";
@@ -180,7 +189,7 @@ var init_schema = __esm({
     NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT"];
     PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"];
     PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"];
-    PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED"];
+    PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED", "REFUNDED"];
     PROPERTY_ENTITIES = ["TRAD", "BNP"];
     PAYMENT_CADENCES = ["WEEKLY", "BIWEEKLY", "MONTHLY"];
     LEASE_STATUSES = [
@@ -321,8 +330,19 @@ var init_schema = __esm({
       // a tenant uploaded a license awaiting admin review
       "BOOKING_CONFLICT",
       // a paid booking landed on dates that were taken
-      "CALENDAR_SYNC_FAILED"
+      "CALENDAR_SYNC_FAILED",
       // iCal sync couldn't refresh a listing's external calendar
+      // --- Short-stay approval gate ---
+      "GATE_AWAITING_APPROVAL",
+      // LOW: guest submitted ID + signature; a human must review
+      // HIGH: check-in has arrived and the docs are STILL incomplete. Raised instead
+      // of auto-declining — a guest arriving today must never have their booking
+      // cancelled and refunded out from under them by a scheduled job.
+      "GATE_INCOMPLETE_AT_CHECKIN",
+      "REFUND_FAILED",
+      // HIGH: a decline cancelled the booking but Stripe refused the refund
+      "ACCESS_INFO_MISSING"
+      // HIGH: a guest arrives tomorrow and the property has no door code/wifi
     ];
     ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"];
     ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"];
@@ -802,6 +822,138 @@ var init_schema = __esm({
       // tenant declares no vehicle).
       year: z.number().int().min(1900).max(2100).nullish()
     }).omit({ id: true, createdAt: true, updatedAt: true });
+    bookingGate = pgTable("booking_gate", {
+      bookingId: varchar("booking_id").primaryKey().references(() => bookings.id),
+      // Unguessable credential for the guest's document page — the token IS the
+      // auth, mirroring leases.portal_token. 24 chars of base62 (~143 bits): long
+      // enough to be unguessable, short enough that
+      // "…/stay/<token>/extend" fits a single 160-char GSM-7 SMS segment.
+      gateToken: text("gate_token").notNull(),
+      // When the 72h silence clock expires. STORED, not derived, so the sweep is one
+      // indexable comparison, the rule is auditable after the fact, and an admin can
+      // grant an extension with no code change. Rewritten on every fix-request, so
+      // "silence" means since WE last asked, not since booking.
+      docsDeadlineAt: timestamp("docs_deadline_at"),
+      // --- Rental agreement (typed e-signature, E-SIGN/UETA) ---
+      agreementSignedName: text("agreement_signed_name"),
+      agreementSignedAt: timestamp("agreement_signed_at"),
+      agreementSignedIp: text("agreement_signed_ip"),
+      // Route string, e.g. /api/stay/<token>/agreement. Named honestly, unlike
+      // leases.signed_pdf_url — there is no PDF library in this app.
+      agreementDocumentUrl: text("agreement_document_url"),
+      // The frozen artifact, self-contained HTML stored inline (no blob store).
+      agreementDocumentHtml: text("agreement_document_html"),
+      // --- Driver's license (VERIFICATION_STATUSES; mirrors the lease columns) ---
+      verificationStatus: text("verification_status").notNull().default("NOT_SUBMITTED"),
+      // R2 object key only — the IMAGE never touches this database.
+      licenseR2Key: text("license_r2_key"),
+      licenseUploadedAt: timestamp("license_uploaded_at"),
+      verificationReviewedAt: timestamp("verification_reviewed_at"),
+      verificationReviewedBy: text("verification_reviewed_by"),
+      verificationRejectionReason: text("verification_rejection_reason"),
+      // --- Admin decision ---
+      approvedAt: timestamp("approved_at"),
+      approvedBy: text("approved_by"),
+      // The admin affirms the licence name matches the renter. Recorded because it
+      // is the substance of the review, not a UI nicety.
+      nameMatchesAck: boolean("name_matches_ack").notNull().default(false),
+      // SENSITIVE — a property access code. Never log it, never send it to Telegram,
+      // never put it in an SMS, an error message, an escalation detail, or a test
+      // fixture. Only two surfaces render it: the welcome email and the token-gated
+      // stay page. See shared/doorCode.ts.
+      doorCode: text("door_code"),
+      // --- Non-terminal bounce-back ---
+      fixRequestedAt: timestamp("fix_requested_at"),
+      fixRequestedBy: text("fix_requested_by"),
+      fixRequestedReason: text("fix_requested_reason"),
+      // Round counter. Used as lifecycle_events.schedule_seq so a SECOND fix request
+      // can send a fresh nudge instead of being deduped against the first.
+      fixRequestCount: integer("fix_request_count").notNull().default(0),
+      // --- Terminal decline (the booking itself becomes CANCELLED) ---
+      cancelReason: text("cancel_reason"),
+      // "system:gate-sweep" for an auto-decline, otherwise an admin email.
+      cancelledBy: text("cancelled_by"),
+      // --- Extension audit ---
+      // The check_out this stay was originally sold with, set the first time the
+      // booking is extended so the original term is never lost.
+      originalCheckOut: date("original_check_out"),
+      // Monotonic extension ordinal. Used as lifecycle_events.schedule_seq for the
+      // checkout reminders, so extending a stay RE-ARMS them — lifecycle_events has
+      // no date in its key, so without this an extended stay would silently never
+      // be reminded again, and therefore never offered another extension.
+      extensionCount: integer("extension_count").notNull().default(0),
+      createdAt: timestamp("created_at").defaultNow().notNull(),
+      updatedAt: timestamp("updated_at").defaultNow().notNull()
+    });
+    REFUND_KINDS = [
+      "GATE_DECLINE",
+      // an admin declined a gated stay
+      "GATE_AUTO_DECLINE",
+      // the 72h sweep declined it with no human in the loop
+      "CONFLICT",
+      // admin cancelled a paid CONFLICT booking
+      "DEPOSIT_RETURN",
+      // refundable lease deposit returned at move-out
+      "ADMIN"
+      // any other deliberate admin refund
+    ];
+    paymentRefunds = pgTable(
+      "payment_refunds",
+      {
+        id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+        paymentId: varchar("payment_id").notNull().references(() => payments.id),
+        bookingId: varchar("booking_id").references(() => bookings.id),
+        // Not an FK: lease refunds are recorded here too, and the column exists so
+        // reconciliation can group by lease without a second table.
+        leaseId: varchar("lease_id"),
+        stripeRefundId: text("stripe_refund_id").notNull(),
+        stripePaymentIntentId: text("stripe_payment_intent_id").notNull(),
+        amount: decimal("amount", { precision: 10, scale: 2 }).notNull(),
+        // REFUND_KINDS
+        kind: text("kind").notNull(),
+        // Operator-supplied. Must never contain guest contact details or a door code.
+        reason: text("reason"),
+        // Admin email, or "system:gate-sweep" when no human was involved.
+        actor: text("actor").notNull(),
+        createdAt: timestamp("created_at").defaultNow().notNull()
+      },
+      (table) => ({
+        stripeRefundIdx: uniqueIndex("payment_refunds_stripe_uidx").on(table.stripeRefundId),
+        paymentIdx: index("payment_refunds_payment_idx").on(table.paymentId),
+        bookingIdx: index("payment_refunds_booking_idx").on(table.bookingId)
+      })
+    );
+    SENSITIVE_ACCESS_FIELDS = ["wifiPassword", "buildingEntry"];
+    propertyAccessInfoSchema = z.object({
+      wifiSsid: z.string().max(200).optional(),
+      wifiPassword: z.string().max(200).optional(),
+      buildingEntry: z.string().max(200).optional(),
+      directions: z.string().max(4e3).optional(),
+      parking: z.string().max(2e3).optional(),
+      checkInFrom: z.string().max(50).optional(),
+      checkOutBy: z.string().max(50).optional(),
+      notes: z.string().max(4e3).optional()
+    }).strict();
+    roomAccessInfoSchema = z.object({
+      findingNotes: z.string().max(2e3).optional(),
+      floor: z.string().max(50).optional(),
+      doorLabel: z.string().max(100).optional(),
+      notes: z.string().max(2e3).optional()
+    }).strict();
+    propertyAccessInfo = pgTable("property_access_info", {
+      propertyId: varchar("property_id").primaryKey().references(() => properties.id),
+      info: jsonb("info").$type().notNull().default({}),
+      updatedBy: text("updated_by"),
+      createdAt: timestamp("created_at").defaultNow().notNull(),
+      updatedAt: timestamp("updated_at").defaultNow().notNull()
+    });
+    roomAccessInfo = pgTable("room_access_info", {
+      roomId: varchar("room_id").primaryKey().references(() => rooms.id),
+      info: jsonb("info").$type().notNull().default({}),
+      updatedBy: text("updated_by"),
+      createdAt: timestamp("created_at").defaultNow().notNull(),
+      updatedAt: timestamp("updated_at").defaultNow().notNull()
+    });
     paymentSchedule = pgTable(
       "payment_schedule",
       {
@@ -995,8 +1147,40 @@ var init_schema = __esm({
       // short-stay booking materialized (admin)
       "LEASE_HOLD_RELEASED",
       // hold expired — room released back to inventory
-      "FIRST_PAYMENT_REMINDER"
+      "FIRST_PAYMENT_REMINDER",
       // signed, deposit unpaid — nudge before the hold lapses
+      // --- Short-stay approval gate (booking-scoped; scheduleSeq carries a ROUND
+      // number, not an installment — see the note on lifecycleEvents.scheduleSeq).
+      "STAY_DOCS_REQUIRED",
+      // paid, gated — here is what is still outstanding (guest)
+      "STAY_DOCS_COMPLETE",
+      // both docs in, under review (guest)
+      "STAY_ADMIN_AWAITING_APPROVAL",
+      // both docs in (admin: email + Telegram)
+      "STAY_FIX_REQUESTED",
+      // admin bounced a document; non-terminal (guest)
+      "STAY_APPROVED_WELCOME",
+      // approved — dates, door code, wifi, directions (guest)
+      "STAY_GHOST_NUDGE_1",
+      // day 1 of silence (guest)
+      "STAY_GHOST_NUDGE_2",
+      // day 2 of silence — "cancelled tomorrow" (guest)
+      "STAY_DECLINED_REFUNDED",
+      // terminal: cancelled and refunded in full (guest)
+      "STAY_ADMIN_AUTO_DECLINED",
+      // the sweep refunded without a human (admin)
+      "STAY_CHECKOUT_48H",
+      // 2 days out, carries the extension offer (guest)
+      "STAY_CHECKOUT_24H",
+      // 1 day out, checkout time (guest)
+      "STAY_EXTENDED",
+      // extension paid and applied (guest)
+      "STAY_ADMIN_EXTENDED",
+      // extension paid and applied (admin)
+      "STAY_ADMIN_EXTENSION_CONFLICT",
+      // extension PAID but the dates were taken (admin)
+      "STR_PRE_ARRIVAL"
+      // day-before check-in details (guest) — closes the promise
     ];
     LIFECYCLE_SEND_STATUSES = ["SENT", "SKIPPED", "FAILED"];
     LEASE_ENDING_NOTICE_DAYS = 14;
@@ -1539,7 +1723,7 @@ var init_storage = __esm({
         return row;
       }
       async getBookingsWithGuest(opts) {
-        const statuses = opts?.statuses ?? ["CONFIRMED", "ACTIVE", "CONFLICT"];
+        const statuses = opts?.statuses ?? ["PENDING_APPROVAL", "CONFIRMED", "ACTIVE", "CONFLICT"];
         const filters = [inArray(bookings.status, statuses)];
         if (opts?.from) {
           filters.push(sql3`(${bookings.checkOut} >= ${opts.from} OR ${bookings.checkOut} IS NULL)`);
@@ -1719,6 +1903,126 @@ var init_storage = __esm({
         }
         const [row] = await db.insert(vehicles).values({ ...data, leaseId }).returning();
         return row;
+      }
+      // --- Booking gate -------------------------------------------------------
+      // A gated short stay owns exactly one row here, enforced by booking_id being
+      // the PRIMARY KEY rather than by application logic.
+      async getBookingGate(bookingId) {
+        const [row] = await db.select().from(bookingGate).where(eq(bookingGate.bookingId, bookingId));
+        return row;
+      }
+      async ensureBookingGate(bookingId, seed) {
+        await db.insert(bookingGate).values({ ...seed, bookingId }).onConflictDoNothing({ target: bookingGate.bookingId });
+        const row = await this.getBookingGate(bookingId);
+        if (!row) throw new StorageError(`booking_gate row missing after ensure for ${bookingId}`);
+        return row;
+      }
+      async updateBookingGate(bookingId, updates) {
+        const [row] = await db.update(bookingGate).set({ ...updates, updatedAt: /* @__PURE__ */ new Date() }).where(eq(bookingGate.bookingId, bookingId)).returning();
+        return row;
+      }
+      async getBookingByGateToken(token) {
+        const rows = await db.select().from(bookingGate).innerJoin(bookings, eq(bookingGate.bookingId, bookings.id)).where(eq(bookingGate.gateToken, token));
+        const hit = rows[0];
+        if (!hit) return void 0;
+        return { ...hit.bookings, gate: hit.booking_gate };
+      }
+      // --- Gate sweep queries -------------------------------------------------
+      // Each is windowed/filtered in SQL so a daily sweep never scans the booking
+      // table, and each joins the guest + property + room the templates need.
+      gateStayRows(rows) {
+        return rows.filter((r) => r.guests !== null && r.properties !== null).map((r) => ({
+          ...r.bookings,
+          gate: r.booking_gate,
+          guest: r.guests,
+          property: r.properties,
+          room: r.rooms
+        }));
+      }
+      /**
+       * Gated stays whose guest has NOT finished their documents. The filter is
+       * structural — a stay with both documents in is excluded by the QUERY, not by
+       * a check inside the sweep loop, so a guest waiting on an admin can never be
+       * nudged or auto-declined. Same discipline as dunning filtering PAID rows out
+       * before any decision is made.
+       */
+      async getStaysAwaitingDocs() {
+        const rows = await db.select().from(bookings).innerJoin(bookingGate, eq(bookings.id, bookingGate.bookingId)).leftJoin(guests, eq(bookings.guestId, guests.id)).leftJoin(properties, eq(bookings.propertyId, properties.id)).leftJoin(rooms, eq(bookings.roomId, rooms.id)).where(
+          and(
+            eq(bookings.status, "PENDING_APPROVAL"),
+            // Not yet approved, and at least one document still outstanding.
+            isNull(bookingGate.approvedAt),
+            or(
+              isNull(bookingGate.agreementSignedAt),
+              notInArray(bookingGate.verificationStatus, ["PENDING_REVIEW", "APPROVED"])
+            )
+          )
+        );
+        return this.gateStayRows(rows);
+      }
+      /** Stays whose check-out falls in [from, to] — the checkout-reminder window. */
+      async getStaysCheckingOutBetween(from, to) {
+        const rows = await db.select().from(bookings).leftJoin(bookingGate, eq(bookings.id, bookingGate.bookingId)).leftJoin(guests, eq(bookings.guestId, guests.id)).leftJoin(properties, eq(bookings.propertyId, properties.id)).leftJoin(rooms, eq(bookings.roomId, rooms.id)).where(
+          and(
+            inArray(bookings.status, ["ACTIVE", "CONFIRMED"]),
+            // An open-ended stay has no check-out to remind about. Excluded in SQL
+            // rather than skipped in the loop so the window stays a real index scan.
+            sql3`${bookings.checkOut} IS NOT NULL`,
+            gte(bookings.checkOut, from),
+            lte(bookings.checkOut, to)
+          )
+        );
+        return this.gateStayRows(rows);
+      }
+      /** Stays whose check-IN falls in [from, to] — the pre-arrival window. */
+      async getStaysCheckingInBetween(from, to) {
+        const rows = await db.select().from(bookings).leftJoin(bookingGate, eq(bookings.id, bookingGate.bookingId)).leftJoin(guests, eq(bookings.guestId, guests.id)).leftJoin(properties, eq(bookings.propertyId, properties.id)).leftJoin(rooms, eq(bookings.roomId, rooms.id)).where(
+          and(
+            inArray(bookings.status, ["ACTIVE", "CONFIRMED"]),
+            gte(bookings.checkIn, from),
+            lte(bookings.checkIn, to)
+          )
+        );
+        return this.gateStayRows(rows);
+      }
+      // --- Access info --------------------------------------------------------
+      async getPropertyAccessInfo(propertyId) {
+        const [row] = await db.select().from(propertyAccessInfo).where(eq(propertyAccessInfo.propertyId, propertyId));
+        return row?.info;
+      }
+      async upsertPropertyAccessInfo(propertyId, info, actor) {
+        const [row] = await db.insert(propertyAccessInfo).values({ propertyId, info, updatedBy: actor }).onConflictDoUpdate({
+          target: propertyAccessInfo.propertyId,
+          set: { info, updatedBy: actor, updatedAt: /* @__PURE__ */ new Date() }
+        }).returning();
+        return row.info;
+      }
+      async getRoomAccessInfo(roomId) {
+        const [row] = await db.select().from(roomAccessInfo).where(eq(roomAccessInfo.roomId, roomId));
+        return row?.info;
+      }
+      async upsertRoomAccessInfo(roomId, info, actor) {
+        const [row] = await db.insert(roomAccessInfo).values({ roomId, info, updatedBy: actor }).onConflictDoUpdate({
+          target: roomAccessInfo.roomId,
+          set: { info, updatedBy: actor, updatedAt: /* @__PURE__ */ new Date() }
+        }).returning();
+        return row.info;
+      }
+      // --- Refund ledger ------------------------------------------------------
+      /**
+       * Record a Stripe refund. Returns null when this refund id is already on file.
+       *
+       * The UNIQUE index on stripe_refund_id is what makes this safe: a Stripe
+       * idempotency key expires after 24 hours, so the daily ghost sweep WILL retry
+       * outside that window, and the database — not the key — is what guarantees one
+       * row per refund.
+       */
+      async recordPaymentRefund(data) {
+        const [row] = await db.insert(paymentRefunds).values(data).onConflictDoNothing({ target: paymentRefunds.stripeRefundId }).returning();
+        return row ?? null;
+      }
+      async getRefundsByPayment(paymentId) {
+        return db.select().from(paymentRefunds).where(eq(paymentRefunds.paymentId, paymentId));
       }
       // --- Guest messages ---
       async getMessageThreadsByLease(leaseId) {

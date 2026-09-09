@@ -95,6 +95,16 @@ import {
   type InsertBookingIntent,
   type MessageLogRow,
   type InsertMessageLog,
+  bookingGate,
+  paymentRefunds,
+  propertyAccessInfo,
+  roomAccessInfo,
+  type BookingGate,
+  type InsertBookingGate,
+  type PaymentRefund,
+  type InsertPaymentRefund,
+  type PropertyAccessInfo,
+  type RoomAccessInfo,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 import {
@@ -102,6 +112,27 @@ import {
   CHECKOUT_HOLD_MINUTES,
   DEPOSIT_HELD_LEASE_STATUSES,
 } from "@shared/schema";
+
+/**
+ * A booking joined to everything a scheduled job or a template needs: the gate
+ * row (null for an ungated STR stay), the guest, the property, and the room.
+ * One shape for all three sweep queries so the jobs share a single row type.
+ */
+export type GateStayRow = Booking & {
+  gate: BookingGate | null;
+  guest: Guest;
+  property: Property;
+  room: Room | null;
+};
+
+/** Raw Drizzle join shape backing GateStayRow, before the null-filtering map. */
+type GateStayJoin = {
+  bookings: Booking;
+  booking_gate: BookingGate | null;
+  guests: Guest | null;
+  properties: Property | null;
+  rooms: Room | null;
+};
 
 /**
  * Every non-terminal lease status. NOT the same thing as "holds a room" — see
@@ -274,6 +305,30 @@ export interface IStorage {
   // --- Vehicles (one per lease; parking identification) ---
   getVehicleByLease(leaseId: string): Promise<Vehicle | undefined>;
   upsertVehicleByLease(leaseId: string, data: Partial<InsertVehicle>): Promise<Vehicle>;
+
+  // --- Booking gate (1:1 with a gated short stay) ---
+  getBookingGate(bookingId: string): Promise<BookingGate | undefined>;
+  /** Create the gate row if absent; never overwrites an existing one. */
+  ensureBookingGate(bookingId: string, seed: Partial<InsertBookingGate>): Promise<BookingGate>;
+  updateBookingGate(bookingId: string, updates: Partial<InsertBookingGate>): Promise<BookingGate | undefined>;
+  /** Resolve the guest's document page from its token. The token IS the auth. */
+  getBookingByGateToken(token: string): Promise<(Booking & { gate: BookingGate }) | undefined>;
+
+  // --- Gate sweep queries (windowed in SQL; a sweep never scans the table) ---
+  getStaysAwaitingDocs(): Promise<GateStayRow[]>;
+  getStaysCheckingOutBetween(from: string, to: string): Promise<GateStayRow[]>;
+  getStaysCheckingInBetween(from: string, to: string): Promise<GateStayRow[]>;
+
+  // --- Access info (what a guest needs to get in) ---
+  getPropertyAccessInfo(propertyId: string): Promise<PropertyAccessInfo | undefined>;
+  upsertPropertyAccessInfo(propertyId: string, info: PropertyAccessInfo, actor: string): Promise<PropertyAccessInfo>;
+  getRoomAccessInfo(roomId: string): Promise<RoomAccessInfo | undefined>;
+  upsertRoomAccessInfo(roomId: string, info: RoomAccessInfo, actor: string): Promise<RoomAccessInfo>;
+
+  // --- Refund ledger ---
+  /** Idempotent on stripe_refund_id: recording the same refund twice is a no-op. */
+  recordPaymentRefund(data: InsertPaymentRefund): Promise<PaymentRefund | null>;
+  getRefundsByPayment(paymentId: string): Promise<PaymentRefund[]>;
 
   // --- Guest messages (threaded portal questions / requests) ---
   getMessageThreadsByLease(leaseId: string): Promise<GuestMessage[]>; // roots only
@@ -668,7 +723,9 @@ class Storage implements IStorage {
     // those are abandoned checkouts with no money and often no real guest, and
     // they swamped the message-compose guest picker. A caller that wants them
     // passes `statuses` explicitly.
-    const statuses = opts?.statuses ?? ["CONFIRMED", "ACTIVE", "CONFLICT"];
+    // PENDING_APPROVAL belongs here: the guest has PAID and is holding dates, so
+    // staff must be able to see and message them while the review is pending.
+    const statuses = opts?.statuses ?? ["PENDING_APPROVAL", "CONFIRMED", "ACTIVE", "CONFLICT"];
     const filters = [inArray(bookings.status, statuses)];
     if (opts?.from) {
       filters.push(sql`(${bookings.checkOut} >= ${opts.from} OR ${bookings.checkOut} IS NULL)`);
@@ -963,6 +1020,213 @@ class Storage implements IStorage {
       .values({ ...data, leaseId })
       .returning();
     return row;
+  }
+
+
+  // --- Booking gate -------------------------------------------------------
+  // A gated short stay owns exactly one row here, enforced by booking_id being
+  // the PRIMARY KEY rather than by application logic.
+
+  async getBookingGate(bookingId: string): Promise<BookingGate | undefined> {
+    const [row] = await db.select().from(bookingGate).where(eq(bookingGate.bookingId, bookingId));
+    return row;
+  }
+
+  async ensureBookingGate(
+    bookingId: string,
+    seed: Partial<InsertBookingGate>,
+  ): Promise<BookingGate> {
+    // ON CONFLICT DO NOTHING, then read back: the webhook that creates this runs
+    // on every Stripe retry, and the gate token must stay STABLE across those
+    // retries — a fresh token would invalidate the link already emailed out.
+    await db
+      .insert(bookingGate)
+      .values({ ...seed, bookingId } as InsertBookingGate)
+      .onConflictDoNothing({ target: bookingGate.bookingId });
+    const row = await this.getBookingGate(bookingId);
+    if (!row) throw new StorageError(`booking_gate row missing after ensure for ${bookingId}`);
+    return row;
+  }
+
+  async updateBookingGate(
+    bookingId: string,
+    updates: Partial<InsertBookingGate>,
+  ): Promise<BookingGate | undefined> {
+    const [row] = await db
+      .update(bookingGate)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(bookingGate.bookingId, bookingId))
+      .returning();
+    return row;
+  }
+
+  async getBookingByGateToken(
+    token: string,
+  ): Promise<(Booking & { gate: BookingGate }) | undefined> {
+    const rows = await db
+      .select()
+      .from(bookingGate)
+      .innerJoin(bookings, eq(bookingGate.bookingId, bookings.id))
+      .where(eq(bookingGate.gateToken, token));
+    const hit = rows[0];
+    if (!hit) return undefined;
+    return { ...hit.bookings, gate: hit.booking_gate };
+  }
+
+  // --- Gate sweep queries -------------------------------------------------
+  // Each is windowed/filtered in SQL so a daily sweep never scans the booking
+  // table, and each joins the guest + property + room the templates need.
+
+  private gateStayRows(rows: GateStayJoin[]): GateStayRow[] {
+    return rows
+      .filter((r) => r.guests !== null && r.properties !== null)
+      .map((r) => ({
+        ...r.bookings,
+        gate: r.booking_gate,
+        guest: r.guests as Guest,
+        property: r.properties as Property,
+        room: r.rooms,
+      }));
+  }
+
+  /**
+   * Gated stays whose guest has NOT finished their documents. The filter is
+   * structural — a stay with both documents in is excluded by the QUERY, not by
+   * a check inside the sweep loop, so a guest waiting on an admin can never be
+   * nudged or auto-declined. Same discipline as dunning filtering PAID rows out
+   * before any decision is made.
+   */
+  async getStaysAwaitingDocs(): Promise<GateStayRow[]> {
+    const rows = await db
+      .select()
+      .from(bookings)
+      .innerJoin(bookingGate, eq(bookings.id, bookingGate.bookingId))
+      .leftJoin(guests, eq(bookings.guestId, guests.id))
+      .leftJoin(properties, eq(bookings.propertyId, properties.id))
+      .leftJoin(rooms, eq(bookings.roomId, rooms.id))
+      .where(
+        and(
+          eq(bookings.status, "PENDING_APPROVAL"),
+          // Not yet approved, and at least one document still outstanding.
+          isNull(bookingGate.approvedAt),
+          or(
+            isNull(bookingGate.agreementSignedAt),
+            notInArray(bookingGate.verificationStatus, ["PENDING_REVIEW", "APPROVED"]),
+          ),
+        ),
+      );
+    return this.gateStayRows(rows as GateStayJoin[]);
+  }
+
+  /** Stays whose check-out falls in [from, to] — the checkout-reminder window. */
+  async getStaysCheckingOutBetween(from: string, to: string): Promise<GateStayRow[]> {
+    const rows = await db
+      .select()
+      .from(bookings)
+      .leftJoin(bookingGate, eq(bookings.id, bookingGate.bookingId))
+      .leftJoin(guests, eq(bookings.guestId, guests.id))
+      .leftJoin(properties, eq(bookings.propertyId, properties.id))
+      .leftJoin(rooms, eq(bookings.roomId, rooms.id))
+      .where(
+        and(
+          inArray(bookings.status, ["ACTIVE", "CONFIRMED"]),
+          // An open-ended stay has no check-out to remind about. Excluded in SQL
+          // rather than skipped in the loop so the window stays a real index scan.
+          sql`${bookings.checkOut} IS NOT NULL`,
+          gte(bookings.checkOut, from),
+          lte(bookings.checkOut, to),
+        ),
+      );
+    return this.gateStayRows(rows as GateStayJoin[]);
+  }
+
+  /** Stays whose check-IN falls in [from, to] — the pre-arrival window. */
+  async getStaysCheckingInBetween(from: string, to: string): Promise<GateStayRow[]> {
+    const rows = await db
+      .select()
+      .from(bookings)
+      .leftJoin(bookingGate, eq(bookings.id, bookingGate.bookingId))
+      .leftJoin(guests, eq(bookings.guestId, guests.id))
+      .leftJoin(properties, eq(bookings.propertyId, properties.id))
+      .leftJoin(rooms, eq(bookings.roomId, rooms.id))
+      .where(
+        and(
+          inArray(bookings.status, ["ACTIVE", "CONFIRMED"]),
+          gte(bookings.checkIn, from),
+          lte(bookings.checkIn, to),
+        ),
+      );
+    return this.gateStayRows(rows as GateStayJoin[]);
+  }
+
+  // --- Access info --------------------------------------------------------
+
+  async getPropertyAccessInfo(propertyId: string): Promise<PropertyAccessInfo | undefined> {
+    const [row] = await db
+      .select()
+      .from(propertyAccessInfo)
+      .where(eq(propertyAccessInfo.propertyId, propertyId));
+    return row?.info;
+  }
+
+  async upsertPropertyAccessInfo(
+    propertyId: string,
+    info: PropertyAccessInfo,
+    actor: string,
+  ): Promise<PropertyAccessInfo> {
+    const [row] = await db
+      .insert(propertyAccessInfo)
+      .values({ propertyId, info, updatedBy: actor })
+      .onConflictDoUpdate({
+        target: propertyAccessInfo.propertyId,
+        set: { info, updatedBy: actor, updatedAt: new Date() },
+      })
+      .returning();
+    return row.info;
+  }
+
+  async getRoomAccessInfo(roomId: string): Promise<RoomAccessInfo | undefined> {
+    const [row] = await db.select().from(roomAccessInfo).where(eq(roomAccessInfo.roomId, roomId));
+    return row?.info;
+  }
+
+  async upsertRoomAccessInfo(
+    roomId: string,
+    info: RoomAccessInfo,
+    actor: string,
+  ): Promise<RoomAccessInfo> {
+    const [row] = await db
+      .insert(roomAccessInfo)
+      .values({ roomId, info, updatedBy: actor })
+      .onConflictDoUpdate({
+        target: roomAccessInfo.roomId,
+        set: { info, updatedBy: actor, updatedAt: new Date() },
+      })
+      .returning();
+    return row.info;
+  }
+
+  // --- Refund ledger ------------------------------------------------------
+
+  /**
+   * Record a Stripe refund. Returns null when this refund id is already on file.
+   *
+   * The UNIQUE index on stripe_refund_id is what makes this safe: a Stripe
+   * idempotency key expires after 24 hours, so the daily ghost sweep WILL retry
+   * outside that window, and the database — not the key — is what guarantees one
+   * row per refund.
+   */
+  async recordPaymentRefund(data: InsertPaymentRefund): Promise<PaymentRefund | null> {
+    const [row] = await db
+      .insert(paymentRefunds)
+      .values(data)
+      .onConflictDoNothing({ target: paymentRefunds.stripeRefundId })
+      .returning();
+    return row ?? null;
+  }
+
+  async getRefundsByPayment(paymentId: string): Promise<PaymentRefund[]> {
+    return db.select().from(paymentRefunds).where(eq(paymentRefunds.paymentId, paymentId));
   }
 
   // --- Guest messages ---
