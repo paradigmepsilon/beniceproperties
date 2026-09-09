@@ -1,9 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { sendTelegram, isTelegramConfigured } from "./telegram";
+import { sendTelegram, isTelegramConfigured, adminChatIds } from "./telegram";
 
 const fetchMock = vi.fn();
 beforeEach(() => { vi.stubGlobal("fetch", fetchMock); fetchMock.mockReset(); });
 afterEach(() => { vi.unstubAllGlobals(); delete process.env.TELEGRAM_BOT_TOKEN; delete process.env.TELEGRAM_ADMIN_CHAT_ID; });
+
+describe("adminChatIds", () => {
+  it("accepts bare ids and Name:id pairs (the UO shape), drops names and junk", () => {
+    process.env.TELEGRAM_ADMIN_CHAT_ID = "Alex:6112545054, Della:7000000001,  42 ,-100123, bogus, Eve:x";
+    expect(adminChatIds()).toEqual(["6112545054", "7000000001", "42", "-100123"]);
+  });
+  it("is empty when unset", () => {
+    delete process.env.TELEGRAM_ADMIN_CHAT_ID;
+    expect(adminChatIds()).toEqual([]);
+  });
+});
 
 describe("sendTelegram", () => {
   it("dry-runs without creds and never calls fetch", async () => {

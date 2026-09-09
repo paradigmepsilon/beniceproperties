@@ -2800,7 +2800,7 @@ function isTelegramConfigured() {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_ADMIN_CHAT_ID);
 }
 function adminChatIds() {
-  return (process.env.TELEGRAM_ADMIN_CHAT_ID ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+  return (process.env.TELEGRAM_ADMIN_CHAT_ID ?? "").split(",").map((s) => s.trim()).filter(Boolean).map((entry) => entry.includes(":") ? entry.slice(entry.lastIndexOf(":") + 1).trim() : entry).filter((id) => /^-?\d+$/.test(id));
 }
 async function sendTelegram(opts) {
   if (!isTelegramConfigured()) {

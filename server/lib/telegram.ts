@@ -13,11 +13,19 @@ export function isTelegramConfigured(): boolean {
   return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_ADMIN_CHAT_ID);
 }
 
+/**
+ * TELEGRAM_ADMIN_CHAT_ID entries are either a bare chat id ("6112545054") or a
+ * "Name:id" pair ("Alex:6112545054") — the same variable, same shape, and same
+ * bot as Unified Ops. Names are dropped; anything that is not an integer chat id
+ * (negative ids are groups) is dropped too, so a typo can never reach the API.
+ */
 export function adminChatIds(): string[] {
   return (process.env.TELEGRAM_ADMIN_CHAT_ID ?? "")
     .split(",")
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .map((entry) => (entry.includes(":") ? entry.slice(entry.lastIndexOf(":") + 1).trim() : entry))
+    .filter((id) => /^-?\d+$/.test(id));
 }
 
 export async function sendTelegram(opts: {
