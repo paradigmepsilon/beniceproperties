@@ -3615,3 +3615,134 @@ Plus this task's own changes: `.env.example` (+2 doc comment), `docs/build-log.m
   in the insert schemas; admin and UO create routes both require `status` explicitly (pre-existing).
 - `PaymentsConfig` type is local to `client/src/lib/usePricingConfig.ts`.
 - UO create/assign/delete inventory flows still write BNP's DB directly (spec follow-up).
+
+---
+
+## BOOKING-APPROVAL-GATE — 2026-09-08
+
+Branch `feat/booking-approval-gate`, stacked on `feat/uo-pricing-writeback` (b3f709f).
+Spec/plan: `docs/superpowers/plans/2026-09-08-booking-approval-gate.md`.
+
+### What this adds
+
+A gated flow for CO-LIVING SHORT STAYS (7–28 nights). Guest pays in full → booking lands
+`PENDING_APPROVAL` (dates held) → guest uploads a licence and signs a rental agreement →
+admin reviews, sets a door code, approves → welcome letter with door code, wifi and
+directions → checkout reminders at 2 days and 1 day, carrying an extension offer.
+
+Whole-property STR is deliberately NOT gated (a date-night property cannot absorb a 24h
+approval hold) but now gets the day-before check-in email the confirmation had been
+promising since launch with no code behind it.
+
+### Owner decisions recorded
+
+| Decision | Choice |
+|---|---|
+| Gate scope | Co-living 7–28 nights only |
+| Doc collection | After payment |
+| Rejection | Two actions: Request fix (non-terminal) · Decline & refund (terminal) |
+| Ghosted guest | Nudge, then auto-decline + full refund at 72h of silence |
+| STR | Pre-arrival email only; no gate, no checkout reminders |
+| Checkout reminders | Day-granular, co-living only |
+| Extension | Extends the existing booking. **ALLOWED past 28 nights (owner override)** |
+| Door code in `message_log` | **Logged verbatim (owner override)** — access codes are UO-managed, so UO visibility is moot. Still excluded from Telegram, SMS and server logs. |
+| Payment methods | All kept; `return_url` added; surcharge relabel NOT shipped (see below) |
+
+### Pre-existing bugs fixed on the way
+
+1. **Five sites bypassed the gate.** `model === "COLIVING" ? "ACTIVE" : "CONFIRMED"` was computed
+   independently in materialize, bookingConflicts, manualSettle and twice in routes. Gating only
+   the Stripe path would have left a CashApp settlement, a conflict resolution and the legacy
+   Checkout webhook each able to walk a paid guest to ACTIVE with no ID and no door code. All five
+   now call `postPaymentStatusFor()`; a source-grep test keeps them there.
+2. **Stripe idempotency keys expire after 24h**, so `refund:<pi>` did not protect a daily-retrying
+   caller. `charge_already_refunded` was uncaught and surfaced as a failure. Now treated as success.
+3. **`confirmPayment` had no `return_url`** while the PI enabled `automatic_payment_methods` — any
+   guest choosing Cash App Pay or Klarna hit an IntegrationError shown as a generic failure.
+4. **`runLeaseEndingNotices` computed "today" in UTC**, not hotel-local. Harmless only because the
+   cron runs at 08:00 UTC.
+5. **`fmtMoney` had two independent definitions** — one for signed agreements, one for emails.
+6. **`LeaseError` lived in `lease.ts`**, which imports storage, so throwing a 400 required a live
+   `DATABASE_URL`. Moved to `errorResponse.ts`.
+
+### Design decisions worth knowing
+
+- **Gate state is a side table, access info is its own table.** `GET /api/lookup` returns a whole
+  booking row and `GET /api/properties` returns whole property rows, so a `door_code` or
+  `wifi_password` COLUMN would have been published by an existing endpoint the day it was added.
+- **A declined booking reuses `CANCELLED`.** A new non-blocking status would force DROP/ADD
+  CONSTRAINT on the live exclusion constraints — an ACCESS EXCLUSIVE lock and a window with no
+  double-booking guard. Declined-vs-cancelled is a reason, not a state.
+- **Two clocks in the sweep.** Nudges use a day WINDOW (a skipped cron must not lose a courtesy
+  message); the auto-decline uses STRICT elapsed hours (it must never fire early against a promise).
+  On a daily cron the decline can land up to ~24h late, which is why all copy says "3 days" and
+  names a date. A test asserts 24 is the only hour figure any message may contain.
+- **Three guards on the automatic refund:** the query only returns stays where the GUEST still owes
+  something; `checkIn > today` (once check-in arrives, a HIGH escalation replaces any money
+  movement); and `guest_auto_notifications=false` suppresses the decline as well as the nudge.
+- **Extension re-prices the whole stay.** With weekly 400 / monthly 1400, 21→28 nights costs $200,
+  not $400 — cheaper for the guest and one money rule instead of two. A re-price at or below what
+  was paid is refused (409), never refunded.
+- **`extension_count` and `fix_request_count` exist** because `lifecycle_events` has no date in its
+  key. Without them an extended stay would never be reminded about checkout again, and a guest
+  bounced twice would get no second warning before being auto-declined.
+
+### Verification
+
+`npx tsc` clean · **1060 tests / 70 files passing** (baseline at branch point: 631) ·
+`npm run build` clean (43 prerendered routes) · `npm run build:api` clean, and the regenerated
+`api/cron/sweep.js` verified to contain all three new job names — that bundle is what Vercel runs,
+and a stale one means the jobs silently never fire.
+
+`server/lib/stayGateHardening.test.ts` runs every sweep TWICE against a real read-back ledger and
+asserts the second pass sends nothing and refunds nothing, plus a repo-wide grep proving no
+credential can reach an SMS body, a `telegramText`, a `log()` call, a PostHog property, or an
+escalation detail.
+
+### ⚠️ OWNER STEPS — none of this is live until these are done
+
+1. **R2 env vars** (`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET_NAME`)
+   in Vercel. **Without them every licence upload returns 503 and no stay can ever be approved.**
+2. **Twilio env vars.** SMS currently dry-runs, so every reminder and nudge logs and never sends.
+3. **`CRON_SECRET`** set in Vercel. The guard is `if (secret && …)`, so unset means the cron
+   endpoint is world-callable — and it is now the endpoint that refunds money.
+4. **Run the migration**: `node scripts/backup-tables.mjs bookings payments`, then
+   `node scripts/push-booking-gate.mjs`. Additive and idempotent (`IF NOT EXISTS` throughout, proven
+   by `scripts/push-booking-gate.test.ts`), but it runs against production Neon.
+   **This stacks behind the `feat/uo-pricing-writeback` migration, which must run first.**
+5. **Supply house-rules copy.** `client/src/content/house-rules.ts` ships with quiet hours, pets,
+   smoking, visitors and early-termination EMPTY — they are owner policy with legal weight and are
+   referenced by name inside the signed agreement. Empty sections render nothing.
+6. **Configure access info per property** before approving anything: approve returns 409 when a
+   property has no wifi SSID or directions, by design.
+7. Add the missing keys to `.env.example` (R2 ×4, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`,
+   `CRON_SECRET`, Twilio ×3, `SENDGRID_API_KEY`, `MAIL_FROM`, `ADMIN_NOTIFY_EMAIL`).
+
+### ⚠️ LEGAL — flagged, NOT resolved
+
+1. **The short-stay agreement's substantive terms are PENDING OWNER/COUNSEL REVIEW.** Structure,
+   token substitution and the E-SIGN/UETA attestation are production-ready and reuse the reviewed
+   attestation verbatim; the body text adapts the existing lease sections to a paid-in-full stay and
+   invents no policy — but it has not been reviewed and must be before a real guest signs it.
+2. **Extensions past 28 nights (owner override).** A long occupancy can create tenancy rights with
+   statutory eviction protections regardless of the agreement's wording, which is plausibly why the
+   28-day boundary exists. Georgia's specific threshold was not researched. Confirm with counsel.
+3. **Method-aware surcharge NOT shipped.** Whether a surcharge may apply to BNPL/wallet methods, and
+   at what rate, is card-network and state-law territory rather than a labelling fix. Today a Klarna
+   or Cash App Pay charge still carries a "card processing" fee. Deliberately left alone.
+4. **Door code in `message_log` is an owner override** of the global sensitive-data rule, on the
+   reasoning that access codes are UO-managed. Residual worth knowing: `message_log` is append-only
+   and permanent, so it accumulates every historical code per guest, where UO holds only the current
+   one.
+
+### Deferred
+
+- No E2E harness (`@playwright/test` is not installed; `playwright-core` is a prerender dep only).
+  A manual TEST-key checklist is the acceptance path — see the plan.
+- Admin editors for the lease/stay agreement templates (both are still data-shaped constants).
+- `nameMismatch` flags a middle name. Loosening it would change the LIVE lease queue, so it is a
+  deliberate follow-up rather than a silent tweak.
+- `NON_BLOCKING_BOOKING_STATUSES` is still bypassed by two hard-coded pairs in
+  `getColivingBookingsForRoom` and `getOccupiedRoomIdsOn` (pre-existing).
+
+PHASE BOOKING-APPROVAL-GATE: COMPLETE — tests green
