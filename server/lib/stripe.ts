@@ -277,15 +277,31 @@ export async function retrievePaymentIntent(id: string): Promise<Stripe.PaymentI
 }
 
 /**
- * Refund a captured PaymentIntent in full (used to return a refundable security
- * deposit at move-out). Idempotency key prevents a double refund on retry.
+ * Refund a captured PaymentIntent in full.
+ *
+ * IDEMPOTENCY, HONESTLY: a Stripe idempotency key only lives 24 HOURS. Inside
+ * that window a retry returns the same refund; outside it, Stripe treats the
+ * request as new and rejects it with `charge_already_refunded`. Callers that can
+ * retry across days — the ghost-booking sweep runs daily — MUST catch that code
+ * and treat it as success. The key alone is not the guarantee.
+ *
+ * METADATA is a SEPARATE 50-key bag on the refund object; it does NOT inherit
+ * from the PaymentIntent. A refund created without it is invisible to every
+ * metadata-driven reconciliation query, so pass it for anything that needs to
+ * reconcile by entity/property/room.
  */
 export async function refundPaymentIntent(opts: {
   paymentIntentId: string;
   idempotencyKey: string;
+  metadata?: Record<string, string>;
+  reason?: "requested_by_customer" | "duplicate" | "fraudulent";
 }): Promise<Stripe.Refund> {
   return requireStripe().refunds.create(
-    { payment_intent: opts.paymentIntentId },
+    {
+      payment_intent: opts.paymentIntentId,
+      ...(opts.metadata ? { metadata: opts.metadata } : {}),
+      ...(opts.reason ? { reason: opts.reason } : {}),
+    },
     { idempotencyKey: opts.idempotencyKey },
   );
 }

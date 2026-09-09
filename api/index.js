@@ -3553,6 +3553,14 @@ function assertCompleteMetadata(meta) {
     );
   }
 }
+var REQUIRED_REFUND_METADATA_KEYS = [
+  ...REQUIRED_METADATA_KEYS,
+  "refund_kind",
+  "refunded_payment_intent",
+  "refunded_payment_id",
+  "booking_reference",
+  "actor"
+];
 
 // server/lib/leaseFlow.ts
 import { customAlphabet as customAlphabet2 } from "nanoid";
@@ -4012,7 +4020,11 @@ async function retrievePaymentIntent(id) {
 }
 async function refundPaymentIntent(opts) {
   return requireStripe().refunds.create(
-    { payment_intent: opts.paymentIntentId },
+    {
+      payment_intent: opts.paymentIntentId,
+      ...opts.metadata ? { metadata: opts.metadata } : {},
+      ...opts.reason ? { reason: opts.reason } : {}
+    },
     { idempotencyKey: opts.idempotencyKey }
   );
 }

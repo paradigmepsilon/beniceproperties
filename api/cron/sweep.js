@@ -2639,6 +2639,14 @@ function assertCompleteMetadata(meta) {
     );
   }
 }
+var REQUIRED_REFUND_METADATA_KEYS = [
+  ...REQUIRED_METADATA_KEYS,
+  "refund_kind",
+  "refunded_payment_intent",
+  "refunded_payment_id",
+  "booking_reference",
+  "actor"
+];
 
 // server/lib/stripe.ts
 var secret = process.env.STRIPE_SECRET_KEY;

@@ -240,3 +240,75 @@ export function assertCompleteMetadata(meta: Record<string, string>): void {
     );
   }
 }
+
+// =============================================================================
+// Refund metadata
+//
+// Stripe refund metadata is a SEPARATE bag from the PaymentIntent's — it does
+// not inherit. A refund created without it cannot be reconciled by
+// entity/property/room, which defeats the whole point of the charge contract.
+// =============================================================================
+
+export type RefundKind =
+  | "GATE_DECLINE" // an admin declined a gated stay
+  | "GATE_AUTO_DECLINE" // the silence sweep declined it, no human in the loop
+  | "CONFLICT" // admin cancelled a paid CONFLICT booking
+  | "DEPOSIT_RETURN" // refundable lease deposit returned at move-out
+  | "ADMIN"; // any other deliberate admin refund
+
+export interface StripeRefundMetadata extends StripeChargeMetadata {
+  refund_kind: RefundKind;
+  refunded_payment_intent: string;
+  refunded_payment_id: string;
+  booking_reference: string;
+  /** Admin email, or "system:gate-sweep" when nobody clicked anything. */
+  actor: string;
+  /** Operator text. MUST NOT contain guest contact details or an access code. */
+  refund_reason: string;
+}
+
+export const REQUIRED_REFUND_METADATA_KEYS = [
+  ...REQUIRED_METADATA_KEYS,
+  "refund_kind",
+  "refunded_payment_intent",
+  "refunded_payment_id",
+  "booking_reference",
+  "actor",
+] as const;
+
+/**
+ * Build the refund contract from the same base charge metadata the original
+ * PaymentIntent carried, so a refund reconciles against exactly the same
+ * entity/property/room breakout as the charge it reverses.
+ */
+export function buildRefundMetadata(args: {
+  base: StripeChargeMetadata;
+  kind: RefundKind;
+  paymentIntentId: string;
+  paymentId: string;
+  reference: string;
+  actor: string;
+  reason: string;
+}): StripeRefundMetadata {
+  return {
+    ...args.base,
+    refund_kind: args.kind,
+    refunded_payment_intent: str(args.paymentIntentId),
+    refunded_payment_id: str(args.paymentId),
+    booking_reference: str(args.reference),
+    actor: str(args.actor),
+    refund_reason: str(args.reason),
+  };
+}
+
+/** Throw if any refund contract key is missing or empty. Call before refunding. */
+export function assertCompleteRefundMetadata(meta: Record<string, string>): void {
+  const missing = REQUIRED_REFUND_METADATA_KEYS.filter(
+    (k) => meta[k] === undefined || meta[k] === "",
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `Stripe refund metadata contract incomplete — missing/empty: ${missing.join(", ")}`,
+    );
+  }
+}
