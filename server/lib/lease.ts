@@ -19,6 +19,7 @@ import { combineLeaseRates, cascadeStayPrice, RateError } from "@shared/rateSele
 import type { LeaseQuoteResponse, LeaseScheduleLine } from "@shared/api-types";
 import { CADENCE_DAYS, MAX_LEASE_DAYS, ROOM_UNBOOKABLE_STATUSES, allowedCadencesForTerm } from "@shared/schema";
 import { storage } from "../storage";
+import { LeaseError } from "./errorResponse";
 import { overlapsRange } from "./ranges";
 import type { Room } from "@shared/schema";
 
@@ -39,13 +40,10 @@ function sumRate(rooms: Room[], pick: (r: Room) => string | null): number | null
   return any ? Math.round(total * 100) / 100 : null;
 }
 
-export class LeaseError extends Error {
-  status: number;
-  constructor(message: string, status = 400) {
-    super(message);
-    this.status = status;
-  }
-}
+// Moved to errorResponse.ts so modules that only need to throw a 4xx don't have
+// to import this file — and with it the storage layer and a DB connection.
+// Re-exported here: every existing `import { LeaseError } from "./lease"` works.
+export { LeaseError };
 
 export interface LeaseQuoteInput {
   propertyId: string;

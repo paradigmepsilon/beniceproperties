@@ -24,6 +24,9 @@
 
 import { CADENCE_DAYS } from "@shared/schema";
 import { formatSurchargePct } from "@shared/pricing";
+// Previously a second, identical local definition. The money on a signed
+// agreement and in the confirmation email must render identically — one source.
+import { fmtMoney } from "./formatShared";
 
 export interface LeaseDocRoom {
   name: string;
@@ -155,8 +158,6 @@ export const DEFAULT_LEASE_TEMPLATE = {
 
 type Template = typeof DEFAULT_LEASE_TEMPLATE;
 
-const fmtMoney = (v: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
 
 function esc(s: string): string {
   return s

@@ -1249,6 +1249,11 @@ function addDaysIso(iso, days) {
   const t = Date.UTC(y, m - 1, d) + days * 864e5;
   return new Date(t).toISOString().slice(0, 10);
 }
+function daysUntil(date2, today) {
+  const t = (/* @__PURE__ */ new Date(`${today}T00:00:00Z`)).getTime();
+  const d = (/* @__PURE__ */ new Date(`${date2}T00:00:00Z`)).getTime();
+  return Math.round((d - t) / 864e5);
+}
 var HOTEL_TZ;
 var init_dates = __esm({
   "shared/dates.ts"() {
@@ -1319,9 +1324,9 @@ var init_rateSelection = __esm({
 });
 
 // shared/leaseSchedule.ts
-function parseYmd(ymd2) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd2);
-  if (!m) throw new ScheduleError(`Invalid date (expected YYYY-MM-DD): ${ymd2}`);
+function parseYmd(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd);
+  if (!m) throw new ScheduleError(`Invalid date (expected YYYY-MM-DD): ${ymd}`);
   return new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
 }
 function inclusiveDays(startDate, endDate) {
@@ -2606,6 +2611,17 @@ ${opts.telegramText ?? opts.body}`,
 init_schema();
 init_dates();
 
+// server/lib/smsLinks.ts
+init_storage();
+var SETTING_SMS_LINKS = "sms_include_links";
+async function smsLinksEnabled() {
+  const value = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
+  return !(value === "false" || value === "0");
+}
+async function smsLink(url) {
+  return await smsLinksEnabled() ? url : "";
+}
+
 // server/lib/publicUrl.ts
 function publicBaseUrl() {
   const explicit = process.env.PUBLIC_BASE_URL;
@@ -2624,7 +2640,6 @@ function portalUrl(lease) {
 
 // server/lib/dunning.ts
 var SETTING_DEFAULT_THRESHOLD = "defaulted_threshold_days";
-var SETTING_SMS_LINKS = "sms_include_links";
 var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
 function daysPastDue(dueDate, today) {
   const due = (/* @__PURE__ */ new Date(`${dueDate}T00:00:00Z`)).getTime();
@@ -2670,9 +2685,7 @@ async function runDunningSweep(today = todayIso()) {
   return result;
 }
 async function payLink(lease) {
-  const on = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
-  if (on === "false" || on === "0") return "";
-  return portalUrl(lease);
+  return smsLink(portalUrl(lease));
 }
 async function maybeSendReminder(lease, guest, row, past, today, result) {
   const daysUntil2 = -past;
@@ -2734,6 +2747,7 @@ async function handleOverdue(lease, property, guest, rooms2, row, past, today, t
       sendDate: today
     });
     if (!already) {
+      const overduePayUrl = await payLink(lease);
       const sent = await notifyGuest({
         email: guest.email,
         phone: guest.phone,
@@ -2742,7 +2756,7 @@ async function handleOverdue(lease, property, guest, rooms2, row, past, today, t
         body: `Hi ${guest.name}, your rent payment of $${row.amount} (installment #${row.scheduleSeq}, due ${row.dueDate}) is ${past} day${past === 1 ? "" : "s"} overdue. A late fee of $${lateFeePerDay.toFixed(2)}/day is accruing until it is paid.
 
 Pay now to stop further fees \u2014 by card, or by CashApp/Zelle: ${portalUrl(lease)}`,
-        smsBody: `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} overdue; $${lateFeePerDay.toFixed(0)}/day late fee accruing.` + (await payLink(lease) ? ` Pay: ${await payLink(lease)}` : "")
+        smsBody: `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} overdue; $${lateFeePerDay.toFixed(0)}/day late fee accruing.` + (overduePayUrl ? ` Pay: ${overduePayUrl}` : "")
       });
       await storage.recordNotification({
         leaseId: lease.id,
@@ -2902,14 +2916,12 @@ async function billAccruedLateFees(args) {
 // server/lib/lifecycle.ts
 init_storage();
 init_schema();
-var MS_PER_DAY3 = 24 * 60 * 60 * 1e3;
-var ymd = (d) => d.toISOString().slice(0, 10);
+
+// server/lib/formatShared.ts
 var fmtMoney = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
-function daysUntil(date2, today) {
-  const t = (/* @__PURE__ */ new Date(`${today}T00:00:00Z`)).getTime();
-  const d = (/* @__PURE__ */ new Date(`${date2}T00:00:00Z`)).getTime();
-  return Math.round((d - t) / MS_PER_DAY3);
-}
+
+// server/lib/lifecycle.ts
+init_dates();
 var CONFLICT_ADMIN_NOTE = (status) => status === "CONFLICT" ? "\n\nDATES WERE ALREADY TAKEN. Booking saved as CONFLICT (paid, not blocking). Resolve in the admin console: confirm, or cancel + refund." : "";
 var LIFECYCLE_TEMPLATES = {
   welcome: (v) => ({
@@ -2990,7 +3002,7 @@ async function onPaymentReceived(args) {
     smsSent: sent.sms.sent
   });
 }
-async function runLeaseEndingNotices(today = ymd(/* @__PURE__ */ new Date())) {
+async function runLeaseEndingNotices(today = todayIso()) {
   let sent = 0;
   const leases2 = await storage.getLeases({ status: "ACTIVE" });
   for (const lease of leases2) {

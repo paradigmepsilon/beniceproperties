@@ -25,17 +25,12 @@ import { log } from "../server-log";
 import type { Booking, Lease, Property, Room, Guest, PaymentScheduleRow } from "@shared/schema";
 import { lookupUrl, portalUrl } from "./publicUrl";
 
-const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
-export const fmtMoney = (v: number) =>
-  new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
-
-/** Days from `today` until `date` (positive = future). */
-export function daysUntil(date: string, today: string): number {
-  const t = new Date(`${today}T00:00:00Z`).getTime();
-  const d = new Date(`${date}T00:00:00Z`).getTime();
-  return Math.round((d - t) / MS_PER_DAY);
-}
+// fmtMoney / roomDisplayName now live in formatShared.ts and daysUntil in
+// @shared/dates, so template modules can use them without importing this
+// lease-shaped file. Re-exported so existing importers keep working.
+import { fmtMoney, roomDisplayName } from "./formatShared";
+import { daysUntil, todayIso } from "@shared/dates";
+export { fmtMoney, roomDisplayName, daysUntil };
 
 // ---------------------------------------------------------------------------
 // Admin-editable templates (data — an admin surface can override these). Each is
@@ -315,10 +310,6 @@ export async function onDepositReceived(args: {
 // ---------------------------------------------------------------------------
 
 /** "Room 2 — Garden" when a room number is set, else just the room name. */
-export function roomDisplayName(room?: Room | null): string | null {
-  if (!room) return null;
-  return room.roomNumber ? `Room ${room.roomNumber} — ${room.name}` : room.name;
-}
 
 /** Guest lookup page for a booking with no lease/portal token. */
 function bookingLookupUrl(): string {
@@ -443,7 +434,11 @@ export async function onBookingConfirmed(args: {
 // Scheduler: lease-ending notices (~14 days before end_date)
 // ---------------------------------------------------------------------------
 
-export async function runLeaseEndingNotices(today: string = ymd(new Date())): Promise<number> {
+// `today` defaults to the HOTEL-LOCAL date. It previously defaulted to
+// `new Date().toISOString().slice(0,10)`, which is UTC — harmless only because
+// the production cron runs at 08:00 UTC, when UTC and ET name the same day. Any
+// earlier cron time would have made this fire a day off.
+export async function runLeaseEndingNotices(today: string = todayIso()): Promise<number> {
   let sent = 0;
   const leases = await storage.getLeases({ status: "ACTIVE" });
   for (const lease of leases) {

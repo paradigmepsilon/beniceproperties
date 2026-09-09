@@ -39,13 +39,12 @@ import {
 } from "./pricingSettings";
 import { formatSurchargePct } from "@shared/pricing";
 import { todayIso } from "@shared/dates";
+import { smsLink } from "./smsLinks";
 import { log } from "../server-log";
 import type { Lease, Property, LeaseRoom, PaymentScheduleRow, Guest } from "@shared/schema";
 import { portalUrl, publicBaseUrl } from "./publicUrl";
 
 const SETTING_DEFAULT_THRESHOLD = "defaulted_threshold_days";
-/** Kill switch for links in SMS (A2P 10DLC filtering). Default: on. */
-const SETTING_SMS_LINKS = "sms_include_links";
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 /** Whole days `dueDate` is in the past relative to `today` (negative = future). */
@@ -117,15 +116,10 @@ export async function runDunningSweep(today: string = todayIso()): Promise<Dunni
 
 /**
  * The pay link for an SMS body, or "" when SMS links are switched off.
- *
- * US carriers filter link-bearing SMS hard from numbers without a registered
- * A2P 10DLC campaign. `sms_include_links` (default on) is the kill switch: flip
- * it off and SMS reverts to link-free text while email keeps the link.
+ * Delegates to smsLinks.ts so every outbound SMS in the app shares one switch.
  */
 async function payLink(lease: Lease): Promise<string> {
-  const on = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
-  if (on === "false" || on === "0") return "";
-  return portalUrl(lease);
+  return smsLink(portalUrl(lease));
 }
 
 async function maybeSendReminder(
@@ -222,6 +216,9 @@ async function handleOverdue(
       sendDate: today,
     });
     if (!already) {
+      // Resolve the SMS link ONCE — it reads the settings table, and this
+      // template literal used to await it twice for a single message.
+      const overduePayUrl = await payLink(lease);
       const sent = await notifyGuest({
         email: guest.email,
         phone: guest.phone,
@@ -235,7 +232,7 @@ async function handleOverdue(
         smsBody:
           `BNP: rent $${row.amount} (#${row.scheduleSeq}) is ${past} day${past === 1 ? "" : "s"} ` +
           `overdue; $${lateFeePerDay.toFixed(0)}/day late fee accruing.` +
-          ((await payLink(lease)) ? ` Pay: ${await payLink(lease)}` : ""),
+          (overduePayUrl ? ` Pay: ${overduePayUrl}` : ""),
       });
       await storage.recordNotification({
         leaseId: lease.id,

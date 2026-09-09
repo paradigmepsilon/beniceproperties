@@ -2899,6 +2899,22 @@ init_leaseSchedule();
 init_rateSelection();
 init_schema();
 init_storage();
+
+// server/lib/errorResponse.ts
+function clientErrorMessage(err, status, isDev2) {
+  if (status >= 500 && !isDev2) return "Internal Server Error";
+  return err.message || "Internal Server Error";
+}
+var LeaseError = class extends Error {
+  status;
+  constructor(message, status = 400) {
+    super(message);
+    this.name = "LeaseError";
+    this.status = status;
+  }
+};
+
+// server/lib/lease.ts
 init_ranges();
 var roundMoney = (v) => Math.round(v * 100) / 100;
 function sumRate(rooms2, pick) {
@@ -2914,13 +2930,6 @@ function sumRate(rooms2, pick) {
   }
   return any ? Math.round(total * 100) / 100 : null;
 }
-var LeaseError = class extends Error {
-  status;
-  constructor(message, status = 400) {
-    super(message);
-    this.status = status;
-  }
-};
 async function buildLeaseQuote(input) {
   const property = await storage.getProperty(input.propertyId);
   if (!property) throw new LeaseError("Property not found", 404);
@@ -3246,6 +3255,15 @@ import { customAlphabet as customAlphabet2 } from "nanoid";
 
 // server/lib/leaseDocument.ts
 init_schema();
+
+// server/lib/formatShared.ts
+var fmtMoney = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+function roomDisplayName(room) {
+  if (!room) return null;
+  return room.roomNumber ? `Room ${room.roomNumber} \u2014 ${room.name}` : room.name;
+}
+
+// server/lib/leaseDocument.ts
 var CADENCE_LABEL = {
   WEEKLY: "weekly",
   BIWEEKLY: "bi-weekly",
@@ -3286,7 +3304,6 @@ var DEFAULT_LEASE_TEMPLATE = {
   ],
   signatureStatement: "By typing my full legal name below and submitting this Agreement, I acknowledge that I have read and agree to its terms, and I intend my typed name to be my legally binding electronic signature under the U.S. E-SIGN Act and UETA."
 };
-var fmtMoney = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
 function esc(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
@@ -3904,6 +3921,17 @@ ${opts.telegramText ?? opts.body}`,
 init_schema();
 init_dates();
 
+// server/lib/smsLinks.ts
+init_storage();
+var SETTING_SMS_LINKS = "sms_include_links";
+async function smsLinksEnabled() {
+  const value = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
+  return !(value === "false" || value === "0");
+}
+async function smsLink(url) {
+  return await smsLinksEnabled() ? url : "";
+}
+
 // server/lib/publicUrl.ts
 function publicBaseUrl() {
   const explicit = process.env.PUBLIC_BASE_URL;
@@ -3921,12 +3949,9 @@ function portalUrl(lease) {
 }
 
 // server/lib/dunning.ts
-var SETTING_SMS_LINKS = "sms_include_links";
 var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
 async function payLink(lease) {
-  const on = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
-  if (on === "false" || on === "0") return "";
-  return portalUrl(lease);
+  return smsLink(portalUrl(lease));
 }
 async function handleChargeFailure(args) {
   const today = args.today ?? todayIso();
@@ -4014,8 +4039,7 @@ async function billAccruedLateFees(args) {
 // server/lib/lifecycle.ts
 init_storage();
 init_schema();
-var MS_PER_DAY3 = 24 * 60 * 60 * 1e3;
-var fmtMoney2 = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+init_dates();
 var CONFLICT_ADMIN_NOTE = (status) => status === "CONFLICT" ? "\n\nDATES WERE ALREADY TAKEN. Booking saved as CONFLICT (paid, not blocking). Resolve in the admin console: confirm, or cancel + refund." : "";
 var LIFECYCLE_TEMPLATES = {
   welcome: (v) => ({
@@ -4103,10 +4127,10 @@ async function onLeaseActivated(leaseId) {
     });
   }
   if (!await storage.hasLifecycleEvent({ leaseId: lease.id }, "COLIVING_SCHEDULE_RECAP", null)) {
-    const rows = schedule.map((s) => `  #${s.scheduleSeq}  ${s.dueDate}  ${fmtMoney2(parseFloat(s.amount))}`).join("\n");
+    const rows = schedule.map((s) => `  #${s.scheduleSeq}  ${s.dueDate}  ${fmtMoney(parseFloat(s.amount))}`).join("\n");
     const tpl = LIFECYCLE_TEMPLATES.scheduleRecap({
       name: guest.name,
-      total: fmtMoney2(parseFloat(lease.totalLeaseValue)),
+      total: fmtMoney(parseFloat(lease.totalLeaseValue)),
       rows,
       portalUrl: portalUrl(lease)
     });
@@ -4132,7 +4156,7 @@ async function onLeaseActivated(leaseId) {
       guest: guest.name,
       start: lease.startDate,
       end: lease.endDate,
-      total: fmtMoney2(parseFloat(lease.totalLeaseValue))
+      total: fmtMoney(parseFloat(lease.totalLeaseValue))
     });
     const res = await notifyAdmin({
       subject: tpl.subject,
@@ -4155,7 +4179,7 @@ async function onPaymentReceived(args) {
   if (await storage.hasLifecycleEvent({ leaseId: lease.id }, "PAYMENT_RECEIPT", scheduleRow.scheduleSeq)) return;
   const tpl = LIFECYCLE_TEMPLATES.paymentReceipt({
     name: guest.name,
-    amount: fmtMoney2(parseFloat(scheduleRow.amount)),
+    amount: fmtMoney(parseFloat(scheduleRow.amount)),
     seq: scheduleRow.scheduleSeq,
     property: property.name,
     portalUrl: portalUrl(lease)
@@ -4184,7 +4208,7 @@ async function onDepositReceived(args) {
   const roomNames = rooms2.map((r) => r.roomNameSnapshot).join(", ") || "your room";
   const tpl = LIFECYCLE_TEMPLATES.depositReceipt({
     name: guest.name,
-    amount: fmtMoney2(parseFloat(lease.depositAmountSnapshot ?? "0")),
+    amount: fmtMoney(parseFloat(lease.depositAmountSnapshot ?? "0")),
     property: property.name,
     room: roomNames,
     portalUrl: portalUrl(lease)
@@ -4205,10 +4229,6 @@ async function onDepositReceived(args) {
     smsSent: sent.sms.sent
   });
 }
-function roomDisplayName(room) {
-  if (!room) return null;
-  return room.roomNumber ? `Room ${room.roomNumber} \u2014 ${room.name}` : room.name;
-}
 function bookingLookupUrl() {
   return lookupUrl();
 }
@@ -4216,7 +4236,7 @@ async function onBookingConfirmed(args) {
   const { booking, property, room, guest } = args;
   const isConflict = booking.status === "CONFLICT";
   const roomLabel = roomDisplayName(room);
-  const total = fmtMoney2(parseFloat(booking.quotedTotal));
+  const total = fmtMoney(parseFloat(booking.quotedTotal));
   if (!isConflict && !await storage.hasLifecycleEvent({ bookingId: booking.id }, "BOOKING_CONFIRMED", null)) {
     const autoSetting = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
     const guestSendsOn = autoSetting?.value !== "false";
@@ -4719,7 +4739,7 @@ async function repairExistingBooking(args) {
         checkIn: existing.checkIn,
         checkOut: existing.checkOut ?? "",
         reference,
-        total: fmtMoney2(parseFloat(existing.quotedTotal)),
+        total: fmtMoney(parseFloat(existing.quotedTotal)),
         status: "CONFLICT"
       });
       await notifyAdmin2({
@@ -4888,7 +4908,7 @@ async function materializeShortStayBooking(pi, deps = defaultDeps()) {
       checkIn,
       checkOut: checkOut ?? "",
       reference,
-      total: fmtMoney2(parseFloat(m.quoted_total ?? "0")),
+      total: fmtMoney(parseFloat(m.quoted_total ?? "0")),
       status: "CONFLICT"
     });
     await notifyAdmin2({
@@ -5403,6 +5423,8 @@ async function deleteObject(key) {
 
 // server/lib/verification.ts
 init_schema();
+
+// server/lib/uploadValidation.ts
 var EXT_BY_TYPE = {
   "image/jpeg": "jpg",
   "image/png": "png",
@@ -5411,25 +5433,27 @@ var EXT_BY_TYPE = {
   "image/heif": "heif",
   "application/pdf": "pdf"
 };
-var MAX_BYTES = 12 * 1024 * 1024;
-function assertR2() {
+var MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+function assertR2Configured() {
   if (!isR2Configured()) {
     throw new LeaseError("File uploads aren't enabled yet (storage not configured).", 503);
   }
 }
-function validateFile(file) {
+function validateUpload(file) {
   if (!file || !file.buffer?.length) throw new LeaseError("No file was uploaded.", 400);
-  if (file.size > MAX_BYTES) throw new LeaseError("File too large (max 12 MB).", 400);
+  if (file.size > MAX_UPLOAD_BYTES) throw new LeaseError("File too large (max 12 MB).", 400);
   const ext = EXT_BY_TYPE[file.mimetype];
   if (!ext) {
     throw new LeaseError("Unsupported file type \u2014 upload a JPG, PNG, WEBP, HEIC, or PDF.", 400);
   }
   return ext;
 }
+
+// server/lib/verification.ts
 async function uploadLicense(token, file) {
-  assertR2();
+  assertR2Configured();
   const lease = await resolvePortalLease(token);
-  const ext = validateFile(file);
+  const ext = validateUpload(file);
   if (lease.status === "ACTIVE") {
     throw new LeaseError("This lease is already active; no verification needed.", 409);
   }
@@ -5498,9 +5522,9 @@ async function saveVehicle(token, input) {
   return vehicle;
 }
 async function uploadVehiclePhoto(token, file) {
-  assertR2();
+  assertR2Configured();
   const lease = await resolvePortalLease(token);
-  const ext = validateFile(file);
+  const ext = validateUpload(file);
   const key = `bnp/vehicles/${lease.id}/${randomUUID()}.${ext}`;
   await uploadBuffer(key, file.buffer, file.mimetype);
   const existing = await storage.getVehicleByLease(lease.id);
@@ -5515,7 +5539,7 @@ async function uploadVehiclePhoto(token, file) {
   return { saved: true };
 }
 async function getLicenseViewUrl(leaseId) {
-  assertR2();
+  assertR2Configured();
   const lease = await storage.getLease(leaseId);
   if (!lease) throw new LeaseError("Lease not found", 404);
   if (!lease.licenseR2Key) throw new LeaseError("No license has been uploaded for this lease.", 404);
@@ -8495,12 +8519,6 @@ async function handleStripeEvent(event) {
     default:
       break;
   }
-}
-
-// server/lib/errorResponse.ts
-function clientErrorMessage(err, status, isDev2) {
-  if (status >= 500 && !isDev2) return "Internal Server Error";
-  return err.message || "Internal Server Error";
 }
 
 // server/app.ts

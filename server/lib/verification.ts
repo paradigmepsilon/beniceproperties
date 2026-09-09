@@ -23,7 +23,7 @@
 import { randomUUID } from "node:crypto";
 import { storage } from "../storage";
 import { resolvePortalLease } from "./portal";
-import { uploadBuffer, getPresignedDownloadUrl, deleteObject, isR2Configured } from "./storage-r2";
+import { uploadBuffer, getPresignedDownloadUrl, deleteObject } from "./storage-r2";
 import { LeaseError } from "./lease";
 import { activateVerifiedLease } from "./leasePayments";
 import { notifyGuest, notifyAdmin } from "./notifications";
@@ -32,41 +32,17 @@ import { log } from "../server-log";
 import { portalUrl } from "./publicUrl";
 
 
-// Accepted upload types → file extension. Images plus PDF (licenses are often
-// scanned to PDF). Mirrors UO's whitelist; the client filename is never trusted.
-const EXT_BY_TYPE: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-  "image/heic": "heic",
-  "image/heif": "heif",
-  "application/pdf": "pdf",
-};
+// The MIME whitelist, size cap, and storage guard now live in
+// uploadValidation.ts so the short-stay booking flow enforces the same rules.
+// Re-exported: UploadedFile is part of this module's public surface (the routes
+// import it from here), and the local aliases keep the call sites below unchanged.
+import {
+  assertR2Configured as assertR2,
+  validateUpload as validateFile,
+  type UploadedFile,
+} from "./uploadValidation";
 
-const MAX_BYTES = 12 * 1024 * 1024; // 12 MB, same as UO
-
-export interface UploadedFile {
-  buffer: Buffer;
-  mimetype: string;
-  size: number;
-}
-
-function assertR2(): void {
-  if (!isR2Configured()) {
-    throw new LeaseError("File uploads aren't enabled yet (storage not configured).", 503);
-  }
-}
-
-/** Validate an uploaded file and return its extension, or throw a 400. */
-function validateFile(file: UploadedFile | undefined): string {
-  if (!file || !file.buffer?.length) throw new LeaseError("No file was uploaded.", 400);
-  if (file.size > MAX_BYTES) throw new LeaseError("File too large (max 12 MB).", 400);
-  const ext = EXT_BY_TYPE[file.mimetype];
-  if (!ext) {
-    throw new LeaseError("Unsupported file type — upload a JPG, PNG, WEBP, HEIC, or PDF.", 400);
-  }
-  return ext;
-}
+export type { UploadedFile };
 
 // ---------------------------------------------------------------------------
 // Driver's license
