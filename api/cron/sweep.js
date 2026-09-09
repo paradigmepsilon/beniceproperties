@@ -2840,7 +2840,9 @@ async function sendEmail(opts) {
       result = { sent: false, channel: "email", reason: err.message };
     }
   }
-  if (opts.context) await record("EMAIL", opts.context, opts.to, opts.subject, opts.text, result);
+  if (opts.context) {
+    await record("EMAIL", opts.context, opts.to, opts.subject, opts.logBody ?? opts.text, result);
+  }
   return result;
 }
 var twilioClientPromise = null;
@@ -2889,7 +2891,14 @@ async function sendTelegramLogged(opts) {
 async function notifyGuest(opts) {
   const ctx = opts.context ? { ...opts.context, audience: "GUEST" } : void 0;
   const [email, sms] = await Promise.all([
-    sendEmail({ to: opts.email, subject: opts.subject, text: opts.body, html: opts.html, context: ctx }),
+    sendEmail({
+      to: opts.email,
+      subject: opts.subject,
+      text: opts.body,
+      html: opts.html,
+      logBody: opts.logBody,
+      context: ctx
+    }),
     // sendSms already returns/records "no-phone" as SKIPPED when `to` is empty,
     // so route both branches through it rather than short-circuiting here.
     sendSms({ to: opts.phone ?? "", body: opts.smsBody ?? opts.body, context: ctx })

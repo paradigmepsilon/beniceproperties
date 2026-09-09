@@ -164,6 +164,16 @@ export async function sendEmail(opts: {
   subject: string;
   text: string;
   html?: string;
+  /**
+   * What to persist to message_log INSTEAD of `text`. The channel and the audit
+   * trail are not equivalent — same principle as `telegramText` on notifyAdmin.
+   *
+   * Used by the messages that carry access credentials (the welcome letter, the
+   * STR pre-arrival note): the guest receives the real door code, while the
+   * durable copy records that the letter went out with the code redacted.
+   * Omit it and the sent text is logged verbatim, which is the right default.
+   */
+  logBody?: string;
   context?: MessageContext;
 }): Promise<SendResult> {
   let result: SendResult;
@@ -187,7 +197,9 @@ export async function sendEmail(opts: {
       result = { sent: false, channel: "email", reason: (err as Error).message };
     }
   }
-  if (opts.context) await record("EMAIL", opts.context, opts.to, opts.subject, opts.text, result);
+  if (opts.context) {
+    await record("EMAIL", opts.context, opts.to, opts.subject, opts.logBody ?? opts.text, result);
+  }
   return result;
 }
 
@@ -265,13 +277,22 @@ export async function notifyGuest(opts: {
    */
   smsBody?: string;
   html?: string;
+  /** Audit-trail copy of the email body — see sendEmail. */
+  logBody?: string;
   context?: Omit<MessageContext, "audience">;
 }): Promise<{ email: SendResult; sms: SendResult }> {
   const ctx: MessageContext | undefined = opts.context
     ? { ...opts.context, audience: "GUEST" }
     : undefined;
   const [email, sms] = await Promise.all([
-    sendEmail({ to: opts.email, subject: opts.subject, text: opts.body, html: opts.html, context: ctx }),
+    sendEmail({
+      to: opts.email,
+      subject: opts.subject,
+      text: opts.body,
+      html: opts.html,
+      logBody: opts.logBody,
+      context: ctx,
+    }),
     // sendSms already returns/records "no-phone" as SKIPPED when `to` is empty,
     // so route both branches through it rather than short-circuiting here.
     sendSms({ to: opts.phone ?? "", body: opts.smsBody ?? opts.body, context: ctx }),
