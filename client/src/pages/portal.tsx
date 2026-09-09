@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
+import { uploadFile, cleanError } from "@/lib/portalFetch";
 import { money } from "@/lib/format";
 import { todayIso } from "@shared/dates";
 import { formatSurchargePct } from "@shared/pricing";
@@ -81,31 +82,6 @@ const US_STATES = [
   "WI","WY","DC",
 ];
 
-/** Upload a single file field to a portal endpoint (multipart). Mirrors the
- * error shape apiRequest throws so cleanError() renders the server message. */
-async function uploadFile(url: string, file: File): Promise<Response> {
-  const fd = new FormData();
-  fd.append("file", file);
-  const res = await fetch(url, { method: "POST", body: fd, credentials: "include" });
-  if (!res.ok) {
-    const text = (await res.text()) || res.statusText;
-    throw new Error(`${res.status}: ${text}`);
-  }
-  return res;
-}
-
-function cleanError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const m = /^\d+:\s*(\{.*\})$/.exec(raw);
-  if (m) {
-    try {
-      return JSON.parse(m[1]).message ?? raw;
-    } catch {
-      /* */
-    }
-  }
-  return raw;
-}
 
 const statusVariant = (s: string) =>
   s === "FAILED" || s === "LATE" || s === "DEFAULTED" || s === "REJECTED"

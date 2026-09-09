@@ -20,6 +20,7 @@ import { money } from "@/lib/format";
 import { ROOM_STATUSES } from "@shared/schema";
 import { amountMatches, refundEligibility } from "@/lib/adminRefund";
 import MessagesTab from "./messages-tab";
+import StayApprovalsTab, { useStayApprovalCount } from "./stay-approvals-tab";
 import BlocksPanel from "./blocks-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
 
@@ -111,6 +112,8 @@ export default function AdminDashboard() {
     queryKey: ["/api/admin/verifications"],
     enabled: !!me.data,
   });
+  // Its own count, so neither review queue hides behind the other's number.
+  const stayApprovalCount = useStayApprovalCount();
 
   const approveVerification = useMutation({
     mutationFn: async (leaseId: string) =>
@@ -179,6 +182,9 @@ export default function AdminDashboard() {
           <TabsTrigger value="verifications" data-testid="tab-verifications">
             Verifications
             {verifications.data?.verifications.length ? ` (${verifications.data.verifications.length})` : ""}
+          </TabsTrigger>
+          <TabsTrigger value="stay-approvals" data-testid="tab-stay-approvals">
+            Stay approvals{stayApprovalCount ? ` (${stayApprovalCount})` : ""}
           </TabsTrigger>
           <TabsTrigger value="messages" data-testid="tab-messages">Messages</TabsTrigger>
         </TabsList>
@@ -276,6 +282,12 @@ export default function AdminDashboard() {
           <CalendarSyncPanel />
           <BlocksPanel properties={properties.data ?? []} />
           <InventoryManager properties={properties.data ?? []} />
+        </TabsContent>
+
+        {/* Short-stay approvals — a SEPARATE queue from lease verifications: different
+            subject, different actions, and one of them refunds money. */}
+        <TabsContent value="stay-approvals" className="mt-6">
+          <StayApprovalsTab />
         </TabsContent>
 
         {/* Verifications — review uploaded licenses, then approve (activates lease) or reject */}

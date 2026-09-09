@@ -24,6 +24,7 @@ import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-
 import { apiRequest } from "@/lib/queryClient";
 import type { QuoteResponse, BookingIntentResponse } from "@shared/api-types";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
+import { STAY_HANDOFF_KEY } from "@/pages/confirmation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -337,6 +338,14 @@ function PayForm({
       return;
     }
     if (paymentIntent && paymentIntent.status === "succeeded") {
+      // Hand the email to the confirmation page so it can claim the booking's gate
+      // token without challenging the guest again. Best-effort: private mode or
+      // blocked storage just means they get the reference + email form instead.
+      try {
+        sessionStorage.setItem(STAY_HANDOFF_KEY, JSON.stringify({ reference, email }));
+      } catch {
+        /* no-op — the confirmation page falls back to the challenge */
+      }
       // Booking is materialized server-side by the webhook; head to confirmation.
       navigate(`/confirmation/${reference}`);
       return;

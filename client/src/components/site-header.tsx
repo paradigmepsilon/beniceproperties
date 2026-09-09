@@ -292,6 +292,7 @@ export function SiteFooter() {
             </FooterCol>
             <FooterCol title="Company">
               <a href="/about">About us</a>
+              <a href="/house-rules">House rules</a>
               <a href="/community">Community</a>
               <a href="/partner">Partner with us</a>
               {config.pages.journal && <a href="/journal">Journal</a>}

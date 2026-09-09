@@ -23,21 +23,11 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
+import { cleanError } from "@/lib/portalFetch";
+import { canSign as canSignGate } from "@/lib/esign";
 
 type Cadence = (typeof PAYMENT_CADENCES)[number];
 
-function cleanError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
-  const m = /^\d+:\s*(\{.*\})$/.exec(raw);
-  if (m) {
-    try {
-      return JSON.parse(m[1]).message ?? raw;
-    } catch {
-      /* fall through */
-    }
-  }
-  return raw;
-}
 
 export default function LeaseSign() {
   const [, navigate] = useLocation();
@@ -132,7 +122,9 @@ export default function LeaseSign() {
     );
   }
 
-  const canSign = Boolean(documentHtml) && signedName.trim().length >= 2 && affirmed && !sign.isPending;
+  // One shared rule with the short-stay signing page — this gates a legally
+  // binding act, so the two flows must not drift.
+  const canSign = canSignGate({ documentHtml, signedName, affirmed, busy: sign.isPending });
 
   return (
     <div className="flex min-h-screen flex-col">

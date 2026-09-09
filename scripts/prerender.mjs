@@ -48,7 +48,8 @@ const PORT = 4178; // arbitrary, local-only
 const API_ORIGIN = (process.env.PRERENDER_API_ORIGIN || "https://www.beniceproperties.com").replace(/\/$/, "");
 
 // The static marketing routes to prerender. Keep in sync with the sitemap.
-const ROUTES = ["/", "/str", "/ltr", "/community", "/about", "/partner", "/journal"];
+const ROUTES = ["/", "/str", "/ltr", "/community", "/about",
+  "/house-rules", "/partner", "/journal"];
 
 // Hosts the headless browser must not talk to (analytics noise per deploy).
 const BLOCKED_HOSTS = ["posthog.com", "i.posthog.com"];

@@ -407,6 +407,7 @@ export async function registerRoutes(app: Express): Promise<void> {
         ...(ltrVisible ? [{ path: "/ltr", changefreq: "weekly", priority: "0.9" }] : []),
         { path: "/community", changefreq: "monthly", priority: "0.7" },
         { path: "/about", changefreq: "monthly", priority: "0.6" },
+      { path: "/house-rules", changefreq: "yearly", priority: "0.4" },
         { path: "/partner", changefreq: "monthly", priority: "0.7" },
       ];
 
@@ -2032,6 +2033,54 @@ export async function registerRoutes(app: Express): Promise<void> {
   // Admin routes require a session; the UO twins require the service token.
   // ===========================================================================
 
+  /**
+   * Exchange reference + email for the gate token.
+   *
+   * WHY THIS EXISTS: the client navigates to /confirmation/:reference the instant
+   * confirmPayment resolves, which is typically BEFORE the webhook has
+   * materialized the booking — on Vercel that is a separate invocation. So there
+   * is no token to hand over at that moment and the page must be able to ask for
+   * one a second later.
+   *
+   * 202 means "not yet, keep polling"; 404 means the reference is wrong or the
+   * email does not match. Auth is exactly the level GET /api/lookup already uses:
+   * a bare reference would be a DOWNGRADE, since references appear in Stripe
+   * receipts and CashApp memos.
+   */
+  app.post("/api/stay/claim", checkoutLimiter, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        reference: z.string().min(4).max(40),
+        email: z.string().email(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Enter your reference and the email you booked with." });
+      }
+      const booking = await storage.getBookingByReference(parsed.data.reference.trim().toUpperCase());
+      // Not yet materialized — the webhook is still in flight.
+      if (!booking) return res.status(202).json({ pending: true });
+
+      const guest = await storage.getGuest(booking.guestId);
+      if (!guest || guest.email.toLowerCase() !== parsed.data.email.trim().toLowerCase()) {
+        // Deliberately the same answer as an unknown reference: this must not
+        // become an oracle for which references exist.
+        return res.status(404).json({ message: "We could not find that booking." });
+      }
+
+      const gate = await storage.getBookingGate(booking.id);
+      if (!gate) {
+        // An ungated stay (STR, or a co-living stay outside 7-28 nights). Nothing
+        // to finish, so point the guest at the ordinary lookup view.
+        return res.json({ gated: false, reference: booking.reference, status: booking.status });
+      }
+      res.json({ gated: true, reference: booking.reference, token: gate.gateToken });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
   /** The guest's own page: what is outstanding, and (once approved) how to get in. */
   app.get("/api/stay/:token", async (req, res, next) => {
     try {
@@ -2168,6 +2217,19 @@ export async function registerRoutes(app: Express): Promise<void> {
       res.json({ url: await getStayLicenseViewUrl(req.params.id) });
     } catch (err) {
       if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** The signed agreement, for an admin to read during review. */
+  app.get("/api/admin/stays/:id/agreement", requireAdmin, async (req, res, next) => {
+    try {
+      const gate = await storage.getBookingGate(req.params.id);
+      if (!gate?.agreementDocumentHtml) {
+        return res.status(404).json({ message: "No signed agreement on file." });
+      }
+      res.type("html").send(gate.agreementDocumentHtml);
+    } catch (err) {
       next(err);
     }
   });

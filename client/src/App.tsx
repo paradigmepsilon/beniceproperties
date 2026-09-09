@@ -30,6 +30,9 @@ import AdminLogin from "@/pages/admin/login";
 import AdminDashboard from "@/pages/admin/dashboard";
 import NotFound from "@/pages/not-found";
 import { ComingSoon } from "@/pages/coming-soon";
+import Stay from "@/pages/stay";
+import StayExtend from "@/pages/stay-extend";
+import HouseRules from "@/pages/house-rules";
 import { LtrInquiryForm } from "@/components/ltr-inquiry-form";
 import { useSiteConfig } from "@/lib/useSiteConfig";
 
@@ -95,6 +98,11 @@ function Router() {
       <Route path="/lease/sign" component={LeaseSign} />
       <Route path="/lease/pay" component={LeasePay} />
       <Route path="/portal/:token" component={Portal} />
+      {/* Short-stay guest pages — token-authenticated, no account. The extend
+          route must come first: wouter matches in order. */}
+      <Route path="/stay/:token/extend" component={StayExtend} />
+      <Route path="/stay/:token" component={Stay} />
+      <Route path="/house-rules" component={HouseRules} />
       <Route path="/confirmation/:reference" component={Confirmation} />
       <Route path="/lookup" component={BookingLookup} />
       <Route path="/community" component={Community} />
