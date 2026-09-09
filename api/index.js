@@ -341,8 +341,11 @@ var init_schema = __esm({
       "GATE_INCOMPLETE_AT_CHECKIN",
       "REFUND_FAILED",
       // HIGH: a decline cancelled the booking but Stripe refused the refund
-      "ACCESS_INFO_MISSING"
+      "ACCESS_INFO_MISSING",
       // HIGH: a guest arrives tomorrow and the property has no door code/wifi
+      // HIGH: an extension was PAID but the nights were taken before it applied. The
+      // charge STANDS and is never auto-refunded — a human resolves it.
+      "EXTENSION_CONFLICT"
     ];
     ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"];
     ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"];
@@ -3427,29 +3430,1280 @@ function postPaymentStatusFor(stay) {
   return stay.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
 }
 
-// server/lib/nextOpening.ts
-import { addDays as addDays5, parseISO as parseISO5 } from "date-fns";
-var ymd = (d) => d.toISOString().slice(0, 10);
-function dayAfter(isoDate) {
-  return ymd(addDays5(parseISO5(isoDate), 1));
+// server/lib/stayPortal.ts
+init_storage();
+import { randomUUID } from "node:crypto";
+
+// server/lib/storage-r2.ts
+import {
+  S3Client,
+  PutObjectCommand,
+  GetObjectCommand,
+  DeleteObjectCommand
+} from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+function isR2Configured() {
+  return Boolean(
+    process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_BUCKET_NAME
+  );
 }
-function strNextOpening(stays, today) {
-  const spans = stays.filter((s) => s.checkOut != null).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
-  let open = null;
-  for (const s of spans) {
-    if (open == null) {
-      if (s.checkIn <= today && today < s.checkOut) open = s.checkOut;
-    } else if (s.checkIn <= open && s.checkOut > open) {
-      open = s.checkOut;
+function requireR2Config() {
+  const accountId = process.env.R2_ACCOUNT_ID;
+  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
+  const bucket = process.env.R2_BUCKET_NAME;
+  if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
+    throw new Error(
+      "R2 is not configured (need R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME)"
+    );
+  }
+  return { accountId, accessKeyId, secretAccessKey, bucket };
+}
+var _client = null;
+function client() {
+  if (_client) return _client;
+  const { accountId, accessKeyId, secretAccessKey } = requireR2Config();
+  _client = new S3Client({
+    region: "auto",
+    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
+    credentials: { accessKeyId, secretAccessKey }
+  });
+  return _client;
+}
+async function uploadBuffer(key, buffer, contentType) {
+  const { bucket } = requireR2Config();
+  await client().send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType
+    })
+  );
+  return { key, size: buffer.length };
+}
+async function getPresignedDownloadUrl(key, expiresInSec = 600) {
+  const { bucket } = requireR2Config();
+  return getSignedUrl(client(), new GetObjectCommand({ Bucket: bucket, Key: key }), {
+    expiresIn: expiresInSec
+  });
+}
+async function deleteObject(key) {
+  const { bucket } = requireR2Config();
+  await client().send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
+}
+
+// server/lib/uploadValidation.ts
+var EXT_BY_TYPE = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "image/heic": "heic",
+  "image/heif": "heif",
+  "application/pdf": "pdf"
+};
+var MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
+function assertR2Configured() {
+  if (!isR2Configured()) {
+    throw new LeaseError("File uploads aren't enabled yet (storage not configured).", 503);
+  }
+}
+function validateUpload(file) {
+  if (!file || !file.buffer?.length) throw new LeaseError("No file was uploaded.", 400);
+  if (file.size > MAX_UPLOAD_BYTES) throw new LeaseError("File too large (max 12 MB).", 400);
+  const ext = EXT_BY_TYPE[file.mimetype];
+  if (!ext) {
+    throw new LeaseError("Unsupported file type \u2014 upload a JPG, PNG, WEBP, HEIC, or PDF.", 400);
+  }
+  return ext;
+}
+
+// server/lib/stayLifecycle.ts
+init_storage();
+
+// server/server-log.ts
+function log(message, source = "express") {
+  const time = (/* @__PURE__ */ new Date()).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: true
+  });
+  console.log(`${time} [${source}] ${message}`);
+}
+
+// server/lib/telegram.ts
+function isTelegramConfigured() {
+  return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_ADMIN_CHAT_ID);
+}
+function adminChatIds() {
+  return (process.env.TELEGRAM_ADMIN_CHAT_ID ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+}
+async function sendTelegram(opts) {
+  if (!isTelegramConfigured()) {
+    log(`[dry-run telegram] "${opts.text.slice(0, 60)}\u2026" (telegram not configured)`, "notify");
+    return { sent: false, channel: "telegram", reason: "not-configured" };
+  }
+  const ids = opts.chatIds ?? adminChatIds();
+  const url = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
+  let failure;
+  for (const chat_id of ids) {
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ chat_id, text: opts.text.slice(0, 4e3), disable_web_page_preview: true }),
+        signal: AbortSignal.timeout(2e4)
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json.ok === false) failure = json.description || `HTTP ${res.status}`;
+    } catch (err) {
+      failure = err.message;
     }
   }
-  return open;
+  if (failure) {
+    log(`telegram FAILED: ${failure}`, "notify");
+    return { sent: false, channel: "telegram", reason: failure };
+  }
+  log(`telegram sent to ${ids.length} chat(s)`, "notify");
+  return { sent: true, channel: "telegram" };
 }
-function cheapestAvailableWeeklyRent(rooms2) {
-  const rates = rooms2.filter((r) => r.available).map((r) => parseFloat(r.weeklyRent)).filter((n) => Number.isFinite(n) && n > 0);
-  if (rates.length === 0) return { fromWeeklyRent: null, available: false };
-  return { fromWeeklyRent: String(Math.min(...rates)), available: true };
+
+// server/lib/notifications.ts
+function statusFor(result) {
+  if (result.sent) return "SENT";
+  if (result.reason === "not-configured") return "DRY_RUN";
+  if (result.reason === "no-phone") return "SKIPPED";
+  return "FAILED";
 }
+var storageModulePromise = null;
+function getStorageModule() {
+  if (!storageModulePromise) storageModulePromise = Promise.resolve().then(() => (init_storage(), storage_exports));
+  return storageModulePromise;
+}
+async function record(channel, ctx, to, subject, body, result) {
+  try {
+    const { storage: storage2 } = await getStorageModule();
+    await storage2.createMessageLog({
+      bookingId: ctx.bookingId ?? null,
+      leaseId: ctx.leaseId ?? null,
+      guestId: ctx.guestId ?? null,
+      audience: ctx.audience,
+      channel,
+      kind: ctx.kind,
+      toAddress: to,
+      subject,
+      body,
+      status: statusFor(result),
+      error: result.sent ? void 0 : result.reason,
+      sentBy: ctx.sentBy ?? "system"
+    });
+  } catch (err) {
+    log(`message_log write FAILED: ${err.message}`, "notify");
+  }
+}
+function isEmailConfigured() {
+  return Boolean(
+    process.env.SENDGRID_API_KEY || process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS
+  );
+}
+function isSmsConfigured() {
+  return Boolean(
+    process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER
+  );
+}
+var mailFrom = () => process.env.MAIL_FROM || process.env.ADMIN_EMAIL || "no-reply@beniceproperties.com";
+var transportPromise = null;
+async function getTransport() {
+  if (!transportPromise) {
+    transportPromise = (async () => {
+      const nodemailer = (await import("nodemailer")).default;
+      if (process.env.SENDGRID_API_KEY) {
+        return nodemailer.createTransport({
+          host: "smtp.sendgrid.net",
+          port: 587,
+          auth: { user: "apikey", pass: process.env.SENDGRID_API_KEY }
+        });
+      }
+      return nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || "587", 10),
+        secure: process.env.SMTP_PORT === "465",
+        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
+      });
+    })();
+  }
+  return transportPromise;
+}
+function textToHtml(text2) {
+  const esc3 = text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  return `<p>${esc3.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>').replace(/\n/g, "<br>")}</p>`;
+}
+async function sendEmail(opts) {
+  let result;
+  if (!isEmailConfigured()) {
+    log(`[dry-run email] to=${opts.to} subject="${opts.subject}" (email not configured)`, "notify");
+    result = { sent: false, channel: "email", reason: "not-configured" };
+  } else {
+    try {
+      const transport = await getTransport();
+      await transport.sendMail({
+        from: mailFrom(),
+        to: opts.to,
+        subject: opts.subject,
+        text: opts.text,
+        html: opts.html ?? textToHtml(opts.text)
+      });
+      log(`email sent to=${opts.to} subject="${opts.subject}"`, "notify");
+      result = { sent: true, channel: "email" };
+    } catch (err) {
+      log(`email FAILED to=${opts.to}: ${err.message}`, "notify");
+      result = { sent: false, channel: "email", reason: err.message };
+    }
+  }
+  if (opts.context) {
+    await record("EMAIL", opts.context, opts.to, opts.subject, opts.logBody ?? opts.text, result);
+  }
+  return result;
+}
+var twilioClientPromise = null;
+async function getTwilio() {
+  if (!twilioClientPromise) {
+    twilioClientPromise = (async () => {
+      const twilio = (await import("twilio")).default;
+      return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+    })();
+  }
+  return twilioClientPromise;
+}
+async function sendSms(opts) {
+  let result;
+  if (!opts.to) {
+    result = { sent: false, channel: "sms", reason: "no-phone" };
+  } else if (!isSmsConfigured()) {
+    log(`[dry-run sms] to=${opts.to} body="${opts.body.slice(0, 40)}\u2026" (sms not configured)`, "notify");
+    result = { sent: false, channel: "sms", reason: "not-configured" };
+  } else {
+    try {
+      const client2 = await getTwilio();
+      await client2.messages.create({
+        from: process.env.TWILIO_FROM_NUMBER,
+        to: opts.to,
+        body: opts.body
+      });
+      log(`sms sent to=${opts.to}`, "notify");
+      result = { sent: true, channel: "sms" };
+    } catch (err) {
+      log(`sms FAILED to=${opts.to}: ${err.message}`, "notify");
+      result = { sent: false, channel: "sms", reason: err.message };
+    }
+  }
+  if (opts.context) await record("SMS", opts.context, opts.to, void 0, opts.body, result);
+  return result;
+}
+async function sendTelegramLogged(opts) {
+  const result = await sendTelegram({ text: opts.text, chatIds: opts.chatIds });
+  if (opts.context) {
+    const to = (opts.chatIds ?? adminChatIds()).join(",");
+    await record("TELEGRAM", opts.context, to, void 0, opts.text, result);
+  }
+  return result;
+}
+async function notifyGuest(opts) {
+  const ctx = opts.context ? { ...opts.context, audience: "GUEST" } : void 0;
+  const [email, sms] = await Promise.all([
+    sendEmail({
+      to: opts.email,
+      subject: opts.subject,
+      text: opts.body,
+      html: opts.html,
+      logBody: opts.logBody,
+      context: ctx
+    }),
+    // sendSms already returns/records "no-phone" as SKIPPED when `to` is empty,
+    // so route both branches through it rather than short-circuiting here.
+    sendSms({ to: opts.phone ?? "", body: opts.smsBody ?? opts.body, context: ctx })
+  ]);
+  return { email, sms };
+}
+async function notifyAdmin(opts) {
+  const to = process.env.ADMIN_NOTIFY_EMAIL || process.env.ADMIN_EMAIL;
+  const ctx = { ...opts.context ?? { kind: "ADMIN_ALERT" }, audience: "ADMIN" };
+  const [email, telegram] = await Promise.all([
+    to ? sendEmail({ to, subject: opts.subject, text: opts.body, context: ctx }) : Promise.resolve({ sent: false, channel: "email", reason: "no-admin-email" }),
+    sendTelegramLogged({
+      text: `${opts.subject}
+
+${opts.telegramText ?? opts.body}`,
+      context: ctx
+    })
+  ]);
+  return { email, telegram };
+}
+
+// server/lib/formatShared.ts
+var fmtMoney = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+function roomDisplayName(room) {
+  if (!room) return null;
+  return room.roomNumber ? `Room ${room.roomNumber} \u2014 ${room.name}` : room.name;
+}
+
+// server/lib/stayLifecycle.ts
+init_schema();
+
+// server/lib/stayTemplates.ts
+function listOf(items) {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+var roomClause = (room) => room ? ` (${room})` : "";
+function stayDocsRequired(v) {
+  const what = listOf(v.outstanding);
+  return {
+    subject: `Thanks for booking \u2014 ${v.outstanding.length} thing${v.outstanding.length === 1 ? "" : "s"} left to finish (${v.reference})`,
+    body: `Hi ${v.name}, thank you for booking${roomClause(v.room)} at ${v.property} from ${v.checkIn} to ${v.checkOut}. Your payment of ${v.total} has gone through and your dates are held.
+
+TO COMPLETE YOUR BOOKING we still need ${what}. It takes about two minutes:
+${v.stayUrl}
+
+Once we have everything, we review it and confirm \u2014 that can take up to 24 hours. We will email you your door code and arrival details as soon as it is approved.
+
+Reference ${v.reference}.`,
+    smsBody: `BNP: payment received for ${v.reference}. Finish your booking (ID + agreement): ${v.smsUrl}`
+  };
+}
+function stayDocsComplete(v) {
+  return {
+    subject: `We have everything \u2014 reviewing your stay (${v.reference})`,
+    body: `Hi ${v.name}, thanks \u2014 we have your ID and your signed agreement for ${v.property}${roomClause(v.room)}, arriving ${v.checkIn}.
+
+We review these by hand, which can take up to 24 hours. As soon as it is approved we will email your door code, wifi and directions.
+
+Check your status anytime: ${v.stayUrl}
+
+Reference ${v.reference}.`,
+    smsBody: `BNP: got your ID and agreement for ${v.reference}. We confirm within 24 hours.`
+  };
+}
+function adminStayAwaitingApproval(v) {
+  const flag = v.nameMismatch ? "NAME MISMATCH - " : "";
+  return {
+    subject: `${flag}Stay awaiting approval - ${v.property}${roomClause(v.room)} ${v.checkIn}`,
+    body: `${v.guest} has completed their documents and is awaiting approval.
+
+Listing: ${v.property}${roomClause(v.room)}
+Dates: ${v.checkIn} to ${v.checkOut} (${v.nights} nights)
+Reference: ${v.reference}
+Paid: ${v.total}
+Signed as: ${v.signedName}
+Guest record: ${v.guest}
+` + (v.nameMismatch ? `
+** The signed name does not match the guest record. Check the licence carefully. **
+` : "") + `
+Contact: ${v.email}${v.phone ? ` / ${v.phone}` : ""}
+
+Review the licence, confirm the name matches, and set the door code: ${v.adminUrl}`,
+    // Name / listing / dates / reference / amount only — no email, no phone.
+    telegramText: `${v.guest} - ${v.property}${roomClause(v.room)} - ${v.checkIn} to ${v.checkOut} - ${v.reference} - ${v.total}${v.nameMismatch ? " - NAME MISMATCH" : ""} - awaiting approval`
+  };
+}
+function stayFixRequested(v) {
+  return {
+    subject: `Action needed to confirm your stay (${v.reference})`,
+    body: `Hi ${v.name}, we need one more thing before we can confirm your stay at ${v.property}.
+
+${v.reason}
+
+Your dates are still held and no further payment is needed \u2014 just resubmit here:
+${v.stayUrl}
+
+If this is not sorted within 3 days we will cancel the booking and refund you in full.
+
+Reference ${v.reference}.`,
+    smsBody: `BNP: we need one more thing to confirm ${v.reference}. Details in your email: ${v.smsUrl}`
+  };
+}
+function stayApprovedWelcome(v) {
+  const shell = (access) => `Hi ${v.name}, you are confirmed. Everything you need for your stay at ${v.property}${roomClause(v.room)} is below.
+
+YOUR STAY
+${v.checkIn} to ${v.checkOut}
+Reference ${v.reference}
+
+GETTING IN
+${access}
+
+HOUSE RULES
+${v.houseRulesUrl}
+
+Anything you need, reply to this email or use your stay page: ${v.stayUrl}
+
+We are glad to have you.`;
+  return {
+    subject: `You're confirmed - everything you need for ${v.property}`,
+    body: shell(v.accessText),
+    // Rule 2: the code never leaves by SMS. It points at the email instead.
+    smsBody: `BNP: you are confirmed for ${v.checkIn}. Door code, wifi and directions are in your email.`,
+    logBody: shell(v.accessTextRedacted)
+  };
+}
+function stayDeclinedRefunded(v) {
+  return {
+    subject: `Your booking ${v.reference} has been cancelled and refunded`,
+    body: `Hi ${v.name}, your booking at ${v.property} (${v.reference}) has been cancelled and ${v.refundAmount} has been refunded in full to the card you paid with. Refunds usually land within 5 to 10 business days.
+
+` + (v.auto ? `We did not receive the ID and signed agreement we needed to confirm the stay.
+
+` : v.reason ? `Reason: ${v.reason}
+
+` : "") + `If you would still like to stay with us, you are welcome to book again: ${v.rebookUrl}`,
+    smsBody: `BNP: booking ${v.reference} is cancelled and ${v.refundAmount} refunded in full. Details in your email.`
+  };
+}
+function adminStayAutoDeclined(v) {
+  const text2 = `Auto-declined and refunded: ${v.guest} - ${v.property}${roomClause(v.room)} - ${v.checkIn} to ${v.checkOut} - ${v.reference} - ${v.refundAmount} refunded. The guest never completed their ID and agreement. The dates are back on sale.`;
+  return {
+    subject: `Auto-declined + refunded - ${v.property}${roomClause(v.room)} ${v.checkIn}`,
+    body: text2,
+    // Carries no contact details, but passed explicitly so a later edit that adds
+    // an email cannot silently start leaking it to a third party.
+    telegramText: text2
+  };
+}
+function stayExtended(v) {
+  return {
+    subject: `Your stay is extended \u2014 now through ${v.newCheckOut} (${v.reference})`,
+    body: `Hi ${v.name}, done \u2014 your stay at ${v.property}${roomClause(v.room)} is extended.
+
+YOUR UPDATED STAY
+Was ending: ${v.previousCheckOut}
+Now ending: ${v.newCheckOut}
+Added: ${v.addedNights} night${v.addedNights === 1 ? "" : "s"}
+Paid today: ${v.amount}
+Reference ${v.reference}
+
+Nothing else changes \u2014 same room, same door code, and there is nothing new to sign.
+
+Your booking: ${v.stayUrl}`,
+    smsBody: `BNP: your stay is extended to ${v.newCheckOut}. ${v.amount} paid. Same room, same code.`
+  };
+}
+function adminStayExtended(v) {
+  const text2 = `Stay extended: ${v.guest} - ${v.property}${roomClause(v.room)} - ${v.previousCheckOut} to ${v.newCheckOut} - ${v.reference} - ${v.amount} paid.`;
+  return { subject: `Stay extended - ${v.property}${roomClause(v.room)}`, body: text2, telegramText: text2 };
+}
+function adminStayExtensionConflict(v) {
+  const text2 = `EXTENSION PAID BUT NOT APPLIED: ${v.guest} - ${v.property}${roomClause(v.room)} - ${v.reference} - ${v.amount} charged for an extension to ${v.requestedCheckOut}, but the dates were taken in the meantime (${v.reason}). The charge STANDS and was NOT refunded. Resolve by hand: extend to a shorter date, move the guest, or refund.`;
+  return {
+    subject: `EXTENSION PAID BUT DATES TAKEN - ${v.reference}`,
+    body: text2,
+    telegramText: text2
+  };
+}
+
+// server/lib/accessInfo.ts
+init_storage();
+var REQUIRED_WELCOME_FIELDS = ["doorCode", "wifiSsid", "directions"];
+var nonEmpty = (v) => {
+  const t = typeof v === "string" ? v.trim() : "";
+  return t.length > 0 ? t : null;
+};
+async function resolveStayAccessInfo(args) {
+  const [propertyInfo, roomInfo] = await Promise.all([
+    storage.getPropertyAccessInfo(args.property.id),
+    args.room ? storage.getRoomAccessInfo(args.room.id) : Promise.resolve(void 0)
+  ]);
+  return {
+    doorCode: nonEmpty(args.gate?.doorCode),
+    wifiSsid: nonEmpty(propertyInfo?.wifiSsid),
+    wifiPassword: nonEmpty(propertyInfo?.wifiPassword),
+    buildingEntry: nonEmpty(propertyInfo?.buildingEntry),
+    directions: nonEmpty(propertyInfo?.directions),
+    parking: nonEmpty(propertyInfo?.parking),
+    roomFinding: nonEmpty(roomInfo?.findingNotes),
+    checkInFrom: nonEmpty(propertyInfo?.checkInFrom),
+    checkOutBy: nonEmpty(propertyInfo?.checkOutBy),
+    notes: nonEmpty(propertyInfo?.notes)
+  };
+}
+function missingAccessFields(info, opts = {}) {
+  const requireDoorCode = opts.requireDoorCode !== false;
+  return REQUIRED_WELCOME_FIELDS.filter((field) => {
+    if (field === "doorCode" && !requireDoorCode) {
+      return !info.doorCode && !info.buildingEntry;
+    }
+    return !info[field];
+  });
+}
+function renderAccessInfoText(info) {
+  const lines = [];
+  if (info.doorCode) lines.push(`Door code: ${info.doorCode}`);
+  if (info.buildingEntry) lines.push(`Building/gate entry: ${info.buildingEntry}`);
+  if (info.wifiSsid) {
+    lines.push(
+      info.wifiPassword ? `Wi-Fi: ${info.wifiSsid} \u2014 password ${info.wifiPassword}` : `Wi-Fi: ${info.wifiSsid}`
+    );
+  }
+  if (info.roomFinding) lines.push(`Finding your room: ${info.roomFinding}`);
+  if (info.directions) lines.push(`Getting here: ${info.directions}`);
+  if (info.parking) lines.push(`Parking: ${info.parking}`);
+  if (info.checkInFrom) lines.push(`Check-in from: ${info.checkInFrom}`);
+  if (info.checkOutBy) lines.push(`Checkout by: ${info.checkOutBy}`);
+  if (info.notes) lines.push(info.notes);
+  return lines.join("\n");
+}
+function renderAccessInfoRedacted(info) {
+  return renderAccessInfoText({
+    ...info,
+    doorCode: info.doorCode ? "[redacted]" : null,
+    buildingEntry: info.buildingEntry ? "[redacted]" : null,
+    wifiPassword: info.wifiPassword ? "[redacted]" : null
+  });
+}
+
+// server/lib/smsLinks.ts
+init_storage();
+var SETTING_SMS_LINKS = "sms_include_links";
+async function smsLinksEnabled() {
+  const value = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
+  return !(value === "false" || value === "0");
+}
+async function smsLink(url) {
+  return await smsLinksEnabled() ? url : "";
+}
+
+// server/lib/publicUrl.ts
+function publicBaseUrl() {
+  const explicit = process.env.PUBLIC_BASE_URL;
+  if (explicit) return explicit.replace(/\/+$/, "");
+  if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return "https://www.beniceproperties.com";
+}
+function lookupUrl() {
+  return `${publicBaseUrl()}/lookup`;
+}
+function portalUrl(lease) {
+  return lease.portalToken ? `${publicBaseUrl()}/portal/${lease.portalToken}` : lookupUrl();
+}
+function houseRulesUrl() {
+  return `${publicBaseUrl()}/house-rules`;
+}
+function stayUrl(gate) {
+  return gate?.gateToken ? `${publicBaseUrl()}/stay/${gate.gateToken}` : lookupUrl();
+}
+
+// server/lib/stayLifecycle.ts
+async function guestSendsEnabled() {
+  const setting = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
+  return setting?.value !== "false";
+}
+function outstandingItems(gate) {
+  const items = [];
+  if (!gate?.agreementSignedAt) items.push("your signed rental agreement");
+  if (!gate || !["PENDING_REVIEW", "APPROVED"].includes(gate.verificationStatus)) {
+    items.push("a photo of your driver's licence");
+  }
+  return items;
+}
+function guestDocsSubmitted(gate) {
+  return outstandingItems(gate).length === 0;
+}
+async function sendGuest(ctx, kind, tpl, scheduleSeq = null) {
+  if (await storage.hasLifecycleEvent({ bookingId: ctx.booking.id }, kind, scheduleSeq)) {
+    return false;
+  }
+  const enabled = await guestSendsEnabled();
+  if (!enabled) {
+    await storage.recordLifecycleEvent({
+      bookingId: ctx.booking.id,
+      eventType: kind,
+      scheduleSeq,
+      status: "SKIPPED",
+      emailSent: false,
+      smsSent: false
+    });
+    return false;
+  }
+  const sent = await notifyGuest({
+    email: ctx.guest.email,
+    phone: ctx.guest.phone,
+    subject: tpl.subject,
+    body: tpl.body,
+    smsBody: tpl.smsBody,
+    logBody: tpl.logBody,
+    context: { bookingId: ctx.booking.id, guestId: ctx.guest.id, kind }
+  });
+  await storage.recordLifecycleEvent({
+    bookingId: ctx.booking.id,
+    eventType: kind,
+    scheduleSeq,
+    status: sent.email.sent ? "SENT" : "SKIPPED",
+    emailSent: sent.email.sent,
+    smsSent: sent.sms.sent
+  });
+  return sent.email.sent;
+}
+async function sendAdmin(ctx, kind, tpl, scheduleSeq = null) {
+  if (await storage.hasLifecycleEvent({ bookingId: ctx.booking.id }, kind, scheduleSeq)) return;
+  await notifyAdmin({
+    subject: tpl.subject,
+    body: tpl.body,
+    telegramText: tpl.telegramText,
+    context: { bookingId: ctx.booking.id, guestId: ctx.guest.id, kind }
+  });
+  await storage.recordLifecycleEvent({
+    bookingId: ctx.booking.id,
+    eventType: kind,
+    scheduleSeq,
+    status: "SENT",
+    emailSent: true,
+    smsSent: false
+  });
+}
+async function vars(ctx) {
+  const url = stayUrl(ctx.gate);
+  return {
+    name: ctx.guest.name,
+    property: ctx.property.name,
+    room: roomDisplayName(ctx.room),
+    reference: ctx.booking.reference,
+    stayUrl: url,
+    // Routed through the A2P 10DLC switch: when SMS links are off this is "" and
+    // the template renders without one.
+    smsUrl: await smsLink(url)
+  };
+}
+async function onStayBookingConfirmed(ctx) {
+  const v = await vars(ctx);
+  const tpl = stayDocsRequired({
+    ...v,
+    checkIn: ctx.booking.checkIn,
+    checkOut: ctx.booking.checkOut ?? "",
+    total: fmtMoney(parseFloat(ctx.booking.quotedTotal)),
+    outstanding: outstandingItems(ctx.gate)
+  });
+  await sendGuest(ctx, "STAY_DOCS_REQUIRED", tpl);
+  log(`stay ${ctx.booking.reference}: gated \u2014 documents requested`, "lifecycle");
+}
+async function onStayDocsComplete(ctx) {
+  const round2 = (ctx.gate?.fixRequestCount ?? 0) + 1;
+  const v = await vars(ctx);
+  await sendGuest(
+    ctx,
+    "STAY_DOCS_COMPLETE",
+    stayDocsComplete({ ...v, checkIn: ctx.booking.checkIn }),
+    round2
+  );
+  const signedName = ctx.gate?.agreementSignedName ?? "";
+  await sendAdmin(
+    ctx,
+    "STAY_ADMIN_AWAITING_APPROVAL",
+    adminStayAwaitingApproval({
+      property: ctx.property.name,
+      room: roomDisplayName(ctx.room),
+      guest: ctx.guest.name,
+      email: ctx.guest.email,
+      phone: ctx.guest.phone ?? "",
+      checkIn: ctx.booking.checkIn,
+      checkOut: ctx.booking.checkOut ?? "",
+      nights: stayNights(ctx.booking.checkIn, ctx.booking.checkOut ?? ctx.booking.checkIn),
+      reference: ctx.booking.reference,
+      total: fmtMoney(parseFloat(ctx.booking.quotedTotal)),
+      signedName,
+      // The substance of the review, surfaced rather than left for the admin to
+      // spot. Same comparison the lease verification queue already makes.
+      nameMismatch: signedName.trim().toLowerCase() !== ctx.guest.name.trim().toLowerCase(),
+      adminUrl: `${publicBaseUrl()}/admin`
+    }),
+    round2
+  );
+  log(`stay ${ctx.booking.reference}: documents complete \u2014 awaiting approval`, "lifecycle");
+}
+async function onStayFixRequested(ctx, reason) {
+  const v = await vars(ctx);
+  await sendGuest(
+    ctx,
+    "STAY_FIX_REQUESTED",
+    stayFixRequested({ ...v, reason }),
+    ctx.gate?.fixRequestCount ?? 1
+  );
+  log(`stay ${ctx.booking.reference}: fix requested`, "lifecycle");
+}
+async function onStayApproved(ctx) {
+  const info = await resolveStayAccessInfo({
+    gate: ctx.gate,
+    property: ctx.property,
+    room: ctx.room
+  });
+  const v = await vars(ctx);
+  await sendGuest(
+    ctx,
+    "STAY_APPROVED_WELCOME",
+    stayApprovedWelcome({
+      ...v,
+      checkIn: ctx.booking.checkIn,
+      checkOut: ctx.booking.checkOut ?? "",
+      accessText: renderAccessInfoText(info),
+      accessTextRedacted: renderAccessInfoRedacted(info),
+      houseRulesUrl: houseRulesUrl()
+    })
+  );
+  log(`stay ${ctx.booking.reference}: approved \u2014 welcome letter sent`, "lifecycle");
+}
+async function onStayDeclined(ctx, args) {
+  await sendGuest(
+    ctx,
+    "STAY_DECLINED_REFUNDED",
+    stayDeclinedRefunded({
+      name: ctx.guest.name,
+      property: ctx.property.name,
+      reference: ctx.booking.reference,
+      reason: args.reason,
+      refundAmount: fmtMoney(args.refundAmount),
+      auto: args.auto,
+      rebookUrl: `${publicBaseUrl()}/property/${ctx.booking.propertyId}`
+    })
+  );
+  if (args.auto) {
+    await sendAdmin(
+      ctx,
+      "STAY_ADMIN_AUTO_DECLINED",
+      adminStayAutoDeclined({
+        property: ctx.property.name,
+        room: roomDisplayName(ctx.room),
+        guest: ctx.guest.name,
+        checkIn: ctx.booking.checkIn,
+        checkOut: ctx.booking.checkOut ?? "",
+        reference: ctx.booking.reference,
+        refundAmount: fmtMoney(args.refundAmount)
+      })
+    );
+  }
+  log(
+    `stay ${ctx.booking.reference}: declined + refunded (${args.auto ? "auto" : "admin"})`,
+    "lifecycle"
+  );
+}
+async function onStayExtended(ctx, args) {
+  const addedNights = stayNights(args.previousCheckOut, args.newCheckOut);
+  const v = await vars(ctx);
+  await sendGuest(
+    ctx,
+    "STAY_EXTENDED",
+    stayExtended({
+      ...v,
+      previousCheckOut: args.previousCheckOut,
+      newCheckOut: args.newCheckOut,
+      addedNights,
+      amount: fmtMoney(args.amount)
+    }),
+    args.extensionSeq
+  );
+  await sendAdmin(
+    ctx,
+    "STAY_ADMIN_EXTENDED",
+    adminStayExtended({
+      property: ctx.property.name,
+      room: roomDisplayName(ctx.room),
+      guest: ctx.guest.name,
+      previousCheckOut: args.previousCheckOut,
+      newCheckOut: args.newCheckOut,
+      reference: ctx.booking.reference,
+      amount: fmtMoney(args.amount)
+    }),
+    args.extensionSeq
+  );
+  log(
+    `stay ${ctx.booking.reference}: extended ${args.previousCheckOut} \u2192 ${args.newCheckOut}`,
+    "lifecycle"
+  );
+}
+
+// server/lib/documentHtml.ts
+function esc(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+var ESIGN_ATTESTATION = "By typing my full legal name below and submitting this Agreement, I acknowledge that I have read and agree to its terms, and I intend my typed name to be my legally binding electronic signature under the U.S. E-SIGN Act and UETA.";
+function documentPage(title, inner) {
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title><style>body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:32px auto;padding:0 20px;color:#1a1a1a}@media print{body{margin:0}}</style></head><body>${inner}</body></html>`;
+}
+function awaitingSignatureHtml(attestation = ESIGN_ATTESTATION) {
+  return `<section style="margin-top:24px"><p style="line-height:1.5">${esc(attestation)}</p><p style="color:#777">\u2014 Awaiting signature \u2014</p></section>`;
+}
+function signatureBlockHtml(signature, attestation = ESIGN_ATTESTATION) {
+  return `<section style="margin-top:24px;border-top:2px solid #1a1a1a;padding-top:16px"><p style="line-height:1.5">${esc(attestation)}</p><div style="margin-top:12px;font-size:14px"><div><strong>Signed by:</strong> ${esc(signature.signedName)}</div><div><strong>Date &amp; time:</strong> ${esc(signature.signedAt.toISOString())}</div><div><strong>IP address:</strong> ${esc(signature.signedIp)}</div><div style="margin-top:8px;color:#555">Electronically signed under the E-SIGN Act / UETA.</div></div></section>`;
+}
+function fillTokens(template, tokens) {
+  return template.replace(
+    /\{\{(\w+)\}\}/g,
+    (whole, key) => Object.prototype.hasOwnProperty.call(tokens, key) ? tokens[key] : whole
+  );
+}
+
+// server/lib/stayAgreementDocument.ts
+var DEFAULT_STAY_AGREEMENT_TEMPLATE = {
+  title: "Short-Stay Rental Agreement",
+  intro: "This Short-Stay Rental Agreement (the \u201CAgreement\u201D) is entered into between Be Nice Properties (\u201COperator\u201D) and {{guestName}} (\u201CGuest\u201D) for the room and dates described below at {{propertyName}}, {{propertyLocation}}. This is a short-term occupancy agreement for a stay of {{nights}} night(s) paid in full in advance. It does not create a tenancy or a lease.",
+  sections: [
+    {
+      heading: "1. Room and Dates",
+      body: "The Operator makes available to the Guest the following room at {{propertyName}}: {{roomLabel}}. The stay begins on {{checkIn}} ({{checkInFrom}}) and ends on {{checkOut}} ({{checkOutBy}}), a total of {{nights}} night(s). The Guest occupies the named room and shares the common areas of the property with other residents."
+    },
+    {
+      heading: "2. Payment",
+      body: "The total amount for this stay is {{totalPaid}}, charged in full at the time of booking. There is no recurring payment, no installment schedule, and no security deposit for this stay. No further amount is due unless the Guest extends the stay."
+    },
+    {
+      heading: "3. Confirmation and Access",
+      body: "This booking is confirmed only after the Operator has (a) received this signed Agreement, (b) received a government-issued photo identification matching the name signed below, and (c) approved both. Access details, including the door code, are issued on approval and are personal to the Guest. The Guest may not share, copy, or transfer any access code or key."
+    },
+    {
+      heading: "4. Occupancy",
+      body: "Only the Guest named in this Agreement may occupy the room. The room is not to be sublet, listed, assigned, or shared, and no additional overnight occupant may stay without the Operator's prior written approval."
+    },
+    {
+      heading: "5. Extensions",
+      body: "The Guest may request additional nights before the end of the stay, subject to availability. An extension takes effect only once the additional amount has been paid, and is priced at the rates then in effect for the full length of the stay."
+    },
+    {
+      heading: "6. House Rules",
+      body: "The Guest agrees to the house rules published at {{houseRulesUrl}}, which form part of this Agreement, and to treat the property, its shared spaces, and other residents with care and respect. Repeated or serious breaches may end the stay."
+    },
+    {
+      heading: "7. Condition and Damage",
+      body: "The Guest agrees to leave the room and shared areas in the condition in which they were received, allowing for ordinary use, and to report any damage or maintenance issue promptly. The Guest is responsible for damage beyond ordinary wear caused by the Guest or the Guest's visitors."
+    },
+    {
+      heading: "8. Departure",
+      body: "The Guest agrees to vacate the room and return or cease using all access codes by {{checkOutBy}} on {{checkOut}}, unless the stay has been extended and paid for."
+    }
+  ],
+  signatureStatement: ESIGN_ATTESTATION
+};
+function stayAgreementTokens(data) {
+  return {
+    guestName: data.guestName,
+    propertyName: data.propertyName,
+    propertyLocation: data.propertyLocation,
+    roomLabel: data.roomLabel,
+    checkIn: data.checkIn,
+    checkOut: data.checkOut,
+    nights: String(stayNights(data.checkIn, data.checkOut)),
+    totalPaid: fmtMoney(data.totalPaid),
+    houseRulesUrl: data.houseRulesUrl,
+    // Fall back to plain language rather than rendering an empty parenthesis when
+    // a property has not had its arrival times filled in yet.
+    checkInFrom: data.checkInFrom || "check-in time as advised",
+    checkOutBy: data.checkOutBy || "the stated checkout time"
+  };
+}
+function bodyHtml(data, template) {
+  const tokens = stayAgreementTokens(data);
+  const sections = template.sections.map(
+    (s) => `<section><h2 style="font-size:15px;margin:18px 0 6px">${esc(s.heading)}</h2><p style="margin:0;line-height:1.5">${esc(fillTokens(s.body, tokens))}</p></section>`
+  ).join("");
+  return `<h1 style="font-size:20px;margin:0 0 4px">${esc(template.title)}</h1><p style="color:#555;margin:0 0 16px;line-height:1.5">${esc(
+    fillTokens(template.intro, tokens)
+  )}</p>` + sections;
+}
+function renderStayAgreementHtml(data, template = DEFAULT_STAY_AGREEMENT_TEMPLATE) {
+  return documentPage(
+    template.title,
+    bodyHtml(data, template) + awaitingSignatureHtml(template.signatureStatement)
+  );
+}
+function renderSignedStayAgreementHtml(data, signature, template = DEFAULT_STAY_AGREEMENT_TEMPLATE) {
+  return documentPage(
+    template.title,
+    bodyHtml(data, template) + signatureBlockHtml(signature, template.signatureStatement)
+  );
+}
+
+// server/lib/gateToken.ts
+import { customAlphabet as customAlphabet2 } from "nanoid";
+var ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+var GATE_TOKEN_LENGTH = 24;
+var gateTokenGen = customAlphabet2(ALPHABET, GATE_TOKEN_LENGTH);
+var GATE_DOCS_DEADLINE_HOURS = 72;
+var GATE_DOCS_DEADLINE_MS = GATE_DOCS_DEADLINE_HOURS * 60 * 60 * 1e3;
+
+// server/lib/stayPortal.ts
+function stayStage(gate) {
+  if (gate.approvedAt) return "APPROVED";
+  if (!guestDocsSubmitted(gate)) {
+    return gate.fixRequestedAt || gate.verificationStatus === "REJECTED" ? "FIX_REQUESTED" : "AWAITING_DOCS";
+  }
+  return "AWAITING_APPROVAL";
+}
+async function resolveStay(token) {
+  if (!token || token.length < GATE_TOKEN_LENGTH) throw new LeaseError("Invalid stay link", 404);
+  const found = await storage.getBookingByGateToken(token);
+  if (!found) throw new LeaseError("Stay link not found", 404);
+  const [guest, property, room] = await Promise.all([
+    storage.getGuest(found.guestId),
+    storage.getProperty(found.propertyId),
+    found.roomId ? storage.getRoom(found.roomId) : Promise.resolve(void 0)
+  ]);
+  if (!guest || !property) throw new LeaseError("Stay is missing its guest or property", 409);
+  const { gate, ...booking } = found;
+  return { booking, gate, guest, property, room: room ?? null };
+}
+async function getStayView(token) {
+  const stay = await resolveStay(token);
+  const stage = stayStage(stay.gate);
+  const access = stage === "APPROVED" ? renderAccessInfoText(
+    await resolveStayAccessInfo({
+      gate: stay.gate,
+      property: stay.property,
+      room: stay.room
+    })
+  ) : null;
+  return {
+    reference: stay.booking.reference,
+    stage,
+    propertyName: stay.property.name,
+    roomName: roomDisplayName(stay.room),
+    checkIn: stay.booking.checkIn,
+    checkOut: stay.booking.checkOut,
+    nights: stay.booking.checkOut ? stayNights(stay.booking.checkIn, stay.booking.checkOut) : null,
+    total: stay.booking.quotedTotal,
+    guestName: stay.guest.name,
+    outstanding: outstandingItems(stay.gate),
+    licence: {
+      status: stay.gate.verificationStatus,
+      uploadedAt: stay.gate.licenseUploadedAt,
+      // The guest sees WHY it was bounced; they never see the object key.
+      rejectionReason: stay.gate.verificationRejectionReason
+    },
+    agreement: {
+      signed: Boolean(stay.gate.agreementSignedAt),
+      signedAt: stay.gate.agreementSignedAt,
+      signedName: stay.gate.agreementSignedName,
+      documentUrl: stay.gate.agreementSignedAt ? `/api/stay/${token}/agreement` : null
+    },
+    fixReason: stay.gate.fixRequestedReason,
+    deadlineAt: stay.gate.docsDeadlineAt,
+    houseRulesUrl: houseRulesUrl(),
+    /** Rendered arrival block, or null until approved. */
+    accessInfo: access
+  };
+}
+async function agreementData(stay) {
+  const info = await resolveStayAccessInfo({
+    gate: stay.gate,
+    property: stay.property,
+    room: stay.room
+  });
+  return {
+    guestName: stay.guest.name,
+    propertyName: stay.property.name,
+    propertyLocation: stay.property.address ?? "",
+    roomLabel: roomDisplayName(stay.room) ?? "the whole property",
+    checkIn: stay.booking.checkIn,
+    checkOut: stay.booking.checkOut ?? stay.booking.checkIn,
+    totalPaid: parseFloat(stay.booking.quotedTotal),
+    houseRulesUrl: houseRulesUrl(),
+    checkInFrom: info.checkInFrom ?? "",
+    checkOutBy: info.checkOutBy ?? ""
+  };
+}
+async function previewStayAgreement(token) {
+  const stay = await resolveStay(token);
+  return renderStayAgreementHtml(await agreementData(stay));
+}
+async function getSignedStayAgreement(token) {
+  const stay = await resolveStay(token);
+  if (!stay.gate.agreementDocumentHtml) {
+    throw new LeaseError("This agreement has not been signed yet.", 409);
+  }
+  return stay.gate.agreementDocumentHtml;
+}
+async function signStayAgreement(args) {
+  const stay = await resolveStay(args.token);
+  if (stay.gate.agreementSignedAt) {
+    return {
+      signedAt: stay.gate.agreementSignedAt,
+      documentUrl: `/api/stay/${args.token}/agreement`
+    };
+  }
+  if (stay.booking.status === "CANCELLED") {
+    throw new LeaseError("This booking has been cancelled.", 409);
+  }
+  if (!args.affirmed) {
+    throw new LeaseError("You must confirm you agree to the terms before signing.", 400);
+  }
+  const name = args.signedName.trim();
+  if (name.length < 2) throw new LeaseError("Enter your full legal name.", 400);
+  const signedAt = args.now ?? /* @__PURE__ */ new Date();
+  const html = renderSignedStayAgreementHtml(await agreementData(stay), {
+    signedName: name,
+    signedAt,
+    signedIp: args.ip
+  });
+  const documentUrl = `/api/stay/${args.token}/agreement`;
+  await storage.updateBookingGate(stay.booking.id, {
+    agreementSignedName: name,
+    agreementSignedAt: signedAt,
+    agreementSignedIp: args.ip,
+    agreementDocumentHtml: html,
+    agreementDocumentUrl: documentUrl
+  });
+  log(`stay ${stay.booking.reference}: agreement signed`, "stay");
+  await maybeAnnounceComplete(stay.booking.id);
+  return { signedAt, documentUrl };
+}
+async function uploadStayLicense(token, file) {
+  assertR2Configured();
+  const stay = await resolveStay(token);
+  const ext = validateUpload(file);
+  if (stay.gate.approvedAt) {
+    throw new LeaseError("This stay is already approved; no further ID is needed.", 409);
+  }
+  if (stay.booking.status === "CANCELLED") {
+    throw new LeaseError("This booking has been cancelled.", 409);
+  }
+  const key = `bnp/licenses/booking/${stay.booking.id}/${randomUUID()}.${ext}`;
+  await uploadBuffer(key, file.buffer, file.mimetype);
+  const priorKey = stay.gate.licenseR2Key;
+  if (priorKey && priorKey !== key) {
+    deleteObject(priorKey).catch(
+      (err) => log(`could not delete prior stay licence ${priorKey}: ${err.message}`, "stay")
+    );
+  }
+  const uploadedAt = /* @__PURE__ */ new Date();
+  await storage.updateBookingGate(stay.booking.id, {
+    licenseR2Key: key,
+    licenseUploadedAt: uploadedAt,
+    verificationStatus: "PENDING_REVIEW",
+    verificationRejectionReason: null,
+    verificationReviewedAt: null,
+    verificationReviewedBy: null
+  });
+  log(`stay ${stay.booking.reference}: licence uploaded \u2192 PENDING_REVIEW`, "stay");
+  await maybeAnnounceComplete(stay.booking.id);
+  return { verificationStatus: "PENDING_REVIEW", uploadedAt };
+}
+async function maybeAnnounceComplete(bookingId) {
+  const gate = await storage.getBookingGate(bookingId);
+  if (!gate || !guestDocsSubmitted(gate)) return;
+  const booking = await storage.getBooking(bookingId);
+  if (!booking) return;
+  const [guest, property, room] = await Promise.all([
+    storage.getGuest(booking.guestId),
+    storage.getProperty(booking.propertyId),
+    booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0)
+  ]);
+  if (!guest || !property) return;
+  await onStayDocsComplete({ booking, gate, guest, property, room: room ?? null });
+}
+async function getStayLicenseViewUrl(bookingId) {
+  const gate = await storage.getBookingGate(bookingId);
+  if (!gate?.licenseR2Key) throw new LeaseError("No licence has been uploaded.", 404);
+  return getPresignedDownloadUrl(gate.licenseR2Key);
+}
+
+// server/lib/stayApproval.ts
+init_storage();
+
+// shared/doorCode.ts
+var DOOR_CODE_PATTERN = /^[0-9A-Za-z#*-]+$/;
+var DOOR_CODE_MIN_LENGTH = 4;
+var DOOR_CODE_MAX_LENGTH = 12;
+function normalizeDoorCode(raw) {
+  if (typeof raw !== "string") return null;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+function doorCodeError(raw) {
+  const code = normalizeDoorCode(raw);
+  if (!code) return "Enter the door code the guest will use.";
+  if (code.length < DOOR_CODE_MIN_LENGTH) {
+    return `Door code must be at least ${DOOR_CODE_MIN_LENGTH} characters.`;
+  }
+  if (code.length > DOOR_CODE_MAX_LENGTH) {
+    return `Door code must be at most ${DOOR_CODE_MAX_LENGTH} characters.`;
+  }
+  if (!DOOR_CODE_PATTERN.test(code)) {
+    return "Door code can contain only letters, numbers, #, * and -.";
+  }
+  return null;
+}
+
+// server/lib/stayApproval.ts
+function isNameMismatch(a, b) {
+  const x = (a ?? "").trim().toLowerCase();
+  const y = (b ?? "").trim().toLowerCase();
+  if (!x || !y) return false;
+  return x !== y;
+}
+async function loadStay(bookingId) {
+  const booking = await storage.getBooking(bookingId);
+  if (!booking) throw new LeaseError("Booking not found", 404);
+  const gate = await storage.getBookingGate(bookingId);
+  if (!gate) throw new LeaseError("This booking has no approval gate.", 409);
+  const [guest, property, room] = await Promise.all([
+    storage.getGuest(booking.guestId),
+    storage.getProperty(booking.propertyId),
+    booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0)
+  ]);
+  if (!guest || !property) throw new LeaseError("Booking is missing its guest or property", 409);
+  return { booking, gate, guest, property, room: room ?? null };
+}
+async function listPendingApprovals() {
+  const stays = await storage.getBookingsWithGuest({ statuses: ["PENDING_APPROVAL"] });
+  const rows = [];
+  for (const stay of stays) {
+    const gate = await storage.getBookingGate(stay.id);
+    if (!gate) continue;
+    if (outstandingItems(gate).length > 0) continue;
+    const info = await resolveStayAccessInfo({ gate, property: stay.property, room: stay.room });
+    rows.push({
+      bookingId: stay.id,
+      reference: stay.reference,
+      propertyName: stay.property.name,
+      roomName: roomDisplayName(stay.room),
+      checkIn: stay.checkIn,
+      checkOut: stay.checkOut,
+      nights: stay.checkOut ? stayNights(stay.checkIn, stay.checkOut) : null,
+      total: stay.quotedTotal,
+      guestName: stay.guest.name,
+      guestEmail: stay.guest.email,
+      guestPhone: stay.guest.phone,
+      signedName: gate.agreementSignedName,
+      nameMismatch: isNameMismatch(gate.agreementSignedName, stay.guest.name),
+      licenseUploadedAt: gate.licenseUploadedAt,
+      agreementSignedAt: gate.agreementSignedAt,
+      docsDeadlineAt: gate.docsDeadlineAt,
+      fixRequestCount: gate.fixRequestCount,
+      accessInfoMissing: missingAccessFields(info).filter((f) => f !== "doorCode")
+    });
+  }
+  return rows.sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+}
+async function approveStay(args) {
+  const stay = await loadStay(args.bookingId);
+  const codeError = doorCodeError(args.doorCode);
+  if (codeError) throw new LeaseError(codeError, 400);
+  const doorCode = normalizeDoorCode(args.doorCode);
+  if (args.nameMatches !== true) {
+    throw new LeaseError(
+      "Confirm the name on the licence matches the guest before approving.",
+      400
+    );
+  }
+  if (stay.gate.approvedAt && stay.booking.status === "ACTIVE") {
+    await onStayApproved(stay);
+    return { reference: stay.booking.reference, status: stay.booking.status };
+  }
+  if (outstandingItems(stay.gate).length > 0) {
+    throw new LeaseError(
+      "The guest has not submitted everything yet \u2014 nothing to approve.",
+      409
+    );
+  }
+  if (stay.booking.status === "CANCELLED") {
+    throw new LeaseError("This booking has been cancelled.", 409);
+  }
+  const info = await resolveStayAccessInfo({
+    gate: { ...stay.gate, doorCode },
+    property: stay.property,
+    room: stay.room
+  });
+  const missing = missingAccessFields(info);
+  if (missing.length > 0) {
+    throw new LeaseError(
+      `Set up the arrival details for ${stay.property.name} first \u2014 missing ${missing.join(", ")}.`,
+      409
+    );
+  }
+  const approvedAt = /* @__PURE__ */ new Date();
+  await storage.updateBookingGate(stay.booking.id, {
+    doorCode,
+    nameMatchesAck: true,
+    approvedAt,
+    approvedBy: args.actor,
+    verificationStatus: "APPROVED",
+    verificationReviewedAt: approvedAt,
+    verificationReviewedBy: args.actor,
+    verificationRejectionReason: null,
+    fixRequestedReason: null
+  });
+  const liveStatus = stay.booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  await storage.updateBooking(stay.booking.id, { status: liveStatus });
+  if (stay.booking.roomId) {
+    await storage.updateRoom(stay.booking.roomId, { status: "OCCUPIED" });
+  }
+  const open = await storage.getEscalations({ bookingId: stay.booking.id, status: "OPEN" });
+  for (const esc3 of open) {
+    if (esc3.kind === "GATE_AWAITING_APPROVAL") {
+      await storage.updateEscalation(esc3.id, { status: "RESOLVED", resolvedBy: args.actor });
+    }
+  }
+  const fresh = await storage.getBookingGate(stay.booking.id);
+  await onStayApproved({
+    ...stay,
+    booking: { ...stay.booking, status: liveStatus },
+    gate: fresh ?? { ...stay.gate, doorCode, approvedAt }
+  });
+  log(`stay ${stay.booking.reference}: APPROVED by ${args.actor}`, "admin");
+  return { reference: stay.booking.reference, status: liveStatus };
+}
+async function requestStayFix(args) {
+  const stay = await loadStay(args.bookingId);
+  const reason = args.reason?.trim() ?? "";
+  if (reason.length < 5) {
+    throw new LeaseError("Tell the guest what to fix (at least 5 characters).", 400);
+  }
+  if (stay.booking.status === "CANCELLED") {
+    throw new LeaseError("This booking has been cancelled.", 409);
+  }
+  if (stay.gate.approvedAt) {
+    throw new LeaseError("This stay is already approved.", 409);
+  }
+  const now = args.now ?? /* @__PURE__ */ new Date();
+  const fixRequestCount = stay.gate.fixRequestCount + 1;
+  const clearLicense = args.what === "LICENSE" || args.what === "BOTH";
+  const clearAgreement = args.what === "AGREEMENT" || args.what === "BOTH";
+  await storage.updateBookingGate(stay.booking.id, {
+    fixRequestedAt: now,
+    fixRequestedBy: args.actor,
+    fixRequestedReason: reason,
+    fixRequestCount,
+    // Restart the clock: "silence" means since WE last asked.
+    docsDeadlineAt: new Date(now.getTime() + GATE_DOCS_DEADLINE_MS),
+    ...clearLicense ? {
+      verificationStatus: "REJECTED",
+      verificationRejectionReason: reason,
+      verificationReviewedAt: now,
+      verificationReviewedBy: args.actor
+    } : {},
+    ...clearAgreement ? {
+      agreementSignedAt: null,
+      agreementSignedName: null,
+      agreementSignedIp: null,
+      agreementDocumentHtml: null,
+      agreementDocumentUrl: null
+    } : {}
+  });
+  const fresh = await storage.getBookingGate(stay.booking.id);
+  await onStayFixRequested({ ...stay, gate: fresh ?? stay.gate }, reason);
+  log(
+    `stay ${stay.booking.reference}: fix requested (${args.what}) by ${args.actor} \u2014 round ${fixRequestCount}`,
+    "admin"
+  );
+  return { reference: stay.booking.reference, fixRequestCount };
+}
+
+// server/lib/bookingGateDecline.ts
+init_storage();
+
+// server/lib/bookingConflicts.ts
+init_storage();
+
+// server/lib/stripe.ts
+import Stripe from "stripe";
 
 // server/lib/paymentMetadata.ts
 var NULL = "null";
@@ -3561,369 +4815,29 @@ var REQUIRED_REFUND_METADATA_KEYS = [
   "booking_reference",
   "actor"
 ];
-
-// server/lib/leaseFlow.ts
-import { customAlphabet as customAlphabet2 } from "nanoid";
-
-// server/lib/leaseDocument.ts
-init_schema();
-
-// server/lib/formatShared.ts
-var fmtMoney = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
-function roomDisplayName(room) {
-  if (!room) return null;
-  return room.roomNumber ? `Room ${room.roomNumber} \u2014 ${room.name}` : room.name;
-}
-
-// server/lib/leaseDocument.ts
-var CADENCE_LABEL = {
-  WEEKLY: "weekly",
-  BIWEEKLY: "bi-weekly",
-  MONTHLY: "monthly (every 4 weeks)"
-};
-var DEFAULT_LEASE_TEMPLATE = {
-  title: "Room Rental Agreement",
-  intro: "This Room Rental Agreement (the \u201CAgreement\u201D) is entered into between Be Nice Properties (\u201CLandlord\u201D) and {{guestName}} (\u201CResident\u201D) for the room(s) and term described below at {{propertyName}}, {{propertyLocation}}.",
-  sections: [
-    {
-      heading: "1. Premises",
-      body: "The Landlord rents to the Resident the following room(s) at {{propertyName}}: {{roomList}}. The Resident has the non-exclusive right to use shared common areas of the property in common with other residents."
-    },
-    {
-      heading: "2. Term",
-      body: "The lease term runs from {{startDate}} through {{endDate}} ({{termDays}} days). This is a fixed-term arrangement and does not exceed 90 days."
-    },
-    {
-      heading: "3. Rent & Payment Schedule",
-      body: "Rent is billed on a {{cadenceLabel}} basis at {{installmentLabel}} per payment, each payment covering {{periodDaysLabel}} days across all rented room(s). The first payment is due on the start date (move-in). The complete schedule of payments and amounts appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}"
-    },
-    {
-      heading: "4. Move-in Charges (Deposit & Cleaning Fee)",
-      body: "At move-in the Resident pays a refundable security deposit of {{depositTotal}}, which secures the room(s) and is returned at the end of the term less any deductions permitted by law.{{cleaningFeeClause}} These move-in charges are separate from rent and from the payment schedule below."
-    },
-    {
-      heading: "5. Late Fees",
-      body: "If a scheduled payment is not received by its due date, a late fee of {{lateFeePerDay}} per day accrues beginning the day after the due date and continues to accrue daily until the balance is paid. Accrued late fees are billed as a separate charge from rent."
-    },
-    {
-      heading: "6. House Rules",
-      body: "The Resident agrees to: keep shared spaces clean; respect quiet hours and other residents; not sublet or assign the room; not engage in illegal activity on the premises; and follow any posted property-specific house rules. Repeated or serious violations may result in termination of this Agreement."
-    },
-    {
-      heading: "7. Payment Authorization",
-      body: "A payment method is kept on file for the term of this lease. The Resident may pay each scheduled payment either by that card (subject to a {{cardSurchargePct}} processing fee) or manually by CashApp/Zelle (no processing fee); a manual payment is held pending until confirmed. The Resident authorizes Be Nice Properties to charge the saved payment method on file for any scheduled payment not elected as manual, and for any accrued late fees, on or after each due date."
-    }
-  ],
-  signatureStatement: "By typing my full legal name below and submitting this Agreement, I acknowledge that I have read and agree to its terms, and I intend my typed name to be my legally binding electronic signature under the U.S. E-SIGN Act and UETA."
-};
-function esc(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function inclusiveDays2(startDate, endDate) {
-  const ms = 24 * 60 * 60 * 1e3;
-  const s = (/* @__PURE__ */ new Date(`${startDate}T00:00:00Z`)).getTime();
-  const e = (/* @__PURE__ */ new Date(`${endDate}T00:00:00Z`)).getTime();
-  return Math.round((e - s) / ms) + 1;
-}
-function tokenMap(data) {
-  const roomList = data.rooms.map((r) => r.roomNumber ? `${r.name} (#${r.roomNumber})` : r.name).join(", ");
+function buildRefundMetadata(args) {
   return {
-    guestName: data.guestName,
-    propertyName: data.propertyName,
-    propertyLocation: data.propertyLocation,
-    roomList,
-    startDate: data.startDate,
-    endDate: data.endDate,
-    termDays: String(inclusiveDays2(data.startDate, data.endDate)),
-    cadenceLabel: CADENCE_LABEL[data.cadence],
-    installmentLabel: fmtMoney(data.installmentAmount),
-    periodDaysLabel: String(CADENCE_DAYS[data.cadence]),
-    totalLeaseValue: fmtMoney(data.totalLeaseValue),
-    depositTotal: fmtMoney(data.depositTotal),
-    // Only state a cleaning fee when one applies; it is non-refundable.
-    cleaningFeeClause: data.cleaningFeeTotal > 0 ? ` A one-time, non-refundable cleaning fee of ${fmtMoney(data.cleaningFeeTotal)} is also due at move-in.` : "",
-    prorationNote: data.prorationNote,
-    lateFeePerDay: fmtMoney(data.lateFeePerDay),
-    cardSurchargePct: formatSurchargePct(data.cardSurchargeRate)
+    ...args.base,
+    refund_kind: args.kind,
+    refunded_payment_intent: str(args.paymentIntentId),
+    refunded_payment_id: str(args.paymentId),
+    booking_reference: str(args.reference),
+    actor: str(args.actor),
+    refund_reason: str(args.reason)
   };
 }
-function fill(text2, tokens) {
-  return text2.replace(
-    /\{\{(\w+)\}\}/g,
-    (_m, key) => key in tokens ? tokens[key] : `{{${key}}}`
+function assertCompleteRefundMetadata(meta) {
+  const missing = REQUIRED_REFUND_METADATA_KEYS.filter(
+    (k) => meta[k] === void 0 || meta[k] === ""
   );
-}
-function scheduleTableHtml(schedule) {
-  const rows = schedule.map(
-    (r) => `<tr><td>${r.seq}</td><td>${esc(r.dueDate)}${r.seq === 1 ? " <strong>(due on start)</strong>" : ""}${r.prorated ? " <em>(prorated)</em>" : ""}</td><td style="text-align:right">${fmtMoney(
-      r.amount
-    )}</td></tr>`
-  ).join("");
-  return `<table style="width:100%;border-collapse:collapse" cellpadding="6"><thead><tr style="border-bottom:1px solid #ccc;text-align:left"><th>#</th><th>Due date</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>`;
-}
-function bodyHtml(data, template) {
-  const tokens = tokenMap(data);
-  const sections = template.sections.map(
-    (s) => `<section><h2 style="font-size:15px;margin:18px 0 6px">${esc(s.heading)}</h2><p style="margin:0;line-height:1.5">${esc(fill(s.body, tokens))}</p></section>`
-  ).join("");
-  return `<h1 style="font-size:20px;margin:0 0 4px">${esc(template.title)}</h1><p style="color:#555;margin:0 0 16px;line-height:1.5">${esc(fill(template.intro, tokens))}</p>` + sections + `<section><h2 style="font-size:15px;margin:18px 0 6px">Payment Schedule</h2>` + scheduleTableHtml(data.schedule) + `</section>`;
-}
-var PAGE = (inner) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Room Rental Agreement</title><style>body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:32px auto;padding:0 20px;color:#1a1a1a}@media print{body{margin:0}}</style></head><body>${inner}</body></html>`;
-function renderLeaseHtml(data, template = DEFAULT_LEASE_TEMPLATE) {
-  const unsigned = bodyHtml(data, template) + `<section style="margin-top:24px"><p style="line-height:1.5">${esc(
-    template.signatureStatement
-  )}</p><p style="color:#777">\u2014 Awaiting signature \u2014</p></section>`;
-  return PAGE(unsigned);
-}
-function renderSignedLeaseHtml(data, signature, template = DEFAULT_LEASE_TEMPLATE) {
-  const signed = bodyHtml(data, template) + `<section style="margin-top:24px;border-top:2px solid #1a1a1a;padding-top:16px"><p style="line-height:1.5">${esc(template.signatureStatement)}</p><div style="margin-top:12px;font-size:14px"><div><strong>Signed by:</strong> ${esc(signature.signedName)}</div><div><strong>Date &amp; time:</strong> ${esc(signature.signedAt.toISOString())}</div><div><strong>IP address:</strong> ${esc(signature.signedIp)}</div><div style="margin-top:8px;color:#555">Electronically signed under the E-SIGN Act / UETA.</div></div></section>`;
-  return PAGE(signed);
-}
-
-// server/lib/leaseFlow.ts
-init_storage();
-
-// server/lib/pricingSettings.ts
-init_storage();
-init_schema();
-import { z as z3 } from "zod";
-
-// server/server-log.ts
-function log(message, source = "express") {
-  const time = (/* @__PURE__ */ new Date()).toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true
-  });
-  console.log(`${time} [${source}] ${message}`);
-}
-
-// server/lib/pricingSettings.ts
-var pricingSettingsInputSchema = z3.object({
-  lateFeePerDay: z3.number().min(0, "lateFeePerDay must be 0\u2013500").max(500, "lateFeePerDay must be 0\u2013500").optional(),
-  cardSurchargeRate: z3.number().min(0, "cardSurchargeRate must be 0\u20130.10").max(0.1, "cardSurchargeRate must be 0\u20130.10").optional()
-}).refine((v) => v.lateFeePerDay !== void 0 || v.cardSurchargeRate !== void 0, {
-  message: "Provide lateFeePerDay and/or cardSurchargeRate"
-});
-async function getLateFeePerDay() {
-  return storage.getSettingNumber(LATE_FEE_PER_DAY_SETTING, DEFAULT_LATE_FEE_PER_DAY);
-}
-async function getCardSurchargeRate() {
-  return storage.getSettingNumber(CARD_SURCHARGE_RATE_SETTING, DEFAULT_CREDIT_CARD_RATE);
-}
-async function getPricingSettings() {
-  const [lateFeePerDay, cardSurchargeRate] = await Promise.all([getLateFeePerDay(), getCardSurchargeRate()]);
-  return { lateFeePerDay, cardSurchargeRate };
-}
-async function updatePricingSettings(input, actor) {
-  if (!actor || !actor.trim()) throw new LeaseError("actor is required", 400);
-  const parsed = pricingSettingsInputSchema.safeParse(input);
-  if (!parsed.success) throw new LeaseError(parsed.error.errors[0]?.message ?? "Invalid pricing settings", 400);
-  if (parsed.data.lateFeePerDay !== void 0) {
-    await storage.setSetting(LATE_FEE_PER_DAY_SETTING, String(parsed.data.lateFeePerDay));
+  if (missing.length > 0) {
+    throw new Error(
+      `Stripe refund metadata contract incomplete \u2014 missing/empty: ${missing.join(", ")}`
+    );
   }
-  if (parsed.data.cardSurchargeRate !== void 0) {
-    await storage.setSetting(CARD_SURCHARGE_RATE_SETTING, String(parsed.data.cardSurchargeRate));
-  }
-  log(`pricing settings updated by ${actor}: ${Object.keys(parsed.data).join(", ")}`, "uo");
-  return getPricingSettings();
 }
-function leaseLateFeePerDay(lease, fallback) {
-  const snap = lease.lateFeePerDaySnapshot;
-  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
-}
-function leaseCardSurchargeRate(lease, fallback) {
-  const snap = lease.cardSurchargeRateSnapshot;
-  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
-}
-
-// server/lib/leaseFlow.ts
-var portalTokenGen = customAlphabet2(
-  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
-  32
-);
-function docDataFrom(leaseId, quote, guest, location, pricing) {
-  return {
-    leaseId,
-    guestName: guest.name,
-    guestEmail: guest.email,
-    propertyName: quote.propertyName,
-    propertyLocation: location,
-    rooms: quote.rooms.map((r) => ({
-      name: r.name,
-      roomNumber: r.roomNumber,
-      weeklyRent: r.weeklyRent
-    })),
-    startDate: quote.startDate,
-    endDate: quote.endDate,
-    cadence: quote.cadence,
-    installmentAmount: quote.installmentAmount,
-    totalLeaseValue: quote.totalLeaseValue,
-    depositTotal: quote.depositTotal,
-    cleaningFeeTotal: quote.cleaningFeeTotal,
-    lateFeePerDay: pricing.lateFeePerDay,
-    cardSurchargeRate: pricing.cardSurchargeRate,
-    prorationNote: quote.prorationNote,
-    schedule: quote.schedule.map((s) => ({
-      seq: s.seq,
-      dueDate: s.dueDate,
-      amount: s.amount,
-      prorated: s.prorated
-    }))
-  };
-}
-async function previewLease(input) {
-  const quote = await buildLeaseQuote({
-    propertyId: input.propertyId,
-    roomIds: input.roomIds,
-    startDate: input.startDate,
-    endDate: input.endDate,
-    cadence: input.cadence
-  });
-  const property = await storage.getProperty(input.propertyId);
-  if (!property) throw new LeaseError("Property not found", 404);
-  const pricing = await getPricingSettings();
-  const documentHtml = renderLeaseHtml(
-    docDataFrom("PREVIEW", quote, input.guest, property.location, pricing)
-  );
-  return { documentHtml };
-}
-async function createDraftLease(input) {
-  const quote = await buildLeaseQuote({
-    propertyId: input.propertyId,
-    roomIds: input.roomIds,
-    startDate: input.startDate,
-    endDate: input.endDate,
-    cadence: input.cadence
-  });
-  const property = await storage.getProperty(input.propertyId);
-  if (!property) throw new LeaseError("Property not found", 404);
-  const guest = await storage.upsertGuestByEmail({
-    name: input.guest.name,
-    email: input.guest.email,
-    phone: input.guest.phone ?? null
-  });
-  const pricing = await getPricingSettings();
-  const lease = await storage.createLeaseWithSchedule({
-    lease: {
-      propertyId: property.id,
-      guestId: guest.id,
-      startDate: quote.startDate,
-      endDate: quote.endDate,
-      paymentCadence: quote.cadence,
-      weeklyRateSnapshot: String(quote.weeklyRateTotal),
-      totalLeaseValue: String(quote.totalLeaseValue),
-      prorationNote: quote.prorationNote,
-      // Freeze the refundable deposit at booking so a later room re-price never
-      // changes a signed lease. This is the amount that secures the room.
-      depositAmountSnapshot: String(quote.depositTotal),
-      depositStatus: "PENDING",
-      // Freeze the one-time cleaning fee at booking too (non-refundable; charged as
-      // its own PaymentIntent at move-in). "0" when no room carries a fee.
-      cleaningFeeSnapshot: String(quote.cleaningFeeTotal),
-      cleaningFeeStatus: "PENDING",
-      lateFeePerDaySnapshot: String(pricing.lateFeePerDay),
-      cardSurchargeRateSnapshot: String(pricing.cardSurchargeRate),
-      status: "PENDING_SIGNATURE",
-      portalToken: portalTokenGen()
-    },
-    rooms: quote.rooms.map((r) => ({
-      // leaseId is filled in by storage.createLeaseWithSchedule.
-      leaseId: "",
-      roomId: r.id,
-      roomNumberSnapshot: r.roomNumber,
-      roomNameSnapshot: r.name
-    })),
-    schedule: quote.schedule.map((s) => ({
-      leaseId: "",
-      scheduleSeq: s.seq,
-      dueDate: s.dueDate,
-      amount: String(s.amount),
-      status: "SCHEDULED",
-      // Default to card-on-file; a guest who chooses manual flips this in Phase 4.
-      paymentMethod: "CARD_ON_FILE"
-    }))
-  });
-  const documentHtml = renderLeaseHtml(
-    docDataFrom(lease.id, quote, input.guest, property.location, pricing)
-  );
-  return { lease, documentHtml };
-}
-async function signLease(input) {
-  const lease = await storage.getLease(input.leaseId);
-  if (!lease) throw new LeaseError("Lease not found", 404);
-  if (lease.signedAt) {
-    return { lease, documentUrl: lease.signedPdfUrl ?? `/api/leases/${lease.id}/document` };
-  }
-  if (lease.status !== "PENDING_SIGNATURE" && lease.status !== "DRAFT") {
-    throw new LeaseError(`Lease cannot be signed from status ${lease.status}`, 409);
-  }
-  const name = input.signedName.trim();
-  if (name.length < 2) throw new LeaseError("A full legal name is required to sign");
-  if (!input.affirmed) throw new LeaseError("You must affirm the agreement to sign");
-  const property = await storage.getProperty(lease.propertyId);
-  const guest = await storage.getGuest(lease.guestId);
-  const leaseRooms2 = await storage.getLeaseRooms(lease.id);
-  const schedule = await storage.getScheduleByLease(lease.id);
-  if (!property || !guest) throw new LeaseError("Lease data incomplete", 500);
-  const fullInstallment = parseFloat(schedule[0]?.amount ?? "0");
-  const docData = {
-    leaseId: lease.id,
-    guestName: guest.name,
-    guestEmail: guest.email,
-    propertyName: property.name,
-    propertyLocation: property.location,
-    rooms: leaseRooms2.map((lr) => ({
-      name: lr.roomNameSnapshot,
-      roomNumber: lr.roomNumberSnapshot,
-      weeklyRent: 0
-      // not shown per-room in the doc body; rate total is on the lease
-    })),
-    startDate: lease.startDate,
-    endDate: lease.endDate,
-    cadence: lease.paymentCadence,
-    installmentAmount: fullInstallment,
-    totalLeaseValue: parseFloat(lease.totalLeaseValue),
-    depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
-    cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
-    lateFeePerDay: leaseLateFeePerDay(lease, await getLateFeePerDay()),
-    cardSurchargeRate: leaseCardSurchargeRate(lease, await getCardSurchargeRate()),
-    prorationNote: lease.prorationNote ?? "",
-    schedule: schedule.map((s) => ({
-      seq: s.scheduleSeq,
-      dueDate: s.dueDate,
-      amount: parseFloat(s.amount),
-      // A row smaller than a full period IS the day-prorated tail. Previously
-      // hardcoded false, so the SIGNED doc never marked the tail even though the
-      // review render did.
-      prorated: parseFloat(s.amount) < fullInstallment
-    }))
-  };
-  const signedAt = input.signedAt ?? /* @__PURE__ */ new Date();
-  const signedDocumentHtml = renderSignedLeaseHtml(docData, {
-    signedName: name,
-    signedAt,
-    signedIp: input.ip
-  });
-  const documentUrl = `/api/leases/${lease.id}/document`;
-  const updated = await storage.updateLease(lease.id, {
-    signedName: name,
-    signedAt,
-    signedIp: input.ip,
-    signedPdfUrl: documentUrl,
-    signedDocumentHtml,
-    // Signed, but NOT active — first payment (Phase 4) gates ACTIVE.
-    status: "PENDING_FIRST_PAYMENT"
-  });
-  return { lease: updated ?? lease, documentUrl };
-}
-
-// server/lib/leasePayments.ts
-init_storage();
 
 // server/lib/stripe.ts
-import Stripe from "stripe";
 var secret = process.env.STRIPE_SECRET_KEY;
 function isStripeConfigured() {
   return Boolean(secret && secret.startsWith("sk_") && !secret.includes("placeholder"));
@@ -4029,340 +4943,6 @@ async function refundPaymentIntent(opts) {
   );
 }
 var stripePublishableConfigured = () => Boolean(process.env.VITE_STRIPE_PUBLIC_KEY?.startsWith("pk_"));
-
-// server/lib/dunning.ts
-init_storage();
-
-// server/lib/telegram.ts
-function isTelegramConfigured() {
-  return Boolean(process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_ADMIN_CHAT_ID);
-}
-function adminChatIds() {
-  return (process.env.TELEGRAM_ADMIN_CHAT_ID ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-}
-async function sendTelegram(opts) {
-  if (!isTelegramConfigured()) {
-    log(`[dry-run telegram] "${opts.text.slice(0, 60)}\u2026" (telegram not configured)`, "notify");
-    return { sent: false, channel: "telegram", reason: "not-configured" };
-  }
-  const ids = opts.chatIds ?? adminChatIds();
-  const url = `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`;
-  let failure;
-  for (const chat_id of ids) {
-    try {
-      const res = await fetch(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ chat_id, text: opts.text.slice(0, 4e3), disable_web_page_preview: true }),
-        signal: AbortSignal.timeout(2e4)
-      });
-      const json = await res.json().catch(() => ({}));
-      if (!res.ok || json.ok === false) failure = json.description || `HTTP ${res.status}`;
-    } catch (err) {
-      failure = err.message;
-    }
-  }
-  if (failure) {
-    log(`telegram FAILED: ${failure}`, "notify");
-    return { sent: false, channel: "telegram", reason: failure };
-  }
-  log(`telegram sent to ${ids.length} chat(s)`, "notify");
-  return { sent: true, channel: "telegram" };
-}
-
-// server/lib/notifications.ts
-function statusFor(result) {
-  if (result.sent) return "SENT";
-  if (result.reason === "not-configured") return "DRY_RUN";
-  if (result.reason === "no-phone") return "SKIPPED";
-  return "FAILED";
-}
-var storageModulePromise = null;
-function getStorageModule() {
-  if (!storageModulePromise) storageModulePromise = Promise.resolve().then(() => (init_storage(), storage_exports));
-  return storageModulePromise;
-}
-async function record(channel, ctx, to, subject, body, result) {
-  try {
-    const { storage: storage2 } = await getStorageModule();
-    await storage2.createMessageLog({
-      bookingId: ctx.bookingId ?? null,
-      leaseId: ctx.leaseId ?? null,
-      guestId: ctx.guestId ?? null,
-      audience: ctx.audience,
-      channel,
-      kind: ctx.kind,
-      toAddress: to,
-      subject,
-      body,
-      status: statusFor(result),
-      error: result.sent ? void 0 : result.reason,
-      sentBy: ctx.sentBy ?? "system"
-    });
-  } catch (err) {
-    log(`message_log write FAILED: ${err.message}`, "notify");
-  }
-}
-function isEmailConfigured() {
-  return Boolean(
-    process.env.SENDGRID_API_KEY || process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS
-  );
-}
-function isSmsConfigured() {
-  return Boolean(
-    process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER
-  );
-}
-var mailFrom = () => process.env.MAIL_FROM || process.env.ADMIN_EMAIL || "no-reply@beniceproperties.com";
-var transportPromise = null;
-async function getTransport() {
-  if (!transportPromise) {
-    transportPromise = (async () => {
-      const nodemailer = (await import("nodemailer")).default;
-      if (process.env.SENDGRID_API_KEY) {
-        return nodemailer.createTransport({
-          host: "smtp.sendgrid.net",
-          port: 587,
-          auth: { user: "apikey", pass: process.env.SENDGRID_API_KEY }
-        });
-      }
-      return nodemailer.createTransport({
-        host: process.env.SMTP_HOST,
-        port: parseInt(process.env.SMTP_PORT || "587", 10),
-        secure: process.env.SMTP_PORT === "465",
-        auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-      });
-    })();
-  }
-  return transportPromise;
-}
-function textToHtml(text2) {
-  const esc2 = text2.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-  return `<p>${esc2.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>').replace(/\n/g, "<br>")}</p>`;
-}
-async function sendEmail(opts) {
-  let result;
-  if (!isEmailConfigured()) {
-    log(`[dry-run email] to=${opts.to} subject="${opts.subject}" (email not configured)`, "notify");
-    result = { sent: false, channel: "email", reason: "not-configured" };
-  } else {
-    try {
-      const transport = await getTransport();
-      await transport.sendMail({
-        from: mailFrom(),
-        to: opts.to,
-        subject: opts.subject,
-        text: opts.text,
-        html: opts.html ?? textToHtml(opts.text)
-      });
-      log(`email sent to=${opts.to} subject="${opts.subject}"`, "notify");
-      result = { sent: true, channel: "email" };
-    } catch (err) {
-      log(`email FAILED to=${opts.to}: ${err.message}`, "notify");
-      result = { sent: false, channel: "email", reason: err.message };
-    }
-  }
-  if (opts.context) {
-    await record("EMAIL", opts.context, opts.to, opts.subject, opts.logBody ?? opts.text, result);
-  }
-  return result;
-}
-var twilioClientPromise = null;
-async function getTwilio() {
-  if (!twilioClientPromise) {
-    twilioClientPromise = (async () => {
-      const twilio = (await import("twilio")).default;
-      return twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-    })();
-  }
-  return twilioClientPromise;
-}
-async function sendSms(opts) {
-  let result;
-  if (!opts.to) {
-    result = { sent: false, channel: "sms", reason: "no-phone" };
-  } else if (!isSmsConfigured()) {
-    log(`[dry-run sms] to=${opts.to} body="${opts.body.slice(0, 40)}\u2026" (sms not configured)`, "notify");
-    result = { sent: false, channel: "sms", reason: "not-configured" };
-  } else {
-    try {
-      const client2 = await getTwilio();
-      await client2.messages.create({
-        from: process.env.TWILIO_FROM_NUMBER,
-        to: opts.to,
-        body: opts.body
-      });
-      log(`sms sent to=${opts.to}`, "notify");
-      result = { sent: true, channel: "sms" };
-    } catch (err) {
-      log(`sms FAILED to=${opts.to}: ${err.message}`, "notify");
-      result = { sent: false, channel: "sms", reason: err.message };
-    }
-  }
-  if (opts.context) await record("SMS", opts.context, opts.to, void 0, opts.body, result);
-  return result;
-}
-async function sendTelegramLogged(opts) {
-  const result = await sendTelegram({ text: opts.text, chatIds: opts.chatIds });
-  if (opts.context) {
-    const to = (opts.chatIds ?? adminChatIds()).join(",");
-    await record("TELEGRAM", opts.context, to, void 0, opts.text, result);
-  }
-  return result;
-}
-async function notifyGuest(opts) {
-  const ctx = opts.context ? { ...opts.context, audience: "GUEST" } : void 0;
-  const [email, sms] = await Promise.all([
-    sendEmail({
-      to: opts.email,
-      subject: opts.subject,
-      text: opts.body,
-      html: opts.html,
-      logBody: opts.logBody,
-      context: ctx
-    }),
-    // sendSms already returns/records "no-phone" as SKIPPED when `to` is empty,
-    // so route both branches through it rather than short-circuiting here.
-    sendSms({ to: opts.phone ?? "", body: opts.smsBody ?? opts.body, context: ctx })
-  ]);
-  return { email, sms };
-}
-async function notifyAdmin(opts) {
-  const to = process.env.ADMIN_NOTIFY_EMAIL || process.env.ADMIN_EMAIL;
-  const ctx = { ...opts.context ?? { kind: "ADMIN_ALERT" }, audience: "ADMIN" };
-  const [email, telegram] = await Promise.all([
-    to ? sendEmail({ to, subject: opts.subject, text: opts.body, context: ctx }) : Promise.resolve({ sent: false, channel: "email", reason: "no-admin-email" }),
-    sendTelegramLogged({
-      text: `${opts.subject}
-
-${opts.telegramText ?? opts.body}`,
-      context: ctx
-    })
-  ]);
-  return { email, telegram };
-}
-
-// server/lib/dunning.ts
-init_schema();
-init_dates();
-
-// server/lib/smsLinks.ts
-init_storage();
-var SETTING_SMS_LINKS = "sms_include_links";
-async function smsLinksEnabled() {
-  const value = (await storage.getSetting(SETTING_SMS_LINKS))?.value;
-  return !(value === "false" || value === "0");
-}
-async function smsLink(url) {
-  return await smsLinksEnabled() ? url : "";
-}
-
-// server/lib/publicUrl.ts
-function publicBaseUrl() {
-  const explicit = process.env.PUBLIC_BASE_URL;
-  if (explicit) return explicit.replace(/\/+$/, "");
-  if (process.env.VERCEL_ENV === "preview" && process.env.VERCEL_URL) {
-    return `https://${process.env.VERCEL_URL}`;
-  }
-  return "https://www.beniceproperties.com";
-}
-function lookupUrl() {
-  return `${publicBaseUrl()}/lookup`;
-}
-function portalUrl(lease) {
-  return lease.portalToken ? `${publicBaseUrl()}/portal/${lease.portalToken}` : lookupUrl();
-}
-function stayUrl(gate) {
-  return gate?.gateToken ? `${publicBaseUrl()}/stay/${gate.gateToken}` : lookupUrl();
-}
-
-// server/lib/dunning.ts
-var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
-async function payLink(lease) {
-  return smsLink(portalUrl(lease));
-}
-async function handleChargeFailure(args) {
-  const today = args.today ?? todayIso();
-  if (args.scheduleRow.status !== "FAILED") {
-    await storage.updateScheduleRow(args.scheduleRow.id, { status: "FAILED" });
-  }
-  const failureEsc = await storage.raiseEscalationOnce({
-    leaseId: args.lease.id,
-    scheduleSeq: args.scheduleRow.scheduleSeq,
-    kind: "PAYMENT_FAILED",
-    severity: "HIGH",
-    detail: `Card-on-file charge FAILED for installment #${args.scheduleRow.scheduleSeq} ($${args.scheduleRow.amount})${args.reason ? `: ${args.reason}` : ""}.`
-  });
-  if (failureEsc) {
-    const failureTail = `failed${args.reason ? `: ${args.reason}` : ""}. Installment #${args.scheduleRow.scheduleSeq} is marked FAILED; the guest has been sent a fix link.`;
-    await notifyAdmin({
-      subject: `Card charge FAILED \u2014 ${args.guest.name} installment #${args.scheduleRow.scheduleSeq}`,
-      body: `Saved-card charge of $${args.scheduleRow.amount} for ${args.guest.name} (${args.guest.email}) ${failureTail}`,
-      // Telegram: name only, no contact details (third-party channel).
-      telegramText: `Saved-card charge of $${args.scheduleRow.amount} for ${args.guest.name} ${failureTail}`,
-      context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "ESCALATION" }
-    });
-  }
-  const already = await storage.hasNotification({
-    leaseId: args.lease.id,
-    scheduleSeq: args.scheduleRow.scheduleSeq,
-    kind: "PAYMENT_FAILED",
-    sendDate: today
-  });
-  if (!already) {
-    const fixUrl = portalUrl(args.lease);
-    const smsUrl = await payLink(args.lease);
-    const sent = await notifyGuest({
-      email: args.guest.email,
-      phone: args.guest.phone,
-      context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "PAYMENT_FAILED" },
-      subject: "Action needed \u2014 your rent payment failed",
-      body: `Hi ${args.guest.name}, we couldn't process your rent payment for installment #${args.scheduleRow.scheduleSeq}.
-
-Retry it from your portal: ${fixUrl}
-
-If your card has changed, you can pay this installment by CashApp or Zelle from that same page \u2014 no card needed.`,
-      smsBody: `BNP: we could not process your rent payment for installment #${args.scheduleRow.scheduleSeq}.` + (smsUrl ? ` Retry: ${smsUrl}` : "")
-    });
-    await storage.recordNotification({
-      leaseId: args.lease.id,
-      scheduleSeq: args.scheduleRow.scheduleSeq,
-      kind: "PAYMENT_FAILED",
-      sendDate: today,
-      emailSent: sent.email.sent,
-      smsSent: sent.sms.sent
-    });
-  }
-}
-async function billAccruedLateFees(args) {
-  const fees = await storage.getAccruedLateFeesForSchedule(args.lease.id, args.scheduleSeq);
-  if (fees.length === 0) return { billed: false, amount: 0 };
-  const total = Math.round(fees.reduce((s, f) => s + parseFloat(f.amount), 0) * 100) / 100;
-  if (total <= 0) return { billed: false, amount: 0 };
-  if (!args.lease.stripeCustomerId || !args.lease.stripePaymentMethodId) {
-    return { billed: false, amount: total };
-  }
-  const metadata = buildLeaseChargeMetadata({
-    entity: args.property.entity,
-    property: args.property,
-    lease: args.lease,
-    rooms: args.rooms,
-    paymentKind: "LATE_FEE",
-    scheduleSeq: args.scheduleSeq
-  });
-  const pi = await chargeSavedCard({
-    amount: total,
-    customerId: args.lease.stripeCustomerId,
-    paymentMethodId: args.lease.stripePaymentMethodId,
-    metadata,
-    idempotencyKey: `lease-latefee-${args.lease.id}-seq-${args.scheduleSeq}`
-  });
-  for (const fee of fees) {
-    await storage.updateLateFee(fee.id, { status: "BILLED", stripePaymentIntentId: pi.id });
-  }
-  log(`billed $${total} late fees for lease ${args.lease.id} seq ${args.scheduleSeq} (${pi.id})`, "scheduler");
-  return { billed: true, amount: total, paymentIntentId: pi.id };
-}
 
 // server/lib/lifecycle.ts
 init_storage();
@@ -4641,6 +5221,1043 @@ async function onBookingConfirmed(args) {
     });
   }
   log(`lifecycle: booking ${booking.reference} (${booking.status}) notifications processed`, "lifecycle");
+}
+
+// server/lib/bookingConflicts.ts
+init_dates();
+var PG_EXCLUSION_VIOLATION = "23P01";
+async function resolveConflictEscalations(bookingId, actor) {
+  const open = await storage.getEscalations({ status: "OPEN", bookingId });
+  const mine = open.filter((e) => e.kind === "BOOKING_CONFLICT");
+  for (const esc3 of mine) {
+    await storage.updateEscalation(esc3.id, {
+      status: "RESOLVED",
+      resolvedAt: /* @__PURE__ */ new Date(),
+      resolvedBy: actor
+    });
+  }
+  return mine.length;
+}
+async function confirmConflictBooking(bookingId, actor) {
+  const booking = await storage.getBooking(bookingId);
+  if (!booking) throw new BookingError("Booking not found", 404);
+  if (booking.status !== "CONFLICT") {
+    throw new BookingError(
+      `Only a CONFLICT booking can be confirmed here (this one is ${booking.status})`,
+      409
+    );
+  }
+  if (booking.model === "COLIVING") {
+    if (!booking.roomId || !booking.checkOut) {
+      throw new BookingError("Co-living booking is missing a room or check-out date", 409);
+    }
+    const free = await storage.isRoomAvailableForRange({
+      roomId: booking.roomId,
+      startDate: booking.checkIn,
+      endDate: booking.checkOut,
+      endExclusive: true,
+      excludeBookingId: booking.id
+    });
+    if (!free) {
+      throw new BookingError("Those dates are still taken for this room \u2014 cannot confirm", 409);
+    }
+  } else {
+    if (!booking.checkOut) throw new BookingError("Booking is missing a check-out date", 409);
+    const taken = await strHasConflict(
+      booking.propertyId,
+      booking.checkIn,
+      booking.checkOut,
+      booking.id
+    );
+    if (taken) {
+      throw new BookingError("Those dates are still taken for this property \u2014 cannot confirm", 409);
+    }
+  }
+  const status = postPaymentStatusFor(booking);
+  let updated;
+  try {
+    updated = await storage.updateBooking(booking.id, { status }) ?? { ...booking, status };
+  } catch (err) {
+    if (err.code === PG_EXCLUSION_VIOLATION) {
+      log(
+        `booking ${booking.reference} (${booking.id}) confirm rejected by exclusion constraint`,
+        "admin"
+      );
+      throw new BookingError("Those dates were just taken \u2014 cannot confirm", 409);
+    }
+    throw err;
+  }
+  if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
+  await resolveConflictEscalations(booking.id, actor);
+  const [property, room, guest] = await Promise.all([
+    storage.getProperty(booking.propertyId),
+    booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0),
+    storage.getGuest(booking.guestId)
+  ]);
+  if (property && guest) {
+    await onBookingConfirmed({ booking: updated, property, room: room ?? null, guest });
+  }
+  log(`booking ${booking.reference} (${booking.id}) confirmed out of CONFLICT by ${actor}`, "admin");
+  return updated;
+}
+async function cancelBooking(args) {
+  const booking = await storage.getBooking(args.bookingId);
+  if (!booking) throw new BookingError("Booking not found", 404);
+  const alreadyCancelled = booking.status === "CANCELLED";
+  if (alreadyCancelled && args.refund !== true) {
+    return {
+      reference: booking.reference,
+      alreadyCancelled: true,
+      roomFreed: false,
+      refunded: false,
+      refundIds: [],
+      alreadyRefunded: []
+    };
+  }
+  if (!alreadyCancelled) await storage.updateBooking(booking.id, { status: "CANCELLED" });
+  let roomFreed = false;
+  if (booking.roomId && !alreadyCancelled) {
+    const occupiedToday = await storage.getOccupiedRoomIdsOn(todayIso());
+    if (!occupiedToday.has(booking.roomId)) {
+      const room = await storage.getRoom(booking.roomId);
+      if (room && room.status === "OCCUPIED") {
+        await storage.updateRoom(booking.roomId, { status: "AVAILABLE" });
+        roomFreed = true;
+      }
+    } else {
+      log(
+        `booking ${booking.reference} cancelled but room ${booking.roomId} is still covered today \u2014 left OCCUPIED`,
+        "admin"
+      );
+    }
+  }
+  const refundIds = [];
+  const alreadyRefunded = [];
+  if (args.refund === true) {
+    const payments2 = await storage.getPaymentsByBooking(booking.id);
+    for (const p of payments2) {
+      if (p.method !== "STRIPE" || p.status !== "PAID" || !p.stripeRef) continue;
+      try {
+        const refund = await refundPaymentIntent({
+          paymentIntentId: p.stripeRef,
+          // Stable key: a retry WITHIN 24 HOURS returns the same refund instead of
+          // a second one. Stripe expires idempotency keys after that, so the key
+          // is only the first line of defence — see the catch below.
+          idempotencyKey: `refund:${p.stripeRef}`
+        });
+        refundIds.push(refund.id);
+        log(
+          `booking ${booking.reference}: refunded payment ${p.id} (PI ${p.stripeRef}) \u2192 ${refund.id} by ${args.actor}`,
+          "admin"
+        );
+      } catch (err) {
+        if (err.code === "charge_already_refunded") {
+          alreadyRefunded.push(p.stripeRef);
+          log(
+            `booking ${booking.reference}: PI ${p.stripeRef} was already refunded \u2014 treating as done`,
+            "admin"
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (refundIds.length === 0 && alreadyRefunded.length === 0) {
+      log(
+        `booking ${booking.reference}: refund requested but no PAID Stripe payment to refund (manual payments settle off-band)`,
+        "admin"
+      );
+    }
+  }
+  await resolveConflictEscalations(booking.id, args.actor);
+  log(`booking ${booking.reference} (${booking.id}) CANCELLED by ${args.actor}`, "admin");
+  return {
+    reference: booking.reference,
+    alreadyCancelled,
+    roomFreed,
+    refunded: refundIds.length > 0 || alreadyRefunded.length > 0,
+    refundIds,
+    alreadyRefunded
+  };
+}
+
+// server/lib/bookingGateDecline.ts
+var CHARGE_ALREADY_REFUNDED = "charge_already_refunded";
+var AMOUNT_TOLERANCE = 5e-3;
+function refundableTotal(payments2) {
+  return payments2.filter((p) => p.method === "STRIPE" && p.status === "PAID" && p.stripeRef).reduce((sum, p) => sum + parseFloat(p.amount) + parseFloat(p.surcharge ?? "0"), 0);
+}
+async function declineAndRefundBooking(args) {
+  const booking = await storage.getBooking(args.bookingId);
+  if (!booking) throw new LeaseError("Booking not found", 404);
+  if (args.confirm !== booking.reference) {
+    throw new LeaseError(
+      "Confirmation did not match the booking reference \u2014 nothing was changed.",
+      400
+    );
+  }
+  if (!args.reason || args.reason.trim().length < 5) {
+    throw new LeaseError("A reason of at least 5 characters is required to decline.", 400);
+  }
+  const payments2 = await storage.getPaymentsByBooking(booking.id);
+  const refundable = payments2.filter(
+    (p) => p.method === "STRIPE" && p.status === "PAID" && p.stripeRef
+  );
+  if (refundable.length === 0) {
+    throw new LeaseError(
+      "No settled card payment found for this booking \u2014 resolve it by hand rather than declining.",
+      409
+    );
+  }
+  const total = refundableTotal(payments2);
+  if (args.expectedRefundAmount !== void 0 && Math.abs(args.expectedRefundAmount - total) > AMOUNT_TOLERANCE) {
+    throw new LeaseError(
+      `Refund amount has changed (expected ${fmtMoney(args.expectedRefundAmount)}, now ${fmtMoney(total)}) \u2014 reload and try again.`,
+      409
+    );
+  }
+  const [property, room, guest] = await Promise.all([
+    storage.getProperty(booking.propertyId),
+    booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0),
+    storage.getGuest(booking.guestId)
+  ]);
+  if (!property || !guest) throw new LeaseError("Booking is missing its property or guest", 409);
+  const cancelled = await cancelBooking({
+    bookingId: booking.id,
+    actor: args.actor,
+    refund: false
+  });
+  const baseMetadata = room ? buildRoomBookingChargeMetadata({
+    entity: property.entity,
+    property,
+    room,
+    paymentKind: "BOOKING_DEPOSIT"
+  }) : buildStrChargeMetadata({
+    entity: property.entity,
+    property,
+    paymentKind: "BOOKING_DEPOSIT"
+  });
+  const result = {
+    reference: booking.reference,
+    refunded: [],
+    failed: [],
+    totalRefunded: 0,
+    datesReleased: true,
+    roomFreed: cancelled.roomFreed
+  };
+  for (const payment of refundable) {
+    const amount = parseFloat(payment.amount) + parseFloat(payment.surcharge ?? "0");
+    const metadata = buildRefundMetadata({
+      base: baseMetadata,
+      kind: args.kind,
+      paymentIntentId: payment.stripeRef,
+      paymentId: payment.id,
+      reference: booking.reference,
+      actor: args.actor,
+      // Truncated and stripped of newlines: this reaches Stripe, and a reason is
+      // operator free-text. It must never carry contact details or an access code.
+      reason: args.reason.replace(/\s+/g, " ").slice(0, 400)
+    });
+    assertCompleteRefundMetadata(metadata);
+    try {
+      const refund = await refundPaymentIntent({
+        paymentIntentId: payment.stripeRef,
+        idempotencyKey: `refund:${payment.stripeRef}`,
+        metadata,
+        reason: "requested_by_customer"
+      });
+      await storage.recordPaymentRefund({
+        paymentId: payment.id,
+        bookingId: booking.id,
+        leaseId: null,
+        stripeRefundId: refund.id,
+        stripePaymentIntentId: payment.stripeRef,
+        amount: amount.toFixed(2),
+        kind: args.kind,
+        reason: args.reason.slice(0, 400),
+        actor: args.actor
+      });
+      await storage.updatePayment(payment.id, { status: "REFUNDED" });
+      result.refunded.push({ paymentId: payment.id, stripeRefundId: refund.id, amount: amount.toFixed(2) });
+      result.totalRefunded += amount;
+      log(
+        `stay ${booking.reference}: refunded ${payment.id} (PI ${payment.stripeRef}) \u2192 ${refund.id} by ${args.actor}`,
+        "admin"
+      );
+    } catch (err) {
+      if (err.code === CHARGE_ALREADY_REFUNDED) {
+        await storage.updatePayment(payment.id, { status: "REFUNDED" });
+        result.refunded.push({ paymentId: payment.id, stripeRefundId: null, amount: amount.toFixed(2) });
+        result.totalRefunded += amount;
+        log(
+          `stay ${booking.reference}: PI ${payment.stripeRef} was already refunded \u2014 treated as done`,
+          "admin"
+        );
+        continue;
+      }
+      result.failed.push({
+        paymentId: payment.id,
+        stripePaymentIntentId: payment.stripeRef,
+        error: err.message
+      });
+      log(
+        `stay ${booking.reference}: REFUND FAILED for ${payment.id} (PI ${payment.stripeRef}): ${err.message}`,
+        "admin"
+      );
+    }
+  }
+  if (result.failed.length > 0) {
+    await storage.raiseEscalationOnce({
+      bookingId: booking.id,
+      leaseId: null,
+      kind: "REFUND_FAILED",
+      severity: "HIGH",
+      detail: `Booking ${booking.reference} was cancelled but ${result.failed.length} refund(s) FAILED: ` + result.failed.map((f) => `${f.stripePaymentIntentId} (${f.error})`).join("; ") + `. The dates are released. Refund by hand in Stripe, then re-run the decline.`
+    });
+    const alert = `Booking ${booking.reference} at ${property.name} was cancelled, but ${result.failed.length} refund(s) FAILED. The guest's money has NOT been returned and the dates are back on sale. Refund in Stripe by hand: ` + result.failed.map((f) => f.stripePaymentIntentId).join(", ");
+    await notifyAdmin({
+      subject: `REFUND FAILED - ${booking.reference} cancelled but not refunded`,
+      body: alert,
+      telegramText: alert,
+      context: { bookingId: booking.id, guestId: guest.id, kind: "REFUND_FAILED" }
+    });
+  }
+  if (result.refunded.length > 0) {
+    await onStayDeclined(
+      {
+        booking: { ...booking, status: "CANCELLED" },
+        gate: await storage.getBookingGate(booking.id).then((g) => g ?? null),
+        guest,
+        property,
+        room: room ?? null
+      },
+      {
+        reason: args.kind === "GATE_AUTO_DECLINE" ? null : args.reason,
+        refundAmount: result.totalRefunded,
+        auto: args.kind === "GATE_AUTO_DECLINE"
+      }
+    );
+  }
+  await storage.updateBookingGate(booking.id, {
+    cancelReason: args.reason.slice(0, 1e3),
+    cancelledBy: args.actor
+  });
+  log(
+    `stay ${booking.reference}: declined by ${args.actor} \u2014 ${result.refunded.length} refunded, ${result.failed.length} failed`,
+    "admin"
+  );
+  return result;
+}
+
+// server/lib/stayExtension.ts
+init_storage();
+init_rateSelection();
+
+// server/lib/pricingSettings.ts
+init_storage();
+init_schema();
+import { z as z3 } from "zod";
+var pricingSettingsInputSchema = z3.object({
+  lateFeePerDay: z3.number().min(0, "lateFeePerDay must be 0\u2013500").max(500, "lateFeePerDay must be 0\u2013500").optional(),
+  cardSurchargeRate: z3.number().min(0, "cardSurchargeRate must be 0\u20130.10").max(0.1, "cardSurchargeRate must be 0\u20130.10").optional()
+}).refine((v) => v.lateFeePerDay !== void 0 || v.cardSurchargeRate !== void 0, {
+  message: "Provide lateFeePerDay and/or cardSurchargeRate"
+});
+async function getLateFeePerDay() {
+  return storage.getSettingNumber(LATE_FEE_PER_DAY_SETTING, DEFAULT_LATE_FEE_PER_DAY);
+}
+async function getCardSurchargeRate() {
+  return storage.getSettingNumber(CARD_SURCHARGE_RATE_SETTING, DEFAULT_CREDIT_CARD_RATE);
+}
+async function getPricingSettings() {
+  const [lateFeePerDay, cardSurchargeRate] = await Promise.all([getLateFeePerDay(), getCardSurchargeRate()]);
+  return { lateFeePerDay, cardSurchargeRate };
+}
+async function updatePricingSettings(input, actor) {
+  if (!actor || !actor.trim()) throw new LeaseError("actor is required", 400);
+  const parsed = pricingSettingsInputSchema.safeParse(input);
+  if (!parsed.success) throw new LeaseError(parsed.error.errors[0]?.message ?? "Invalid pricing settings", 400);
+  if (parsed.data.lateFeePerDay !== void 0) {
+    await storage.setSetting(LATE_FEE_PER_DAY_SETTING, String(parsed.data.lateFeePerDay));
+  }
+  if (parsed.data.cardSurchargeRate !== void 0) {
+    await storage.setSetting(CARD_SURCHARGE_RATE_SETTING, String(parsed.data.cardSurchargeRate));
+  }
+  log(`pricing settings updated by ${actor}: ${Object.keys(parsed.data).join(", ")}`, "uo");
+  return getPricingSettings();
+}
+function leaseLateFeePerDay(lease, fallback) {
+  const snap = lease.lateFeePerDaySnapshot;
+  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
+}
+function leaseCardSurchargeRate(lease, fallback) {
+  const snap = lease.cardSurchargeRateSnapshot;
+  return snap != null && snap !== "" ? parseFloat(snap) : fallback;
+}
+
+// server/lib/stayExtension.ts
+init_dates();
+var PG_EXCLUSION_VIOLATION2 = "23P01";
+var MAX_EXTENSION_NIGHTS = 14;
+function roomRates(room) {
+  return {
+    daily: room.dailyRate,
+    weekly: room.weeklyRent,
+    biweekly: room.biweeklyRate,
+    monthly: room.monthlyRate
+  };
+}
+async function alreadyPaidTotal(bookingId) {
+  const payments2 = await storage.getPaymentsByBooking(bookingId);
+  return payments2.filter((p) => p.status === "PAID").reduce((sum, p) => sum + parseFloat(p.amount) + parseFloat(p.surcharge ?? "0"), 0);
+}
+async function loadExtendable(bookingId) {
+  const booking = await storage.getBooking(bookingId);
+  if (!booking) throw new LeaseError("Booking not found", 404);
+  if (!booking.checkOut) {
+    throw new LeaseError("An open-ended stay cannot be extended.", 409);
+  }
+  if (!booking.roomId) {
+    throw new LeaseError("Only a room booking can be extended here.", 409);
+  }
+  if (!["PENDING_APPROVAL", "ACTIVE", "CONFIRMED"].includes(booking.status)) {
+    throw new LeaseError("This booking is not live, so it cannot be extended.", 409);
+  }
+  const [room, property, guest, gate] = await Promise.all([
+    storage.getRoom(booking.roomId),
+    storage.getProperty(booking.propertyId),
+    storage.getGuest(booking.guestId),
+    storage.getBookingGate(booking.id)
+  ]);
+  if (!room || !property || !guest) {
+    throw new LeaseError("Booking is missing its room, property or guest", 409);
+  }
+  return { booking, room, property, guest, gate: gate ?? null };
+}
+async function quoteExtension(args) {
+  const { booking, room } = await loadExtendable(args.bookingId);
+  const fromCheckOut = booking.checkOut;
+  if (args.newCheckOut <= fromCheckOut) {
+    throw new LeaseError("Pick a date after your current checkout.", 400);
+  }
+  const currentNights = stayNights(booking.checkIn, fromCheckOut);
+  const newNights = stayNights(booking.checkIn, args.newCheckOut);
+  let priced;
+  try {
+    priced = cascadeStayPrice({ days: newNights, rates: roomRates(room), topTier: "MONTHLY" });
+  } catch (err) {
+    if (err instanceof RateError) throw new LeaseError(err.message, 422);
+    throw err;
+  }
+  const cleaningFee = room.cleaningFee ? parseFloat(room.cleaningFee) : 0;
+  const newStayTotal = priced.total + cleaningFee;
+  const alreadyPaid = await alreadyPaidTotal(booking.id);
+  const delta = Math.round((newStayTotal - alreadyPaid) * 100) / 100;
+  if (delta <= 0) {
+    throw new LeaseError(
+      `Extending to ${newNights} nights re-prices this stay at or below what has already been paid. This needs a person \u2014 please get in touch and we will sort it out.`,
+      409
+    );
+  }
+  const breakdown = calculateBreakdown({
+    baseAmount: delta,
+    cleaningFee: 0,
+    // already inside newStayTotal
+    paymentMethod: "STRIPE",
+    surchargeRate: await getCardSurchargeRate()
+  });
+  return {
+    reference: booking.reference,
+    fromCheckOut,
+    toCheckOut: args.newCheckOut,
+    currentNights,
+    newNights,
+    addedNights: newNights - currentNights,
+    alreadyPaid,
+    newStayTotal,
+    delta,
+    surcharge: breakdown.surcharge,
+    dueNow: breakdown.total
+  };
+}
+async function extensionOptions(bookingId) {
+  const { booking } = await loadExtendable(bookingId);
+  const from = booking.checkOut;
+  const options = [];
+  let maxNewCheckOut = null;
+  for (let n = 1; n <= MAX_EXTENSION_NIGHTS; n += 1) {
+    const candidate = addDaysIso(from, n);
+    const free = await storage.isRoomAvailableForRange({
+      roomId: booking.roomId,
+      startDate: from,
+      endDate: candidate,
+      endExclusive: true,
+      excludeBookingId: booking.id
+    });
+    if (!free) break;
+    maxNewCheckOut = candidate;
+    if ([1, 2, 3, 7, 14].includes(n)) {
+      try {
+        const quote = await quoteExtension({ bookingId, newCheckOut: candidate });
+        options.push({ newCheckOut: candidate, addedNights: n, dueNow: quote.dueNow });
+      } catch {
+      }
+    }
+  }
+  return { maxNewCheckOut, options };
+}
+async function startExtension(args) {
+  const { booking, room, property, guest } = await loadExtendable(args.bookingId);
+  const quote = await quoteExtension(args);
+  const free = await storage.isRoomAvailableForRange({
+    roomId: booking.roomId,
+    startDate: booking.checkOut,
+    endDate: args.newCheckOut,
+    endExclusive: true,
+    excludeBookingId: booking.id
+  });
+  if (!free) {
+    throw new LeaseError("Those extra nights have just been taken \u2014 pick a shorter extension.", 409);
+  }
+  const metadata = {
+    ...buildRoomBookingChargeMetadata({
+      entity: property.entity,
+      property,
+      room,
+      paymentKind: "BOOKING_DEPOSIT"
+    }),
+    // Everything the webhook needs to apply the extension without re-quoting.
+    extension_from: booking.checkOut,
+    extension_to: args.newCheckOut,
+    extension_booking_id: booking.id,
+    amount: quote.delta.toFixed(2),
+    surcharge: quote.surcharge.toFixed(2)
+  };
+  const intent = await createOneTimePaymentIntent({
+    amount: quote.dueNow,
+    guestEmail: guest.email,
+    reference: booking.reference,
+    metadata,
+    idempotencyKey: `extend:${booking.id}:${args.newCheckOut}`
+  });
+  log(
+    `stay ${booking.reference}: extension intent ${intent.id} for ${booking.checkOut} \u2192 ${args.newCheckOut}`,
+    "stay"
+  );
+  return { clientSecret: intent.client_secret, paymentIntentId: intent.id, quote };
+}
+async function applyExtension(pi) {
+  const m = pi.metadata ?? {};
+  const bookingId = m.extension_booking_id;
+  const newCheckOut = m.extension_to;
+  if (!bookingId || !newCheckOut) {
+    log(`extension PI ${pi.id} has no booking/target metadata \u2014 cannot apply`, "stripe");
+    return { applied: false, conflicted: false };
+  }
+  const booking = await storage.getBooking(bookingId);
+  if (!booking) {
+    log(`extension PI ${pi.id}: booking ${bookingId} not found`, "stripe");
+    return { applied: false, conflicted: false };
+  }
+  if (booking.checkOut && booking.checkOut >= newCheckOut) {
+    log(`extension PI ${pi.id}: ${booking.reference} already extended to ${booking.checkOut}`, "stripe");
+    return { applied: true, conflicted: false };
+  }
+  const previousCheckOut = booking.checkOut ?? booking.checkIn;
+  const [room, property, guest, gate] = await Promise.all([
+    booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0),
+    storage.getProperty(booking.propertyId),
+    storage.getGuest(booking.guestId),
+    storage.getBookingGate(booking.id)
+  ]);
+  const existingPayment = await storage.getPaymentByStripeRef(pi.id);
+  if (!existingPayment) {
+    await storage.createPayment({
+      bookingId: booking.id,
+      type: "ONE_TIME",
+      method: "STRIPE",
+      amount: m.amount ?? "0",
+      surcharge: m.surcharge ?? "0",
+      status: "PAID",
+      stripeRef: pi.id,
+      confirmedBy: null,
+      paidAt: /* @__PURE__ */ new Date()
+    });
+  }
+  try {
+    await storage.updateBooking(booking.id, { checkOut: newCheckOut });
+  } catch (err) {
+    if (err.code !== PG_EXCLUSION_VIOLATION2) throw err;
+    await storage.raiseEscalationOnce({
+      bookingId: booking.id,
+      leaseId: null,
+      kind: "EXTENSION_CONFLICT",
+      severity: "HIGH",
+      detail: `Extension for ${booking.reference} was PAID (PI ${pi.id}, ${m.amount ?? "?"}) but the nights ${previousCheckOut}\u2192${newCheckOut} were taken in the meantime. check_out is UNCHANGED and the charge was NOT refunded. Resolve by hand: extend to a shorter date, move the guest, or refund.`
+    });
+    if (property && guest) {
+      const tpl = adminStayExtensionConflict({
+        property: property.name,
+        room: roomDisplayName(room),
+        guest: guest.name,
+        reference: booking.reference,
+        requestedCheckOut: newCheckOut,
+        amount: `$${m.amount ?? "?"}`,
+        reason: "the exclusion constraint rejected the new range"
+      });
+      await notifyAdmin({
+        subject: tpl.subject,
+        body: tpl.body,
+        telegramText: tpl.telegramText,
+        context: { bookingId: booking.id, guestId: guest.id, kind: "EXTENSION_CONFLICT" }
+      });
+    }
+    log(`extension PI ${pi.id}: ${booking.reference} CONFLICT \u2014 charge stands, no refund`, "stripe");
+    return { applied: false, conflicted: true };
+  }
+  const extensionSeq = (gate?.extensionCount ?? 0) + 1;
+  if (gate) {
+    await storage.updateBookingGate(booking.id, {
+      extensionCount: extensionSeq,
+      // Preserve the term this stay was originally sold with, once.
+      originalCheckOut: gate.originalCheckOut ?? previousCheckOut
+    });
+  }
+  if (property && guest) {
+    const freshGate = await storage.getBookingGate(booking.id);
+    await onStayExtended(
+      {
+        booking: { ...booking, checkOut: newCheckOut },
+        gate: freshGate ?? gate ?? null,
+        guest,
+        property,
+        room: room ?? null
+      },
+      {
+        previousCheckOut,
+        newCheckOut,
+        amount: parseFloat(m.amount ?? "0") + parseFloat(m.surcharge ?? "0"),
+        extensionSeq
+      }
+    );
+  }
+  log(
+    `stay ${booking.reference}: extended ${previousCheckOut} \u2192 ${newCheckOut} via ${pi.id}`,
+    "stripe"
+  );
+  return { applied: true, conflicted: false };
+}
+
+// server/routes.ts
+init_schema();
+
+// server/lib/nextOpening.ts
+import { addDays as addDays5, parseISO as parseISO5 } from "date-fns";
+var ymd = (d) => d.toISOString().slice(0, 10);
+function dayAfter(isoDate) {
+  return ymd(addDays5(parseISO5(isoDate), 1));
+}
+function strNextOpening(stays, today) {
+  const spans = stays.filter((s) => s.checkOut != null).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
+  let open = null;
+  for (const s of spans) {
+    if (open == null) {
+      if (s.checkIn <= today && today < s.checkOut) open = s.checkOut;
+    } else if (s.checkIn <= open && s.checkOut > open) {
+      open = s.checkOut;
+    }
+  }
+  return open;
+}
+function cheapestAvailableWeeklyRent(rooms2) {
+  const rates = rooms2.filter((r) => r.available).map((r) => parseFloat(r.weeklyRent)).filter((n) => Number.isFinite(n) && n > 0);
+  if (rates.length === 0) return { fromWeeklyRent: null, available: false };
+  return { fromWeeklyRent: String(Math.min(...rates)), available: true };
+}
+
+// server/lib/leaseFlow.ts
+import { customAlphabet as customAlphabet3 } from "nanoid";
+
+// server/lib/leaseDocument.ts
+init_schema();
+var CADENCE_LABEL = {
+  WEEKLY: "weekly",
+  BIWEEKLY: "bi-weekly",
+  MONTHLY: "monthly (every 4 weeks)"
+};
+var DEFAULT_LEASE_TEMPLATE = {
+  title: "Room Rental Agreement",
+  intro: "This Room Rental Agreement (the \u201CAgreement\u201D) is entered into between Be Nice Properties (\u201CLandlord\u201D) and {{guestName}} (\u201CResident\u201D) for the room(s) and term described below at {{propertyName}}, {{propertyLocation}}.",
+  sections: [
+    {
+      heading: "1. Premises",
+      body: "The Landlord rents to the Resident the following room(s) at {{propertyName}}: {{roomList}}. The Resident has the non-exclusive right to use shared common areas of the property in common with other residents."
+    },
+    {
+      heading: "2. Term",
+      body: "The lease term runs from {{startDate}} through {{endDate}} ({{termDays}} days). This is a fixed-term arrangement and does not exceed 90 days."
+    },
+    {
+      heading: "3. Rent & Payment Schedule",
+      body: "Rent is billed on a {{cadenceLabel}} basis at {{installmentLabel}} per payment, each payment covering {{periodDaysLabel}} days across all rented room(s). The first payment is due on the start date (move-in). The complete schedule of payments and amounts appears below; the total value of this lease is {{totalLeaseValue}}. {{prorationNote}}"
+    },
+    {
+      heading: "4. Move-in Charges (Deposit & Cleaning Fee)",
+      body: "At move-in the Resident pays a refundable security deposit of {{depositTotal}}, which secures the room(s) and is returned at the end of the term less any deductions permitted by law.{{cleaningFeeClause}} These move-in charges are separate from rent and from the payment schedule below."
+    },
+    {
+      heading: "5. Late Fees",
+      body: "If a scheduled payment is not received by its due date, a late fee of {{lateFeePerDay}} per day accrues beginning the day after the due date and continues to accrue daily until the balance is paid. Accrued late fees are billed as a separate charge from rent."
+    },
+    {
+      heading: "6. House Rules",
+      body: "The Resident agrees to: keep shared spaces clean; respect quiet hours and other residents; not sublet or assign the room; not engage in illegal activity on the premises; and follow any posted property-specific house rules. Repeated or serious violations may result in termination of this Agreement."
+    },
+    {
+      heading: "7. Payment Authorization",
+      body: "A payment method is kept on file for the term of this lease. The Resident may pay each scheduled payment either by that card (subject to a {{cardSurchargePct}} processing fee) or manually by CashApp/Zelle (no processing fee); a manual payment is held pending until confirmed. The Resident authorizes Be Nice Properties to charge the saved payment method on file for any scheduled payment not elected as manual, and for any accrued late fees, on or after each due date."
+    }
+  ],
+  signatureStatement: "By typing my full legal name below and submitting this Agreement, I acknowledge that I have read and agree to its terms, and I intend my typed name to be my legally binding electronic signature under the U.S. E-SIGN Act and UETA."
+};
+function esc2(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function inclusiveDays2(startDate, endDate) {
+  const ms = 24 * 60 * 60 * 1e3;
+  const s = (/* @__PURE__ */ new Date(`${startDate}T00:00:00Z`)).getTime();
+  const e = (/* @__PURE__ */ new Date(`${endDate}T00:00:00Z`)).getTime();
+  return Math.round((e - s) / ms) + 1;
+}
+function tokenMap(data) {
+  const roomList = data.rooms.map((r) => r.roomNumber ? `${r.name} (#${r.roomNumber})` : r.name).join(", ");
+  return {
+    guestName: data.guestName,
+    propertyName: data.propertyName,
+    propertyLocation: data.propertyLocation,
+    roomList,
+    startDate: data.startDate,
+    endDate: data.endDate,
+    termDays: String(inclusiveDays2(data.startDate, data.endDate)),
+    cadenceLabel: CADENCE_LABEL[data.cadence],
+    installmentLabel: fmtMoney(data.installmentAmount),
+    periodDaysLabel: String(CADENCE_DAYS[data.cadence]),
+    totalLeaseValue: fmtMoney(data.totalLeaseValue),
+    depositTotal: fmtMoney(data.depositTotal),
+    // Only state a cleaning fee when one applies; it is non-refundable.
+    cleaningFeeClause: data.cleaningFeeTotal > 0 ? ` A one-time, non-refundable cleaning fee of ${fmtMoney(data.cleaningFeeTotal)} is also due at move-in.` : "",
+    prorationNote: data.prorationNote,
+    lateFeePerDay: fmtMoney(data.lateFeePerDay),
+    cardSurchargePct: formatSurchargePct(data.cardSurchargeRate)
+  };
+}
+function fill(text2, tokens) {
+  return text2.replace(
+    /\{\{(\w+)\}\}/g,
+    (_m, key) => key in tokens ? tokens[key] : `{{${key}}}`
+  );
+}
+function scheduleTableHtml(schedule) {
+  const rows = schedule.map(
+    (r) => `<tr><td>${r.seq}</td><td>${esc2(r.dueDate)}${r.seq === 1 ? " <strong>(due on start)</strong>" : ""}${r.prorated ? " <em>(prorated)</em>" : ""}</td><td style="text-align:right">${fmtMoney(
+      r.amount
+    )}</td></tr>`
+  ).join("");
+  return `<table style="width:100%;border-collapse:collapse" cellpadding="6"><thead><tr style="border-bottom:1px solid #ccc;text-align:left"><th>#</th><th>Due date</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table>`;
+}
+function bodyHtml2(data, template) {
+  const tokens = tokenMap(data);
+  const sections = template.sections.map(
+    (s) => `<section><h2 style="font-size:15px;margin:18px 0 6px">${esc2(s.heading)}</h2><p style="margin:0;line-height:1.5">${esc2(fill(s.body, tokens))}</p></section>`
+  ).join("");
+  return `<h1 style="font-size:20px;margin:0 0 4px">${esc2(template.title)}</h1><p style="color:#555;margin:0 0 16px;line-height:1.5">${esc2(fill(template.intro, tokens))}</p>` + sections + `<section><h2 style="font-size:15px;margin:18px 0 6px">Payment Schedule</h2>` + scheduleTableHtml(data.schedule) + `</section>`;
+}
+var PAGE = (inner) => `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Room Rental Agreement</title><style>body{font-family:Georgia,'Times New Roman',serif;max-width:720px;margin:32px auto;padding:0 20px;color:#1a1a1a}@media print{body{margin:0}}</style></head><body>${inner}</body></html>`;
+function renderLeaseHtml(data, template = DEFAULT_LEASE_TEMPLATE) {
+  const unsigned = bodyHtml2(data, template) + `<section style="margin-top:24px"><p style="line-height:1.5">${esc2(
+    template.signatureStatement
+  )}</p><p style="color:#777">\u2014 Awaiting signature \u2014</p></section>`;
+  return PAGE(unsigned);
+}
+function renderSignedLeaseHtml(data, signature, template = DEFAULT_LEASE_TEMPLATE) {
+  const signed = bodyHtml2(data, template) + `<section style="margin-top:24px;border-top:2px solid #1a1a1a;padding-top:16px"><p style="line-height:1.5">${esc2(template.signatureStatement)}</p><div style="margin-top:12px;font-size:14px"><div><strong>Signed by:</strong> ${esc2(signature.signedName)}</div><div><strong>Date &amp; time:</strong> ${esc2(signature.signedAt.toISOString())}</div><div><strong>IP address:</strong> ${esc2(signature.signedIp)}</div><div style="margin-top:8px;color:#555">Electronically signed under the E-SIGN Act / UETA.</div></div></section>`;
+  return PAGE(signed);
+}
+
+// server/lib/leaseFlow.ts
+init_storage();
+var portalTokenGen = customAlphabet3(
+  "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ",
+  32
+);
+function docDataFrom(leaseId, quote, guest, location, pricing) {
+  return {
+    leaseId,
+    guestName: guest.name,
+    guestEmail: guest.email,
+    propertyName: quote.propertyName,
+    propertyLocation: location,
+    rooms: quote.rooms.map((r) => ({
+      name: r.name,
+      roomNumber: r.roomNumber,
+      weeklyRent: r.weeklyRent
+    })),
+    startDate: quote.startDate,
+    endDate: quote.endDate,
+    cadence: quote.cadence,
+    installmentAmount: quote.installmentAmount,
+    totalLeaseValue: quote.totalLeaseValue,
+    depositTotal: quote.depositTotal,
+    cleaningFeeTotal: quote.cleaningFeeTotal,
+    lateFeePerDay: pricing.lateFeePerDay,
+    cardSurchargeRate: pricing.cardSurchargeRate,
+    prorationNote: quote.prorationNote,
+    schedule: quote.schedule.map((s) => ({
+      seq: s.seq,
+      dueDate: s.dueDate,
+      amount: s.amount,
+      prorated: s.prorated
+    }))
+  };
+}
+async function previewLease(input) {
+  const quote = await buildLeaseQuote({
+    propertyId: input.propertyId,
+    roomIds: input.roomIds,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    cadence: input.cadence
+  });
+  const property = await storage.getProperty(input.propertyId);
+  if (!property) throw new LeaseError("Property not found", 404);
+  const pricing = await getPricingSettings();
+  const documentHtml = renderLeaseHtml(
+    docDataFrom("PREVIEW", quote, input.guest, property.location, pricing)
+  );
+  return { documentHtml };
+}
+async function createDraftLease(input) {
+  const quote = await buildLeaseQuote({
+    propertyId: input.propertyId,
+    roomIds: input.roomIds,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    cadence: input.cadence
+  });
+  const property = await storage.getProperty(input.propertyId);
+  if (!property) throw new LeaseError("Property not found", 404);
+  const guest = await storage.upsertGuestByEmail({
+    name: input.guest.name,
+    email: input.guest.email,
+    phone: input.guest.phone ?? null
+  });
+  const pricing = await getPricingSettings();
+  const lease = await storage.createLeaseWithSchedule({
+    lease: {
+      propertyId: property.id,
+      guestId: guest.id,
+      startDate: quote.startDate,
+      endDate: quote.endDate,
+      paymentCadence: quote.cadence,
+      weeklyRateSnapshot: String(quote.weeklyRateTotal),
+      totalLeaseValue: String(quote.totalLeaseValue),
+      prorationNote: quote.prorationNote,
+      // Freeze the refundable deposit at booking so a later room re-price never
+      // changes a signed lease. This is the amount that secures the room.
+      depositAmountSnapshot: String(quote.depositTotal),
+      depositStatus: "PENDING",
+      // Freeze the one-time cleaning fee at booking too (non-refundable; charged as
+      // its own PaymentIntent at move-in). "0" when no room carries a fee.
+      cleaningFeeSnapshot: String(quote.cleaningFeeTotal),
+      cleaningFeeStatus: "PENDING",
+      lateFeePerDaySnapshot: String(pricing.lateFeePerDay),
+      cardSurchargeRateSnapshot: String(pricing.cardSurchargeRate),
+      status: "PENDING_SIGNATURE",
+      portalToken: portalTokenGen()
+    },
+    rooms: quote.rooms.map((r) => ({
+      // leaseId is filled in by storage.createLeaseWithSchedule.
+      leaseId: "",
+      roomId: r.id,
+      roomNumberSnapshot: r.roomNumber,
+      roomNameSnapshot: r.name
+    })),
+    schedule: quote.schedule.map((s) => ({
+      leaseId: "",
+      scheduleSeq: s.seq,
+      dueDate: s.dueDate,
+      amount: String(s.amount),
+      status: "SCHEDULED",
+      // Default to card-on-file; a guest who chooses manual flips this in Phase 4.
+      paymentMethod: "CARD_ON_FILE"
+    }))
+  });
+  const documentHtml = renderLeaseHtml(
+    docDataFrom(lease.id, quote, input.guest, property.location, pricing)
+  );
+  return { lease, documentHtml };
+}
+async function signLease(input) {
+  const lease = await storage.getLease(input.leaseId);
+  if (!lease) throw new LeaseError("Lease not found", 404);
+  if (lease.signedAt) {
+    return { lease, documentUrl: lease.signedPdfUrl ?? `/api/leases/${lease.id}/document` };
+  }
+  if (lease.status !== "PENDING_SIGNATURE" && lease.status !== "DRAFT") {
+    throw new LeaseError(`Lease cannot be signed from status ${lease.status}`, 409);
+  }
+  const name = input.signedName.trim();
+  if (name.length < 2) throw new LeaseError("A full legal name is required to sign");
+  if (!input.affirmed) throw new LeaseError("You must affirm the agreement to sign");
+  const property = await storage.getProperty(lease.propertyId);
+  const guest = await storage.getGuest(lease.guestId);
+  const leaseRooms2 = await storage.getLeaseRooms(lease.id);
+  const schedule = await storage.getScheduleByLease(lease.id);
+  if (!property || !guest) throw new LeaseError("Lease data incomplete", 500);
+  const fullInstallment = parseFloat(schedule[0]?.amount ?? "0");
+  const docData = {
+    leaseId: lease.id,
+    guestName: guest.name,
+    guestEmail: guest.email,
+    propertyName: property.name,
+    propertyLocation: property.location,
+    rooms: leaseRooms2.map((lr) => ({
+      name: lr.roomNameSnapshot,
+      roomNumber: lr.roomNumberSnapshot,
+      weeklyRent: 0
+      // not shown per-room in the doc body; rate total is on the lease
+    })),
+    startDate: lease.startDate,
+    endDate: lease.endDate,
+    cadence: lease.paymentCadence,
+    installmentAmount: fullInstallment,
+    totalLeaseValue: parseFloat(lease.totalLeaseValue),
+    depositTotal: parseFloat(lease.depositAmountSnapshot ?? "0"),
+    cleaningFeeTotal: parseFloat(lease.cleaningFeeSnapshot ?? "0"),
+    lateFeePerDay: leaseLateFeePerDay(lease, await getLateFeePerDay()),
+    cardSurchargeRate: leaseCardSurchargeRate(lease, await getCardSurchargeRate()),
+    prorationNote: lease.prorationNote ?? "",
+    schedule: schedule.map((s) => ({
+      seq: s.scheduleSeq,
+      dueDate: s.dueDate,
+      amount: parseFloat(s.amount),
+      // A row smaller than a full period IS the day-prorated tail. Previously
+      // hardcoded false, so the SIGNED doc never marked the tail even though the
+      // review render did.
+      prorated: parseFloat(s.amount) < fullInstallment
+    }))
+  };
+  const signedAt = input.signedAt ?? /* @__PURE__ */ new Date();
+  const signedDocumentHtml = renderSignedLeaseHtml(docData, {
+    signedName: name,
+    signedAt,
+    signedIp: input.ip
+  });
+  const documentUrl = `/api/leases/${lease.id}/document`;
+  const updated = await storage.updateLease(lease.id, {
+    signedName: name,
+    signedAt,
+    signedIp: input.ip,
+    signedPdfUrl: documentUrl,
+    signedDocumentHtml,
+    // Signed, but NOT active — first payment (Phase 4) gates ACTIVE.
+    status: "PENDING_FIRST_PAYMENT"
+  });
+  return { lease: updated ?? lease, documentUrl };
+}
+
+// server/lib/leasePayments.ts
+init_storage();
+
+// server/lib/dunning.ts
+init_storage();
+init_schema();
+init_dates();
+var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
+async function payLink(lease) {
+  return smsLink(portalUrl(lease));
+}
+async function handleChargeFailure(args) {
+  const today = args.today ?? todayIso();
+  if (args.scheduleRow.status !== "FAILED") {
+    await storage.updateScheduleRow(args.scheduleRow.id, { status: "FAILED" });
+  }
+  const failureEsc = await storage.raiseEscalationOnce({
+    leaseId: args.lease.id,
+    scheduleSeq: args.scheduleRow.scheduleSeq,
+    kind: "PAYMENT_FAILED",
+    severity: "HIGH",
+    detail: `Card-on-file charge FAILED for installment #${args.scheduleRow.scheduleSeq} ($${args.scheduleRow.amount})${args.reason ? `: ${args.reason}` : ""}.`
+  });
+  if (failureEsc) {
+    const failureTail = `failed${args.reason ? `: ${args.reason}` : ""}. Installment #${args.scheduleRow.scheduleSeq} is marked FAILED; the guest has been sent a fix link.`;
+    await notifyAdmin({
+      subject: `Card charge FAILED \u2014 ${args.guest.name} installment #${args.scheduleRow.scheduleSeq}`,
+      body: `Saved-card charge of $${args.scheduleRow.amount} for ${args.guest.name} (${args.guest.email}) ${failureTail}`,
+      // Telegram: name only, no contact details (third-party channel).
+      telegramText: `Saved-card charge of $${args.scheduleRow.amount} for ${args.guest.name} ${failureTail}`,
+      context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "ESCALATION" }
+    });
+  }
+  const already = await storage.hasNotification({
+    leaseId: args.lease.id,
+    scheduleSeq: args.scheduleRow.scheduleSeq,
+    kind: "PAYMENT_FAILED",
+    sendDate: today
+  });
+  if (!already) {
+    const fixUrl = portalUrl(args.lease);
+    const smsUrl = await payLink(args.lease);
+    const sent = await notifyGuest({
+      email: args.guest.email,
+      phone: args.guest.phone,
+      context: { leaseId: args.lease.id, guestId: args.guest.id, kind: "PAYMENT_FAILED" },
+      subject: "Action needed \u2014 your rent payment failed",
+      body: `Hi ${args.guest.name}, we couldn't process your rent payment for installment #${args.scheduleRow.scheduleSeq}.
+
+Retry it from your portal: ${fixUrl}
+
+If your card has changed, you can pay this installment by CashApp or Zelle from that same page \u2014 no card needed.`,
+      smsBody: `BNP: we could not process your rent payment for installment #${args.scheduleRow.scheduleSeq}.` + (smsUrl ? ` Retry: ${smsUrl}` : "")
+    });
+    await storage.recordNotification({
+      leaseId: args.lease.id,
+      scheduleSeq: args.scheduleRow.scheduleSeq,
+      kind: "PAYMENT_FAILED",
+      sendDate: today,
+      emailSent: sent.email.sent,
+      smsSent: sent.sms.sent
+    });
+  }
+}
+async function billAccruedLateFees(args) {
+  const fees = await storage.getAccruedLateFeesForSchedule(args.lease.id, args.scheduleSeq);
+  if (fees.length === 0) return { billed: false, amount: 0 };
+  const total = Math.round(fees.reduce((s, f) => s + parseFloat(f.amount), 0) * 100) / 100;
+  if (total <= 0) return { billed: false, amount: 0 };
+  if (!args.lease.stripeCustomerId || !args.lease.stripePaymentMethodId) {
+    return { billed: false, amount: total };
+  }
+  const metadata = buildLeaseChargeMetadata({
+    entity: args.property.entity,
+    property: args.property,
+    lease: args.lease,
+    rooms: args.rooms,
+    paymentKind: "LATE_FEE",
+    scheduleSeq: args.scheduleSeq
+  });
+  const pi = await chargeSavedCard({
+    amount: total,
+    customerId: args.lease.stripeCustomerId,
+    paymentMethodId: args.lease.stripePaymentMethodId,
+    metadata,
+    idempotencyKey: `lease-latefee-${args.lease.id}-seq-${args.scheduleSeq}`
+  });
+  for (const fee of fees) {
+    await storage.updateLateFee(fee.id, { status: "BILLED", stripePaymentIntentId: pi.id });
+  }
+  log(`billed $${total} late fees for lease ${args.lease.id} seq ${args.scheduleSeq} (${pi.id})`, "scheduler");
+  return { billed: true, amount: total, paymentIntentId: pi.id };
 }
 
 // server/lib/leasePayments.ts
@@ -5016,120 +6633,7 @@ async function chargeCleaningFeeOffSession(leaseId, paymentMethodId) {
 
 // server/lib/materialize.ts
 init_storage();
-
-// server/lib/stayLifecycle.ts
-init_storage();
-init_schema();
-
-// server/lib/stayTemplates.ts
-function listOf(items) {
-  if (items.length <= 1) return items[0] ?? "";
-  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
-}
-var roomClause = (room) => room ? ` (${room})` : "";
-function stayDocsRequired(v) {
-  const what = listOf(v.outstanding);
-  return {
-    subject: `Thanks for booking \u2014 ${v.outstanding.length} thing${v.outstanding.length === 1 ? "" : "s"} left to finish (${v.reference})`,
-    body: `Hi ${v.name}, thank you for booking${roomClause(v.room)} at ${v.property} from ${v.checkIn} to ${v.checkOut}. Your payment of ${v.total} has gone through and your dates are held.
-
-TO COMPLETE YOUR BOOKING we still need ${what}. It takes about two minutes:
-${v.stayUrl}
-
-Once we have everything, we review it and confirm \u2014 that can take up to 24 hours. We will email you your door code and arrival details as soon as it is approved.
-
-Reference ${v.reference}.`,
-    smsBody: `BNP: payment received for ${v.reference}. Finish your booking (ID + agreement): ${v.smsUrl}`
-  };
-}
-
-// server/lib/accessInfo.ts
-init_storage();
-
-// server/lib/stayLifecycle.ts
-async function guestSendsEnabled() {
-  const setting = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
-  return setting?.value !== "false";
-}
-function outstandingItems(gate) {
-  const items = [];
-  if (!gate?.agreementSignedAt) items.push("your signed rental agreement");
-  if (!gate || !["PENDING_REVIEW", "APPROVED"].includes(gate.verificationStatus)) {
-    items.push("a photo of your driver's licence");
-  }
-  return items;
-}
-async function sendGuest(ctx, kind, tpl, scheduleSeq = null) {
-  if (await storage.hasLifecycleEvent({ bookingId: ctx.booking.id }, kind, scheduleSeq)) {
-    return false;
-  }
-  const enabled = await guestSendsEnabled();
-  if (!enabled) {
-    await storage.recordLifecycleEvent({
-      bookingId: ctx.booking.id,
-      eventType: kind,
-      scheduleSeq,
-      status: "SKIPPED",
-      emailSent: false,
-      smsSent: false
-    });
-    return false;
-  }
-  const sent = await notifyGuest({
-    email: ctx.guest.email,
-    phone: ctx.guest.phone,
-    subject: tpl.subject,
-    body: tpl.body,
-    smsBody: tpl.smsBody,
-    logBody: tpl.logBody,
-    context: { bookingId: ctx.booking.id, guestId: ctx.guest.id, kind }
-  });
-  await storage.recordLifecycleEvent({
-    bookingId: ctx.booking.id,
-    eventType: kind,
-    scheduleSeq,
-    status: sent.email.sent ? "SENT" : "SKIPPED",
-    emailSent: sent.email.sent,
-    smsSent: sent.sms.sent
-  });
-  return sent.email.sent;
-}
-async function vars(ctx) {
-  const url = stayUrl(ctx.gate);
-  return {
-    name: ctx.guest.name,
-    property: ctx.property.name,
-    room: roomDisplayName(ctx.room),
-    reference: ctx.booking.reference,
-    stayUrl: url,
-    // Routed through the A2P 10DLC switch: when SMS links are off this is "" and
-    // the template renders without one.
-    smsUrl: await smsLink(url)
-  };
-}
-async function onStayBookingConfirmed(ctx) {
-  const v = await vars(ctx);
-  const tpl = stayDocsRequired({
-    ...v,
-    checkIn: ctx.booking.checkIn,
-    checkOut: ctx.booking.checkOut ?? "",
-    total: fmtMoney(parseFloat(ctx.booking.quotedTotal)),
-    outstanding: outstandingItems(ctx.gate)
-  });
-  await sendGuest(ctx, "STAY_DOCS_REQUIRED", tpl);
-  log(`stay ${ctx.booking.reference}: gated \u2014 documents requested`, "lifecycle");
-}
-
-// server/lib/gateToken.ts
-import { customAlphabet as customAlphabet3 } from "nanoid";
-var ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-var GATE_TOKEN_LENGTH = 24;
-var gateTokenGen = customAlphabet3(ALPHABET, GATE_TOKEN_LENGTH);
-var GATE_DOCS_DEADLINE_HOURS = 72;
-var GATE_DOCS_DEADLINE_MS = GATE_DOCS_DEADLINE_HOURS * 60 * 60 * 1e3;
-
-// server/lib/materialize.ts
-var PG_EXCLUSION_VIOLATION = "23P01";
+var PG_EXCLUSION_VIOLATION3 = "23P01";
 var defaultDeps = () => ({
   storage,
   resolveBooking,
@@ -5320,8 +6824,8 @@ async function materializeShortStayBooking(pi, deps = defaultDeps()) {
     try {
       booking = await storage2.createBooking({ ...baseBooking, status: okStatus });
     } catch (err) {
-      if (err.code !== PG_EXCLUSION_VIOLATION) throw err;
-      conflictReason = `Database exclusion constraint rejected the booking (${PG_EXCLUSION_VIOLATION}) \u2014 the dates were taken concurrently.`;
+      if (err.code !== PG_EXCLUSION_VIOLATION3) throw err;
+      conflictReason = `Database exclusion constraint rejected the booking (${PG_EXCLUSION_VIOLATION3}) \u2014 the dates were taken concurrently.`;
       log(`short-stay ${reference} hit the exclusion constraint \u2014 saving as CONFLICT`, "stripe");
       booking = await storage2.createBooking({ ...baseBooking, status: "CONFLICT" });
     }
@@ -5400,165 +6904,6 @@ async function materializeShortStayBooking(pi, deps = defaultDeps()) {
     await fireConfirmation({ booking, property, room: room ?? null, guest: guestRow }, deps);
   }
   log(`short-stay booking ${reference} materialized + confirmed via ${pi.id}`, "stripe");
-}
-
-// server/lib/bookingConflicts.ts
-init_storage();
-init_dates();
-var PG_EXCLUSION_VIOLATION2 = "23P01";
-async function resolveConflictEscalations(bookingId, actor) {
-  const open = await storage.getEscalations({ status: "OPEN", bookingId });
-  const mine = open.filter((e) => e.kind === "BOOKING_CONFLICT");
-  for (const esc2 of mine) {
-    await storage.updateEscalation(esc2.id, {
-      status: "RESOLVED",
-      resolvedAt: /* @__PURE__ */ new Date(),
-      resolvedBy: actor
-    });
-  }
-  return mine.length;
-}
-async function confirmConflictBooking(bookingId, actor) {
-  const booking = await storage.getBooking(bookingId);
-  if (!booking) throw new BookingError("Booking not found", 404);
-  if (booking.status !== "CONFLICT") {
-    throw new BookingError(
-      `Only a CONFLICT booking can be confirmed here (this one is ${booking.status})`,
-      409
-    );
-  }
-  if (booking.model === "COLIVING") {
-    if (!booking.roomId || !booking.checkOut) {
-      throw new BookingError("Co-living booking is missing a room or check-out date", 409);
-    }
-    const free = await storage.isRoomAvailableForRange({
-      roomId: booking.roomId,
-      startDate: booking.checkIn,
-      endDate: booking.checkOut,
-      endExclusive: true,
-      excludeBookingId: booking.id
-    });
-    if (!free) {
-      throw new BookingError("Those dates are still taken for this room \u2014 cannot confirm", 409);
-    }
-  } else {
-    if (!booking.checkOut) throw new BookingError("Booking is missing a check-out date", 409);
-    const taken = await strHasConflict(
-      booking.propertyId,
-      booking.checkIn,
-      booking.checkOut,
-      booking.id
-    );
-    if (taken) {
-      throw new BookingError("Those dates are still taken for this property \u2014 cannot confirm", 409);
-    }
-  }
-  const status = postPaymentStatusFor(booking);
-  let updated;
-  try {
-    updated = await storage.updateBooking(booking.id, { status }) ?? { ...booking, status };
-  } catch (err) {
-    if (err.code === PG_EXCLUSION_VIOLATION2) {
-      log(
-        `booking ${booking.reference} (${booking.id}) confirm rejected by exclusion constraint`,
-        "admin"
-      );
-      throw new BookingError("Those dates were just taken \u2014 cannot confirm", 409);
-    }
-    throw err;
-  }
-  if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
-  await resolveConflictEscalations(booking.id, actor);
-  const [property, room, guest] = await Promise.all([
-    storage.getProperty(booking.propertyId),
-    booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0),
-    storage.getGuest(booking.guestId)
-  ]);
-  if (property && guest) {
-    await onBookingConfirmed({ booking: updated, property, room: room ?? null, guest });
-  }
-  log(`booking ${booking.reference} (${booking.id}) confirmed out of CONFLICT by ${actor}`, "admin");
-  return updated;
-}
-async function cancelBooking(args) {
-  const booking = await storage.getBooking(args.bookingId);
-  if (!booking) throw new BookingError("Booking not found", 404);
-  const alreadyCancelled = booking.status === "CANCELLED";
-  if (alreadyCancelled && args.refund !== true) {
-    return {
-      reference: booking.reference,
-      alreadyCancelled: true,
-      roomFreed: false,
-      refunded: false,
-      refundIds: [],
-      alreadyRefunded: []
-    };
-  }
-  if (!alreadyCancelled) await storage.updateBooking(booking.id, { status: "CANCELLED" });
-  let roomFreed = false;
-  if (booking.roomId && !alreadyCancelled) {
-    const occupiedToday = await storage.getOccupiedRoomIdsOn(todayIso());
-    if (!occupiedToday.has(booking.roomId)) {
-      const room = await storage.getRoom(booking.roomId);
-      if (room && room.status === "OCCUPIED") {
-        await storage.updateRoom(booking.roomId, { status: "AVAILABLE" });
-        roomFreed = true;
-      }
-    } else {
-      log(
-        `booking ${booking.reference} cancelled but room ${booking.roomId} is still covered today \u2014 left OCCUPIED`,
-        "admin"
-      );
-    }
-  }
-  const refundIds = [];
-  const alreadyRefunded = [];
-  if (args.refund === true) {
-    const payments2 = await storage.getPaymentsByBooking(booking.id);
-    for (const p of payments2) {
-      if (p.method !== "STRIPE" || p.status !== "PAID" || !p.stripeRef) continue;
-      try {
-        const refund = await refundPaymentIntent({
-          paymentIntentId: p.stripeRef,
-          // Stable key: a retry WITHIN 24 HOURS returns the same refund instead of
-          // a second one. Stripe expires idempotency keys after that, so the key
-          // is only the first line of defence — see the catch below.
-          idempotencyKey: `refund:${p.stripeRef}`
-        });
-        refundIds.push(refund.id);
-        log(
-          `booking ${booking.reference}: refunded payment ${p.id} (PI ${p.stripeRef}) \u2192 ${refund.id} by ${args.actor}`,
-          "admin"
-        );
-      } catch (err) {
-        if (err.code === "charge_already_refunded") {
-          alreadyRefunded.push(p.stripeRef);
-          log(
-            `booking ${booking.reference}: PI ${p.stripeRef} was already refunded \u2014 treating as done`,
-            "admin"
-          );
-          continue;
-        }
-        throw err;
-      }
-    }
-    if (refundIds.length === 0 && alreadyRefunded.length === 0) {
-      log(
-        `booking ${booking.reference}: refund requested but no PAID Stripe payment to refund (manual payments settle off-band)`,
-        "admin"
-      );
-    }
-  }
-  await resolveConflictEscalations(booking.id, args.actor);
-  log(`booking ${booking.reference} (${booking.id}) CANCELLED by ${args.actor}`, "admin");
-  return {
-    reference: booking.reference,
-    alreadyCancelled,
-    roomFreed,
-    refunded: refundIds.length > 0 || alreadyRefunded.length > 0,
-    refundIds,
-    alreadyRefunded
-  };
 }
 
 // server/lib/portal.ts
@@ -5816,96 +7161,8 @@ async function getThread(token, threadId) {
 
 // server/lib/verification.ts
 init_storage();
-import { randomUUID } from "node:crypto";
-
-// server/lib/storage-r2.ts
-import {
-  S3Client,
-  PutObjectCommand,
-  GetObjectCommand,
-  DeleteObjectCommand
-} from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-function isR2Configured() {
-  return Boolean(
-    process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID && process.env.R2_SECRET_ACCESS_KEY && process.env.R2_BUCKET_NAME
-  );
-}
-function requireR2Config() {
-  const accountId = process.env.R2_ACCOUNT_ID;
-  const accessKeyId = process.env.R2_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.R2_SECRET_ACCESS_KEY;
-  const bucket = process.env.R2_BUCKET_NAME;
-  if (!accountId || !accessKeyId || !secretAccessKey || !bucket) {
-    throw new Error(
-      "R2 is not configured (need R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME)"
-    );
-  }
-  return { accountId, accessKeyId, secretAccessKey, bucket };
-}
-var _client = null;
-function client() {
-  if (_client) return _client;
-  const { accountId, accessKeyId, secretAccessKey } = requireR2Config();
-  _client = new S3Client({
-    region: "auto",
-    endpoint: `https://${accountId}.r2.cloudflarestorage.com`,
-    credentials: { accessKeyId, secretAccessKey }
-  });
-  return _client;
-}
-async function uploadBuffer(key, buffer, contentType) {
-  const { bucket } = requireR2Config();
-  await client().send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: key,
-      Body: buffer,
-      ContentType: contentType
-    })
-  );
-  return { key, size: buffer.length };
-}
-async function getPresignedDownloadUrl(key, expiresInSec = 600) {
-  const { bucket } = requireR2Config();
-  return getSignedUrl(client(), new GetObjectCommand({ Bucket: bucket, Key: key }), {
-    expiresIn: expiresInSec
-  });
-}
-async function deleteObject(key) {
-  const { bucket } = requireR2Config();
-  await client().send(new DeleteObjectCommand({ Bucket: bucket, Key: key }));
-}
-
-// server/lib/verification.ts
+import { randomUUID as randomUUID2 } from "node:crypto";
 init_schema();
-
-// server/lib/uploadValidation.ts
-var EXT_BY_TYPE = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-  "image/webp": "webp",
-  "image/heic": "heic",
-  "image/heif": "heif",
-  "application/pdf": "pdf"
-};
-var MAX_UPLOAD_BYTES = 12 * 1024 * 1024;
-function assertR2Configured() {
-  if (!isR2Configured()) {
-    throw new LeaseError("File uploads aren't enabled yet (storage not configured).", 503);
-  }
-}
-function validateUpload(file) {
-  if (!file || !file.buffer?.length) throw new LeaseError("No file was uploaded.", 400);
-  if (file.size > MAX_UPLOAD_BYTES) throw new LeaseError("File too large (max 12 MB).", 400);
-  const ext = EXT_BY_TYPE[file.mimetype];
-  if (!ext) {
-    throw new LeaseError("Unsupported file type \u2014 upload a JPG, PNG, WEBP, HEIC, or PDF.", 400);
-  }
-  return ext;
-}
-
-// server/lib/verification.ts
 async function uploadLicense(token, file) {
   assertR2Configured();
   const lease = await resolvePortalLease(token);
@@ -5916,7 +7173,7 @@ async function uploadLicense(token, file) {
   if (["COMPLETED", "TERMINATED", "DEFAULTED"].includes(lease.status)) {
     throw new LeaseError("This lease is closed.", 409);
   }
-  const key = `bnp/licenses/${lease.id}/${randomUUID()}.${ext}`;
+  const key = `bnp/licenses/${lease.id}/${randomUUID2()}.${ext}`;
   await uploadBuffer(key, file.buffer, file.mimetype);
   const priorKey = lease.licenseR2Key;
   if (priorKey && priorKey !== key) {
@@ -5981,7 +7238,7 @@ async function uploadVehiclePhoto(token, file) {
   assertR2Configured();
   const lease = await resolvePortalLease(token);
   const ext = validateUpload(file);
-  const key = `bnp/vehicles/${lease.id}/${randomUUID()}.${ext}`;
+  const key = `bnp/vehicles/${lease.id}/${randomUUID2()}.${ext}`;
   await uploadBuffer(key, file.buffer, file.mimetype);
   const existing = await storage.getVehicleByLease(lease.id);
   const priorKey = existing?.photoR2Key;
@@ -6530,13 +7787,13 @@ async function respondToMessage(args) {
 }
 async function resolveEscalation(args) {
   const escalations = await storage.getEscalations();
-  const esc2 = escalations.find((e) => e.id === args.escalationId);
-  if (!esc2) throw new LeaseError("Escalation not found", 404);
+  const esc3 = escalations.find((e) => e.id === args.escalationId);
+  if (!esc3) throw new LeaseError("Escalation not found", 404);
   const target = args.status ?? "RESOLVED";
-  if (esc2.status === target) return { status: target, noop: true };
-  await storage.updateEscalation(esc2.id, {
+  if (esc3.status === target) return { status: target, noop: true };
+  await storage.updateEscalation(esc3.id, {
     status: target,
-    resolvedAt: target === "RESOLVED" ? /* @__PURE__ */ new Date() : esc2.resolvedAt ?? null,
+    resolvedAt: target === "RESOLVED" ? /* @__PURE__ */ new Date() : esc3.resolvedAt ?? null,
     resolvedBy: args.actor
   });
   return { status: target };
@@ -7108,6 +8365,8 @@ var upload = multer({
 });
 var checkoutLimiter = rateLimit({ windowMs: 10 * 60 * 1e3, max: 20 });
 var leaseCreateLimiter = rateLimit({ windowMs: 60 * 60 * 1e3, max: 10 });
+var declineLimiter = rateLimit({ windowMs: 60 * 60 * 1e3, max: 5 });
+var stayDocsLimiter = rateLimit({ windowMs: 10 * 60 * 1e3, max: 30 });
 function toUploadedFile(f) {
   if (!f) return void 0;
   return { buffer: f.buffer, mimetype: f.mimetype, size: f.size };
@@ -8584,6 +9843,251 @@ ${parts.join("\n")}
       next(err);
     }
   });
+  app.get("/api/stay/:token", async (req, res, next) => {
+    try {
+      res.json(await getStayView(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/stay/:token/agreement/preview", async (req, res, next) => {
+    try {
+      res.type("html").send(await previewStayAgreement(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/stay/:token/agreement", async (req, res, next) => {
+    try {
+      res.type("html").send(await getSignedStayAgreement(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/stay/:token/sign", stayDocsLimiter, async (req, res, next) => {
+    try {
+      const schema = z4.object({
+        signedName: z4.string().min(2).max(200),
+        affirmed: z4.boolean()
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      const ip = req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.socket.remoteAddress || "unknown";
+      const signed = await signStayAgreement({
+        token: req.params.token,
+        signedName: parsed.data.signedName,
+        affirmed: parsed.data.affirmed,
+        ip
+      });
+      posthog.capture({
+        distinctId: req.params.token,
+        event: "stay_agreement_signed",
+        properties: { signed_at: signed.signedAt.toISOString() }
+      });
+      res.json(signed);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post(
+    "/api/stay/:token/license",
+    stayDocsLimiter,
+    upload.single("file"),
+    async (req, res, next) => {
+      try {
+        res.json(await uploadStayLicense(req.params.token, toUploadedFile(req.file)));
+      } catch (err) {
+        if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+        next(err);
+      }
+    }
+  );
+  app.get("/api/stay/:token/extension-options", async (req, res, next) => {
+    try {
+      const stay = await resolveStay(req.params.token);
+      res.json(await extensionOptions(stay.booking.id));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/stay/:token/extension-intent", checkoutLimiter, async (req, res, next) => {
+    try {
+      const schema = z4.object({ newCheckOut: z4.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Pick a valid new checkout date." });
+      }
+      const stay = await resolveStay(req.params.token);
+      const started = await startExtension({
+        bookingId: stay.booking.id,
+        newCheckOut: parsed.data.newCheckOut
+      });
+      res.json({
+        clientSecret: started.clientSecret,
+        paymentIntentId: started.paymentIntentId,
+        quote: started.quote,
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY
+      });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/admin/stay-approvals", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await listPendingApprovals());
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.get("/api/admin/stays/:id/license-url", requireAdmin, async (req, res, next) => {
+    try {
+      res.json({ url: await getStayLicenseViewUrl(req.params.id) });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/admin/stays/:id/approve", requireAdmin, async (req, res, next) => {
+    try {
+      const schema = z4.object({
+        // Shape is validated again inside approveStay via the SHARED schema — a
+        // client-side check is not a check.
+        doorCode: z4.string().min(1, "A door code is required"),
+        nameMatches: z4.literal(true, {
+          errorMap: () => ({ message: "Confirm the name on the licence matches the guest." })
+        })
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      const result = await approveStay({
+        bookingId: req.params.id,
+        actor: adminActor(req),
+        doorCode: parsed.data.doorCode,
+        nameMatches: parsed.data.nameMatches
+      });
+      posthog.capture({
+        distinctId: result.reference,
+        event: "stay_approved",
+        properties: { booking_id: req.params.id, actor: adminActor(req) }
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/admin/stays/:id/request-fix", requireAdmin, async (req, res, next) => {
+    try {
+      const schema = z4.object({
+        reason: z4.string().min(5, "Tell the guest what to fix").max(1e3),
+        what: z4.enum(["LICENSE", "AGREEMENT", "BOTH"]).default("LICENSE")
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      res.json(
+        await requestStayFix({
+          bookingId: req.params.id,
+          actor: adminActor(req),
+          reason: parsed.data.reason,
+          what: parsed.data.what
+        })
+      );
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  app.post("/api/admin/stays/:id/decline-refund", requireAdmin, declineLimiter, async (req, res, next) => {
+    try {
+      const schema = z4.object({
+        reason: z4.string().min(5, "A reason is required").max(1e3),
+        confirm: z4.string().min(1, "Type the booking reference to confirm"),
+        expectedRefundAmount: z4.number().nonnegative().optional()
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      const result = await declineAndRefundBooking({
+        bookingId: req.params.id,
+        actor: adminActor(req),
+        reason: parsed.data.reason,
+        confirm: parsed.data.confirm,
+        kind: "GATE_DECLINE",
+        expectedRefundAmount: parsed.data.expectedRefundAmount
+      });
+      if (result.failed.length > 0) return res.status(502).json(result);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+  const accessInfoRoutes = (prefix, guard) => {
+    app.get(`${prefix}/properties/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        res.json({ info: await storage.getPropertyAccessInfo(req.params.id) ?? {} });
+      } catch (err) {
+        next(err);
+      }
+    });
+    app.put(`${prefix}/properties/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        const schema = z4.object({
+          actor: z4.string().min(1).optional(),
+          info: propertyAccessInfoSchema
+        });
+        const parsed = schema.safeParse(req.body);
+        if (!parsed.success) {
+          return res.status(400).json({ message: parsed.error.errors[0]?.message });
+        }
+        const actor = parsed.data.actor ?? adminActor(req);
+        res.json({
+          info: await storage.upsertPropertyAccessInfo(req.params.id, parsed.data.info, actor)
+        });
+      } catch (err) {
+        next(err);
+      }
+    });
+    app.get(`${prefix}/rooms/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        res.json({ info: await storage.getRoomAccessInfo(req.params.id) ?? {} });
+      } catch (err) {
+        next(err);
+      }
+    });
+    app.put(`${prefix}/rooms/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        const schema = z4.object({
+          actor: z4.string().min(1).optional(),
+          info: roomAccessInfoSchema
+        });
+        const parsed = schema.safeParse(req.body);
+        if (!parsed.success) {
+          return res.status(400).json({ message: parsed.error.errors[0]?.message });
+        }
+        const actor = parsed.data.actor ?? adminActor(req);
+        res.json({ info: await storage.upsertRoomAccessInfo(req.params.id, parsed.data.info, actor) });
+      } catch (err) {
+        next(err);
+      }
+    });
+  };
+  accessInfoRoutes("/api/admin", requireAdmin);
+  accessInfoRoutes("/api/uo", requireServiceToken);
   app.post("/api/admin/bookings/:id/cancel", requireAdmin, async (req, res, next) => {
     try {
       const refund = req.body?.refund === true;
@@ -8846,7 +10350,10 @@ async function handleStripeEvent(event) {
       const pi = event.data.object;
       const kind = pi.metadata?.payment_kind;
       const hasLease = pi.metadata?.lease_id && pi.metadata.lease_id !== "null";
-      if (kind === "BOOKING_DEPOSIT" && !hasLease) {
+      const isExtension = Boolean(pi.metadata?.extension_booking_id);
+      if (isExtension) {
+        await applyExtension(pi);
+      } else if (kind === "BOOKING_DEPOSIT" && !hasLease) {
         await materializeShortStayBooking(pi);
       } else if (kind === "BOOKING_DEPOSIT" && hasLease) {
         await finalizeDepositPayment(pi.id);

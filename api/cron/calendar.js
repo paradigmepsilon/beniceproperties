@@ -341,8 +341,11 @@ var init_schema = __esm({
       "GATE_INCOMPLETE_AT_CHECKIN",
       "REFUND_FAILED",
       // HIGH: a decline cancelled the booking but Stripe refused the refund
-      "ACCESS_INFO_MISSING"
+      "ACCESS_INFO_MISSING",
       // HIGH: a guest arrives tomorrow and the property has no door code/wifi
+      // HIGH: an extension was PAID but the nights were taken before it applied. The
+      // charge STANDS and is never auto-refunded — a human resolves it.
+      "EXTENSION_CONFLICT"
     ];
     ESCALATION_STATUSES = ["OPEN", "ACKNOWLEDGED", "RESOLVED"];
     ESCALATION_SEVERITIES = ["LOW", "MEDIUM", "HIGH"];

@@ -9,7 +9,7 @@
 // the canonical breakdown (see server/lib/booking.ts).
 // =============================================================================
 
-import express, { type Express } from "express";
+import express, { type Express, type RequestHandler } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { differenceInCalendarDays, parseISO } from "date-fns";
@@ -45,6 +45,19 @@ import { buildLeaseQuote, LeaseError } from "./lib/lease";
 import { buildStrAvailability, buildRoomAvailability, isRoomBookableStatus, roomAvailableForDates } from "./lib/availability";
 import { todayIso } from "@shared/dates";
 import { postPaymentStatusFor } from "@shared/bookingGate";
+import {
+  getStayView,
+  previewStayAgreement,
+  getSignedStayAgreement,
+  signStayAgreement,
+  uploadStayLicense,
+  getStayLicenseViewUrl,
+  resolveStay,
+} from "./lib/stayPortal";
+import { listPendingApprovals, approveStay, requestStayFix } from "./lib/stayApproval";
+import { declineAndRefundBooking } from "./lib/bookingGateDecline";
+import { extensionOptions, startExtension, applyExtension } from "./lib/stayExtension";
+import { propertyAccessInfoSchema, roomAccessInfoSchema } from "@shared/schema";
 import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./lib/nextOpening";
 import {
   buildStrChargeMetadata,
@@ -134,6 +147,10 @@ const upload = multer({
 //   leases:   each draft holds a room until it is signed/paid or an admin acts.
 const checkoutLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 20 });
 const leaseCreateLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 10 });
+/** The decline route refunds money. Tight ceiling so a loop cannot drain an account. */
+const declineLimiter = rateLimit({ windowMs: 60 * 60 * 1000, max: 5 });
+/** Guest document submission — generous, but not unbounded. */
+const stayDocsLimiter = rateLimit({ windowMs: 10 * 60 * 1000, max: 30 });
 
 /** Normalize a multer file into the verification service's UploadedFile. */
 function toUploadedFile(f: Express.Multer.File | undefined): UploadedFile | undefined {
@@ -2006,6 +2023,310 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+
+  // ===========================================================================
+  // SHORT-STAY APPROVAL GATE
+  //
+  // Guest routes are TOKEN-authenticated — the gate token is the credential,
+  // exactly like the lease portal. They must never require an admin session.
+  // Admin routes require a session; the UO twins require the service token.
+  // ===========================================================================
+
+  /** The guest's own page: what is outstanding, and (once approved) how to get in. */
+  app.get("/api/stay/:token", async (req, res, next) => {
+    try {
+      res.json(await getStayView(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** The agreement for review — renders nothing to the database. */
+  app.get("/api/stay/:token/agreement/preview", async (req, res, next) => {
+    try {
+      res.type("html").send(await previewStayAgreement(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** The frozen signed artifact. 409 before signature. */
+  app.get("/api/stay/:token/agreement", async (req, res, next) => {
+    try {
+      res.type("html").send(await getSignedStayAgreement(req.params.token));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** Capture the typed e-signature. Idempotent — a double-tap returns the first. */
+  app.post("/api/stay/:token/sign", stayDocsLimiter, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        signedName: z.string().min(2).max(200),
+        affirmed: z.boolean(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      // Same IP derivation the lease signature uses — it is evidentiary.
+      const ip =
+        (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ||
+        req.socket.remoteAddress ||
+        "unknown";
+      const signed = await signStayAgreement({
+        token: req.params.token,
+        signedName: parsed.data.signedName,
+        affirmed: parsed.data.affirmed,
+        ip,
+      });
+      posthog.capture({
+        distinctId: req.params.token,
+        event: "stay_agreement_signed",
+        properties: { signed_at: signed.signedAt.toISOString() },
+      });
+      res.json(signed);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** Driver's licence upload. Memory-only multer; the image goes straight to R2. */
+  app.post(
+    "/api/stay/:token/license",
+    stayDocsLimiter,
+    upload.single("file"),
+    async (req, res, next) => {
+      try {
+        res.json(await uploadStayLicense(req.params.token, toUploadedFile(req.file)));
+      } catch (err) {
+        if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+        next(err);
+      }
+    },
+  );
+
+  /** Which extensions are genuinely available, priced. */
+  app.get("/api/stay/:token/extension-options", async (req, res, next) => {
+    try {
+      const stay = await resolveStay(req.params.token);
+      res.json(await extensionOptions(stay.booking.id));
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /**
+   * Start an extension. Returns a client secret; the DATES DO NOT MOVE until the
+   * webhook confirms payment — same payment-first rule as a new booking.
+   */
+  app.post("/api/stay/:token/extension-intent", checkoutLimiter, async (req, res, next) => {
+    try {
+      const schema = z.object({ newCheckOut: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: "Pick a valid new checkout date." });
+      }
+      const stay = await resolveStay(req.params.token);
+      const started = await startExtension({
+        bookingId: stay.booking.id,
+        newCheckOut: parsed.data.newCheckOut,
+      });
+      res.json({
+        clientSecret: started.clientSecret,
+        paymentIntentId: started.paymentIntentId,
+        quote: started.quote,
+        publishableKey: process.env.VITE_STRIPE_PUBLIC_KEY,
+      });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // --- Admin -----------------------------------------------------------------
+
+  /** The approval queue: only stays where the GUEST is finished and a human is not. */
+  app.get("/api/admin/stay-approvals", requireAdmin, async (_req, res, next) => {
+    try {
+      res.json(await listPendingApprovals());
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** Short-lived presigned URL for the licence image. Never a public URL. */
+  app.get("/api/admin/stays/:id/license-url", requireAdmin, async (req, res, next) => {
+    try {
+      res.json({ url: await getStayLicenseViewUrl(req.params.id) });
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** Approve: door code required, name match affirmed, welcome letter sent. */
+  app.post("/api/admin/stays/:id/approve", requireAdmin, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        // Shape is validated again inside approveStay via the SHARED schema — a
+        // client-side check is not a check.
+        doorCode: z.string().min(1, "A door code is required"),
+        nameMatches: z.literal(true, {
+          errorMap: () => ({ message: "Confirm the name on the licence matches the guest." }),
+        }),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      const result = await approveStay({
+        bookingId: req.params.id,
+        actor: adminActor(req),
+        doorCode: parsed.data.doorCode,
+        nameMatches: parsed.data.nameMatches,
+      });
+      // NOTE: no door code in the event properties. Ever.
+      posthog.capture({
+        distinctId: result.reference,
+        event: "stay_approved",
+        properties: { booking_id: req.params.id, actor: adminActor(req) },
+      });
+      res.json(result);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /** Request a fix: NON-terminal. Dates stay held, no money moves, clock restarts. */
+  app.post("/api/admin/stays/:id/request-fix", requireAdmin, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        reason: z.string().min(5, "Tell the guest what to fix").max(1000),
+        what: z.enum(["LICENSE", "AGREEMENT", "BOTH"]).default("LICENSE"),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      res.json(
+        await requestStayFix({
+          bookingId: req.params.id,
+          actor: adminActor(req),
+          reason: parsed.data.reason,
+          what: parsed.data.what,
+        }),
+      );
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  /**
+   * Decline & refund — TERMINAL, and the only endpoint that moves money outward.
+   *
+   * `confirm` must equal the booking reference verbatim and `expectedRefundAmount`
+   * must match the server-computed total, so neither a mis-click nor a stale tab
+   * can refund. Rate-limited hard.
+   */
+  app.post("/api/admin/stays/:id/decline-refund", requireAdmin, declineLimiter, async (req, res, next) => {
+    try {
+      const schema = z.object({
+        reason: z.string().min(5, "A reason is required").max(1000),
+        confirm: z.string().min(1, "Type the booking reference to confirm"),
+        expectedRefundAmount: z.number().nonnegative().optional(),
+      });
+      const parsed = schema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      }
+      const result = await declineAndRefundBooking({
+        bookingId: req.params.id,
+        actor: adminActor(req),
+        reason: parsed.data.reason,
+        confirm: parsed.data.confirm,
+        kind: "GATE_DECLINE",
+        expectedRefundAmount: parsed.data.expectedRefundAmount,
+      });
+      // A partial refund failure is NOT a success. 502 so the operator sees it.
+      if (result.failed.length > 0) return res.status(502).json(result);
+      res.json(result);
+    } catch (err) {
+      if (err instanceof LeaseError) return res.status(err.status).json({ message: err.message });
+      next(err);
+    }
+  });
+
+  // --- Access info (property/room arrival details) ---------------------------
+  // One handler shape, mounted for both the admin session and the UO service
+  // token, mirroring how the pricing-settings routes are shared.
+
+  const accessInfoRoutes = (prefix: string, guard: RequestHandler) => {
+    app.get(`${prefix}/properties/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        res.json({ info: (await storage.getPropertyAccessInfo(req.params.id)) ?? {} });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    app.put(`${prefix}/properties/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        const schema = z.object({
+          actor: z.string().min(1).optional(),
+          info: propertyAccessInfoSchema,
+        });
+        const parsed = schema.safeParse(req.body);
+        if (!parsed.success) {
+          return res.status(400).json({ message: parsed.error.errors[0]?.message });
+        }
+        const actor = parsed.data.actor ?? adminActor(req);
+        res.json({
+          info: await storage.upsertPropertyAccessInfo(req.params.id, parsed.data.info, actor),
+        });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    app.get(`${prefix}/rooms/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        res.json({ info: (await storage.getRoomAccessInfo(req.params.id)) ?? {} });
+      } catch (err) {
+        next(err);
+      }
+    });
+
+    app.put(`${prefix}/rooms/:id/access-info`, guard, async (req, res, next) => {
+      try {
+        const schema = z.object({
+          actor: z.string().min(1).optional(),
+          info: roomAccessInfoSchema,
+        });
+        const parsed = schema.safeParse(req.body);
+        if (!parsed.success) {
+          return res.status(400).json({ message: parsed.error.errors[0]?.message });
+        }
+        const actor = parsed.data.actor ?? adminActor(req);
+        res.json({ info: await storage.upsertRoomAccessInfo(req.params.id, parsed.data.info, actor) });
+      } catch (err) {
+        next(err);
+      }
+    });
+  };
+
+  accessInfoRoutes("/api/admin", requireAdmin);
+  accessInfoRoutes("/api/uo", requireServiceToken);
+
   // Cancel a booking (admin). Sets status → CANCELLED, which both availability
   // paths exclude (ne(status,"CANCELLED")), so the dates are released. Frees a
   // co-living room only when nothing else covers it today. Idempotent.
@@ -2333,7 +2654,13 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
       const pi = event.data.object as import("stripe").Stripe.PaymentIntent;
       const kind = pi.metadata?.payment_kind;
       const hasLease = pi.metadata?.lease_id && pi.metadata.lease_id !== "null";
-      if (kind === "BOOKING_DEPOSIT" && !hasLease) {
+      const isExtension = Boolean(pi.metadata?.extension_booking_id);
+      if (isExtension) {
+        // MUST be checked BEFORE the short-stay branch: an extension also carries
+        // payment_kind BOOKING_DEPOSIT, so falling through would materialize a
+        // duplicate booking instead of moving the existing one's check_out.
+        await applyExtension(pi);
+      } else if (kind === "BOOKING_DEPOSIT" && !hasLease) {
         // Short-stay one-time payment (STR whole-property, or a short 7–28-night
         // co-living reservation), payment-first: NO booking row existed before
         // now. MATERIALIZE the booking from the PI metadata. Idempotent across
