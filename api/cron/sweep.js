@@ -2617,6 +2617,36 @@ function buildLeaseChargeMetadata(args) {
     rate_cadence: str(args.rateCadence ?? null)
   };
 }
+function buildRoomBookingChargeMetadata(args) {
+  return {
+    entity: str(args.entity),
+    product_type: "COLIVING_ROOM",
+    property_id: str(args.property.id),
+    property_name: str(args.property.name),
+    room_id: str(args.room.id),
+    room_name: str(args.room.name),
+    room_number: str(args.room.roomNumber),
+    lease_id: NULL,
+    payment_kind: args.paymentKind,
+    schedule_seq: NULL,
+    rate_cadence: str(args.rateCadence ?? null)
+  };
+}
+function buildStrChargeMetadata(args) {
+  return {
+    entity: str(args.entity),
+    product_type: "STR_WHOLE",
+    property_id: str(args.property.id),
+    property_name: str(args.property.name),
+    room_id: NULL,
+    room_name: NULL,
+    room_number: NULL,
+    lease_id: NULL,
+    payment_kind: args.paymentKind,
+    schedule_seq: NULL,
+    rate_cadence: str(args.rateCadence ?? null)
+  };
+}
 var REQUIRED_METADATA_KEYS = [
   "entity",
   "product_type",
@@ -2647,6 +2677,27 @@ var REQUIRED_REFUND_METADATA_KEYS = [
   "booking_reference",
   "actor"
 ];
+function buildRefundMetadata(args) {
+  return {
+    ...args.base,
+    refund_kind: args.kind,
+    refunded_payment_intent: str(args.paymentIntentId),
+    refunded_payment_id: str(args.paymentId),
+    booking_reference: str(args.reference),
+    actor: str(args.actor),
+    refund_reason: str(args.reason)
+  };
+}
+function assertCompleteRefundMetadata(meta) {
+  const missing = REQUIRED_REFUND_METADATA_KEYS.filter(
+    (k) => meta[k] === void 0 || meta[k] === ""
+  );
+  if (missing.length > 0) {
+    throw new Error(
+      `Stripe refund metadata contract incomplete \u2014 missing/empty: ${missing.join(", ")}`
+    );
+  }
+}
 
 // server/lib/stripe.ts
 var secret = process.env.STRIPE_SECRET_KEY;
@@ -2681,6 +2732,16 @@ async function chargeSavedCard(opts) {
     { idempotencyKey: opts.idempotencyKey }
   );
 }
+async function refundPaymentIntent(opts) {
+  return requireStripe().refunds.create(
+    {
+      payment_intent: opts.paymentIntentId,
+      ...opts.metadata ? { metadata: opts.metadata } : {},
+      ...opts.reason ? { reason: opts.reason } : {}
+    },
+    { idempotencyKey: opts.idempotencyKey }
+  );
+}
 
 // server/lib/pricingSettings.ts
 init_storage();
@@ -2692,6 +2753,18 @@ init_leaseSchedule();
 init_rateSelection();
 init_schema();
 init_storage();
+
+// server/lib/errorResponse.ts
+var LeaseError = class extends Error {
+  status;
+  constructor(message, status = 400) {
+    super(message);
+    this.name = "LeaseError";
+    this.status = status;
+  }
+};
+
+// server/lib/lease.ts
 init_ranges();
 
 // server/lib/pricingSettings.ts
@@ -2957,6 +3030,15 @@ function lookupUrl() {
 }
 function portalUrl(lease) {
   return lease.portalToken ? `${publicBaseUrl()}/portal/${lease.portalToken}` : lookupUrl();
+}
+function houseRulesUrl() {
+  return `${publicBaseUrl()}/house-rules`;
+}
+function stayUrl(gate) {
+  return gate?.gateToken ? `${publicBaseUrl()}/stay/${gate.gateToken}` : lookupUrl();
+}
+function stayExtendUrl(gate) {
+  return gate?.gateToken ? `${publicBaseUrl()}/stay/${gate.gateToken}/extend` : lookupUrl();
 }
 
 // server/lib/dunning.ts
@@ -3240,6 +3322,10 @@ init_schema();
 
 // server/lib/formatShared.ts
 var fmtMoney = (v) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(v);
+function roomDisplayName(room) {
+  if (!room) return null;
+  return room.roomNumber ? `Room ${room.roomNumber} \u2014 ${room.name}` : room.name;
+}
 
 // server/lib/lifecycle.ts
 init_dates();
@@ -3963,6 +4049,870 @@ If you believe this is a mistake \u2014 or you already paid \u2014 reply to this
   });
 }
 
+// server/lib/stayReminders.ts
+init_storage();
+init_dates();
+init_schema();
+
+// server/lib/gateToken.ts
+import { customAlphabet } from "nanoid";
+var ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+var GATE_TOKEN_LENGTH = 24;
+var gateTokenGen = customAlphabet(ALPHABET, GATE_TOKEN_LENGTH);
+var GATE_DOCS_DEADLINE_HOURS = 72;
+var GATE_DOCS_DEADLINE_MS = GATE_DOCS_DEADLINE_HOURS * 60 * 60 * 1e3;
+
+// server/lib/bookingGateDecline.ts
+init_storage();
+
+// server/lib/bookingConflicts.ts
+init_storage();
+
+// server/lib/booking.ts
+import { customAlphabet as customAlphabet2 } from "nanoid";
+import { addDays as addDays2, differenceInCalendarDays, format, parseISO as parseISO2 } from "date-fns";
+init_rateSelection();
+init_storage();
+init_schema();
+init_ranges();
+var nanoref = customAlphabet2("23456789ABCDEFGHJKLMNPQRSTUVWXYZ", 8);
+var BookingError = class extends Error {
+  status;
+  constructor(message, status = 400) {
+    super(message);
+    this.status = status;
+  }
+};
+
+// server/lib/bookingConflicts.ts
+init_dates();
+
+// shared/bookingGate.ts
+init_schema();
+import { differenceInCalendarDays as differenceInCalendarDays2, parseISO as parseISO3 } from "date-fns";
+function stayNights(checkIn, checkOut) {
+  const n = differenceInCalendarDays2(parseISO3(checkOut), parseISO3(checkIn));
+  return Number.isFinite(n) ? Math.max(0, n) : 0;
+}
+function isGatedStay(stay) {
+  if (stay.model !== "COLIVING") return false;
+  if (!stay.checkOut) return false;
+  return isDirectCoLivingStay(stayNights(stay.checkIn, stay.checkOut));
+}
+
+// server/lib/bookingConflicts.ts
+async function resolveConflictEscalations(bookingId, actor) {
+  const open = await storage.getEscalations({ status: "OPEN", bookingId });
+  const mine = open.filter((e) => e.kind === "BOOKING_CONFLICT");
+  for (const esc of mine) {
+    await storage.updateEscalation(esc.id, {
+      status: "RESOLVED",
+      resolvedAt: /* @__PURE__ */ new Date(),
+      resolvedBy: actor
+    });
+  }
+  return mine.length;
+}
+async function cancelBooking(args) {
+  const booking = await storage.getBooking(args.bookingId);
+  if (!booking) throw new BookingError("Booking not found", 404);
+  const alreadyCancelled = booking.status === "CANCELLED";
+  if (alreadyCancelled && args.refund !== true) {
+    return {
+      reference: booking.reference,
+      alreadyCancelled: true,
+      roomFreed: false,
+      refunded: false,
+      refundIds: [],
+      alreadyRefunded: []
+    };
+  }
+  if (!alreadyCancelled) await storage.updateBooking(booking.id, { status: "CANCELLED" });
+  let roomFreed = false;
+  if (booking.roomId && !alreadyCancelled) {
+    const occupiedToday = await storage.getOccupiedRoomIdsOn(todayIso());
+    if (!occupiedToday.has(booking.roomId)) {
+      const room = await storage.getRoom(booking.roomId);
+      if (room && room.status === "OCCUPIED") {
+        await storage.updateRoom(booking.roomId, { status: "AVAILABLE" });
+        roomFreed = true;
+      }
+    } else {
+      log(
+        `booking ${booking.reference} cancelled but room ${booking.roomId} is still covered today \u2014 left OCCUPIED`,
+        "admin"
+      );
+    }
+  }
+  const refundIds = [];
+  const alreadyRefunded = [];
+  if (args.refund === true) {
+    const payments2 = await storage.getPaymentsByBooking(booking.id);
+    for (const p of payments2) {
+      if (p.method !== "STRIPE" || p.status !== "PAID" || !p.stripeRef) continue;
+      try {
+        const refund = await refundPaymentIntent({
+          paymentIntentId: p.stripeRef,
+          // Stable key: a retry WITHIN 24 HOURS returns the same refund instead of
+          // a second one. Stripe expires idempotency keys after that, so the key
+          // is only the first line of defence — see the catch below.
+          idempotencyKey: `refund:${p.stripeRef}`
+        });
+        refundIds.push(refund.id);
+        log(
+          `booking ${booking.reference}: refunded payment ${p.id} (PI ${p.stripeRef}) \u2192 ${refund.id} by ${args.actor}`,
+          "admin"
+        );
+      } catch (err) {
+        if (err.code === "charge_already_refunded") {
+          alreadyRefunded.push(p.stripeRef);
+          log(
+            `booking ${booking.reference}: PI ${p.stripeRef} was already refunded \u2014 treating as done`,
+            "admin"
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
+    if (refundIds.length === 0 && alreadyRefunded.length === 0) {
+      log(
+        `booking ${booking.reference}: refund requested but no PAID Stripe payment to refund (manual payments settle off-band)`,
+        "admin"
+      );
+    }
+  }
+  await resolveConflictEscalations(booking.id, args.actor);
+  log(`booking ${booking.reference} (${booking.id}) CANCELLED by ${args.actor}`, "admin");
+  return {
+    reference: booking.reference,
+    alreadyCancelled,
+    roomFreed,
+    refunded: refundIds.length > 0 || alreadyRefunded.length > 0,
+    refundIds,
+    alreadyRefunded
+  };
+}
+
+// server/lib/stayLifecycle.ts
+init_storage();
+init_schema();
+
+// server/lib/stayTemplates.ts
+function listOf(items) {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+var roomClause = (room) => room ? ` (${room})` : "";
+function strPreArrival(v) {
+  const shell = (access) => `Hi ${v.name}, you arrive tomorrow at ${v.property}. Here is everything you need.
+
+GETTING IN
+${access}
+
+HOUSE RULES
+${v.houseRulesUrl}
+
+Your booking: ${v.stayUrl}
+Reference ${v.reference}.
+
+See you tomorrow.`;
+  return {
+    subject: `Tomorrow: everything you need to check in at ${v.property}`,
+    body: shell(v.accessText),
+    smsBody: `BNP: check-in is tomorrow. Your code, wifi and directions are in your email.`,
+    logBody: shell(v.accessTextRedacted)
+  };
+}
+function stayGhostNudge(v) {
+  const what = listOf(v.outstanding);
+  if (v.attempt === 1) {
+    return {
+      subject: `Don't lose your dates \u2014 ${v.outstanding.length} thing${v.outstanding.length === 1 ? "" : "s"} left (${v.reference})`,
+      body: `Hi ${v.name}, your booking at ${v.property} is paid and your dates are held, but we still need ${what} before we can confirm it.
+
+${v.stayUrl}
+
+If we do not hear from you by ${v.deadlineDate} we will cancel the booking and refund you in full.
+
+Reference ${v.reference}.`,
+      smsBody: `BNP: ${v.reference} still needs your ID and agreement. Finish it: ${v.smsUrl}`
+    };
+  }
+  return {
+    subject: `Last reminder \u2014 your booking is cancelled ${v.deadlineDate} (${v.reference})`,
+    body: `Hi ${v.name}, this is the last reminder about your booking at ${v.property}.
+
+We still need ${what}. If it is not submitted by ${v.deadlineDate} the booking will be cancelled and your payment refunded in full, and the dates will go back on sale.
+
+${v.stayUrl}
+
+Reference ${v.reference}.`,
+    smsBody: `BNP: last call on ${v.reference}. Send your ID and agreement or we cancel: ${v.smsUrl}`
+  };
+}
+function stayDeclinedRefunded(v) {
+  return {
+    subject: `Your booking ${v.reference} has been cancelled and refunded`,
+    body: `Hi ${v.name}, your booking at ${v.property} (${v.reference}) has been cancelled and ${v.refundAmount} has been refunded in full to the card you paid with. Refunds usually land within 5 to 10 business days.
+
+` + (v.auto ? `We did not receive the ID and signed agreement we needed to confirm the stay.
+
+` : v.reason ? `Reason: ${v.reason}
+
+` : "") + `If you would still like to stay with us, you are welcome to book again: ${v.rebookUrl}`,
+    smsBody: `BNP: booking ${v.reference} is cancelled and ${v.refundAmount} refunded in full. Details in your email.`
+  };
+}
+function adminStayAutoDeclined(v) {
+  const text2 = `Auto-declined and refunded: ${v.guest} - ${v.property}${roomClause(v.room)} - ${v.checkIn} to ${v.checkOut} - ${v.reference} - ${v.refundAmount} refunded. The guest never completed their ID and agreement. The dates are back on sale.`;
+  return {
+    subject: `Auto-declined + refunded - ${v.property}${roomClause(v.room)} ${v.checkIn}`,
+    body: text2,
+    // Carries no contact details, but passed explicitly so a later edit that adds
+    // an email cannot silently start leaking it to a third party.
+    telegramText: text2
+  };
+}
+function stayCheckout48h(v) {
+  const by = v.checkOutBy ? ` by ${v.checkOutBy}` : "";
+  return {
+    subject: v.extendAvailable ? `Checkout is in 2 days \u2014 want to stay longer?` : `Checkout is in 2 days (${v.checkOut})`,
+    body: `Hi ${v.name}, a heads-up that your stay at ${v.property}${roomClause(v.room)} ends on ${v.checkOut}${by}.
+
+` + (v.extendAvailable ? `WANT MORE TIME? Your room is free for up to ${v.maxExtraNights} more night${v.maxExtraNights === 1 ? "" : "s"}. You can extend and pay in a couple of taps \u2014 same room, same door code, nothing to re-sign:
+${v.extendUrl}
+
+` : `Your room is booked straight after you, so we cannot extend this stay \u2014 but reply and we will happily look for another room.
+
+`) + `Your booking: ${v.stayUrl}
+Reference ${v.reference}.`,
+    smsBody: v.extendAvailable ? `BNP: checkout is in 2 days (${v.checkOut}). Need more time? Extend: ${v.smsExtendUrl}` : `BNP: checkout is in 2 days (${v.checkOut}). Reply if you need more time.`
+  };
+}
+function stayCheckout24h(v) {
+  const by = v.checkOutBy ?? "the stated checkout time";
+  return {
+    subject: `Checkout is tomorrow \u2014 ${v.checkOut}`,
+    body: `Hi ${v.name}, your stay at ${v.property}${roomClause(v.room)} ends tomorrow, ${v.checkOut}. Checkout is ${by}.
+
+Before you go: take everything with you, leave the room as you found it, and close the door behind you. The checkout notes are in the house rules: ${v.houseRulesUrl}
+
+` + (v.extendAvailable ? `Still need more time? You can extend right up to checkout: ${v.extendUrl}
+
+` : "") + `Thanks for staying with us. Reference ${v.reference}.`,
+    smsBody: v.extendAvailable ? `BNP: checkout is tomorrow (${v.checkOut}). Need more time? Extend: ${v.smsExtendUrl}` : `BNP: checkout is tomorrow (${v.checkOut}), ${by}. Thanks for staying with us.`
+  };
+}
+
+// server/lib/accessInfo.ts
+init_storage();
+var REQUIRED_WELCOME_FIELDS = ["doorCode", "wifiSsid", "directions"];
+var nonEmpty = (v) => {
+  const t = typeof v === "string" ? v.trim() : "";
+  return t.length > 0 ? t : null;
+};
+async function resolveStayAccessInfo(args) {
+  const [propertyInfo, roomInfo] = await Promise.all([
+    storage.getPropertyAccessInfo(args.property.id),
+    args.room ? storage.getRoomAccessInfo(args.room.id) : Promise.resolve(void 0)
+  ]);
+  return {
+    doorCode: nonEmpty(args.gate?.doorCode),
+    wifiSsid: nonEmpty(propertyInfo?.wifiSsid),
+    wifiPassword: nonEmpty(propertyInfo?.wifiPassword),
+    buildingEntry: nonEmpty(propertyInfo?.buildingEntry),
+    directions: nonEmpty(propertyInfo?.directions),
+    parking: nonEmpty(propertyInfo?.parking),
+    roomFinding: nonEmpty(roomInfo?.findingNotes),
+    checkInFrom: nonEmpty(propertyInfo?.checkInFrom),
+    checkOutBy: nonEmpty(propertyInfo?.checkOutBy),
+    notes: nonEmpty(propertyInfo?.notes)
+  };
+}
+function missingAccessFields(info, opts = {}) {
+  const requireDoorCode = opts.requireDoorCode !== false;
+  return REQUIRED_WELCOME_FIELDS.filter((field) => {
+    if (field === "doorCode" && !requireDoorCode) {
+      return !info.doorCode && !info.buildingEntry;
+    }
+    return !info[field];
+  });
+}
+function renderAccessInfoText(info) {
+  const lines = [];
+  if (info.doorCode) lines.push(`Door code: ${info.doorCode}`);
+  if (info.buildingEntry) lines.push(`Building/gate entry: ${info.buildingEntry}`);
+  if (info.wifiSsid) {
+    lines.push(
+      info.wifiPassword ? `Wi-Fi: ${info.wifiSsid} \u2014 password ${info.wifiPassword}` : `Wi-Fi: ${info.wifiSsid}`
+    );
+  }
+  if (info.roomFinding) lines.push(`Finding your room: ${info.roomFinding}`);
+  if (info.directions) lines.push(`Getting here: ${info.directions}`);
+  if (info.parking) lines.push(`Parking: ${info.parking}`);
+  if (info.checkInFrom) lines.push(`Check-in from: ${info.checkInFrom}`);
+  if (info.checkOutBy) lines.push(`Checkout by: ${info.checkOutBy}`);
+  if (info.notes) lines.push(info.notes);
+  return lines.join("\n");
+}
+function renderAccessInfoRedacted(info) {
+  return renderAccessInfoText({
+    ...info,
+    doorCode: info.doorCode ? "[redacted]" : null,
+    buildingEntry: info.buildingEntry ? "[redacted]" : null,
+    wifiPassword: info.wifiPassword ? "[redacted]" : null
+  });
+}
+
+// server/lib/stayLifecycle.ts
+async function guestSendsEnabled() {
+  const setting = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
+  return setting?.value !== "false";
+}
+function outstandingItems(gate) {
+  const items = [];
+  if (!gate?.agreementSignedAt) items.push("your signed rental agreement");
+  if (!gate || !["PENDING_REVIEW", "APPROVED"].includes(gate.verificationStatus)) {
+    items.push("a photo of your driver's licence");
+  }
+  return items;
+}
+function guestDocsSubmitted(gate) {
+  return outstandingItems(gate).length === 0;
+}
+async function sendGuest(ctx, kind, tpl, scheduleSeq = null) {
+  if (await storage.hasLifecycleEvent({ bookingId: ctx.booking.id }, kind, scheduleSeq)) {
+    return false;
+  }
+  const enabled = await guestSendsEnabled();
+  if (!enabled) {
+    await storage.recordLifecycleEvent({
+      bookingId: ctx.booking.id,
+      eventType: kind,
+      scheduleSeq,
+      status: "SKIPPED",
+      emailSent: false,
+      smsSent: false
+    });
+    return false;
+  }
+  const sent = await notifyGuest({
+    email: ctx.guest.email,
+    phone: ctx.guest.phone,
+    subject: tpl.subject,
+    body: tpl.body,
+    smsBody: tpl.smsBody,
+    logBody: tpl.logBody,
+    context: { bookingId: ctx.booking.id, guestId: ctx.guest.id, kind }
+  });
+  await storage.recordLifecycleEvent({
+    bookingId: ctx.booking.id,
+    eventType: kind,
+    scheduleSeq,
+    status: sent.email.sent ? "SENT" : "SKIPPED",
+    emailSent: sent.email.sent,
+    smsSent: sent.sms.sent
+  });
+  return sent.email.sent;
+}
+async function sendAdmin(ctx, kind, tpl, scheduleSeq = null) {
+  if (await storage.hasLifecycleEvent({ bookingId: ctx.booking.id }, kind, scheduleSeq)) return;
+  await notifyAdmin({
+    subject: tpl.subject,
+    body: tpl.body,
+    telegramText: tpl.telegramText,
+    context: { bookingId: ctx.booking.id, guestId: ctx.guest.id, kind }
+  });
+  await storage.recordLifecycleEvent({
+    bookingId: ctx.booking.id,
+    eventType: kind,
+    scheduleSeq,
+    status: "SENT",
+    emailSent: true,
+    smsSent: false
+  });
+}
+async function onStayDeclined(ctx, args) {
+  await sendGuest(
+    ctx,
+    "STAY_DECLINED_REFUNDED",
+    stayDeclinedRefunded({
+      name: ctx.guest.name,
+      property: ctx.property.name,
+      reference: ctx.booking.reference,
+      reason: args.reason,
+      refundAmount: fmtMoney(args.refundAmount),
+      auto: args.auto,
+      rebookUrl: `${publicBaseUrl()}/property/${ctx.booking.propertyId}`
+    })
+  );
+  if (args.auto) {
+    await sendAdmin(
+      ctx,
+      "STAY_ADMIN_AUTO_DECLINED",
+      adminStayAutoDeclined({
+        property: ctx.property.name,
+        room: roomDisplayName(ctx.room),
+        guest: ctx.guest.name,
+        checkIn: ctx.booking.checkIn,
+        checkOut: ctx.booking.checkOut ?? "",
+        reference: ctx.booking.reference,
+        refundAmount: fmtMoney(args.refundAmount)
+      })
+    );
+  }
+  log(
+    `stay ${ctx.booking.reference}: declined + refunded (${args.auto ? "auto" : "admin"})`,
+    "lifecycle"
+  );
+}
+async function onStrPreArrival(ctx) {
+  const info = await resolveStayAccessInfo({
+    gate: ctx.gate,
+    property: ctx.property,
+    room: ctx.room
+  });
+  return sendGuest(
+    ctx,
+    "STR_PRE_ARRIVAL",
+    strPreArrival({
+      name: ctx.guest.name,
+      property: ctx.property.name,
+      checkIn: ctx.booking.checkIn,
+      reference: ctx.booking.reference,
+      accessText: renderAccessInfoText(info),
+      accessTextRedacted: renderAccessInfoRedacted(info),
+      houseRulesUrl: houseRulesUrl(),
+      stayUrl: stayUrl(ctx.gate)
+    })
+  );
+}
+async function onStayCheckoutReminder(ctx, args) {
+  const extendUrl = stayExtendUrl(ctx.gate);
+  const smsExtendUrl = await smsLink(extendUrl);
+  const common = {
+    name: ctx.guest.name,
+    property: ctx.property.name,
+    room: roomDisplayName(ctx.room),
+    checkOut: ctx.booking.checkOut ?? "",
+    checkOutBy: args.checkOutBy,
+    reference: ctx.booking.reference,
+    extendAvailable: args.extendAvailable,
+    extendUrl,
+    smsExtendUrl
+  };
+  const tpl = args.kind === "STAY_CHECKOUT_48H" ? stayCheckout48h({ ...common, maxExtraNights: args.maxExtraNights, stayUrl: stayUrl(ctx.gate) }) : stayCheckout24h({ ...common, houseRulesUrl: houseRulesUrl() });
+  return sendGuest(ctx, args.kind, tpl, ctx.gate?.extensionCount ?? 0);
+}
+
+// server/lib/bookingGateDecline.ts
+var CHARGE_ALREADY_REFUNDED = "charge_already_refunded";
+var AMOUNT_TOLERANCE = 5e-3;
+function refundableTotal(payments2) {
+  return payments2.filter((p) => p.method === "STRIPE" && p.status === "PAID" && p.stripeRef).reduce((sum, p) => sum + parseFloat(p.amount) + parseFloat(p.surcharge ?? "0"), 0);
+}
+async function declineAndRefundBooking(args) {
+  const booking = await storage.getBooking(args.bookingId);
+  if (!booking) throw new LeaseError("Booking not found", 404);
+  if (args.confirm !== booking.reference) {
+    throw new LeaseError(
+      "Confirmation did not match the booking reference \u2014 nothing was changed.",
+      400
+    );
+  }
+  if (!args.reason || args.reason.trim().length < 5) {
+    throw new LeaseError("A reason of at least 5 characters is required to decline.", 400);
+  }
+  const payments2 = await storage.getPaymentsByBooking(booking.id);
+  const refundable = payments2.filter(
+    (p) => p.method === "STRIPE" && p.status === "PAID" && p.stripeRef
+  );
+  if (refundable.length === 0) {
+    throw new LeaseError(
+      "No settled card payment found for this booking \u2014 resolve it by hand rather than declining.",
+      409
+    );
+  }
+  const total = refundableTotal(payments2);
+  if (args.expectedRefundAmount !== void 0 && Math.abs(args.expectedRefundAmount - total) > AMOUNT_TOLERANCE) {
+    throw new LeaseError(
+      `Refund amount has changed (expected ${fmtMoney(args.expectedRefundAmount)}, now ${fmtMoney(total)}) \u2014 reload and try again.`,
+      409
+    );
+  }
+  const [property, room, guest] = await Promise.all([
+    storage.getProperty(booking.propertyId),
+    booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0),
+    storage.getGuest(booking.guestId)
+  ]);
+  if (!property || !guest) throw new LeaseError("Booking is missing its property or guest", 409);
+  const cancelled = await cancelBooking({
+    bookingId: booking.id,
+    actor: args.actor,
+    refund: false
+  });
+  const baseMetadata = room ? buildRoomBookingChargeMetadata({
+    entity: property.entity,
+    property,
+    room,
+    paymentKind: "BOOKING_DEPOSIT"
+  }) : buildStrChargeMetadata({
+    entity: property.entity,
+    property,
+    paymentKind: "BOOKING_DEPOSIT"
+  });
+  const result = {
+    reference: booking.reference,
+    refunded: [],
+    failed: [],
+    totalRefunded: 0,
+    datesReleased: true,
+    roomFreed: cancelled.roomFreed
+  };
+  for (const payment of refundable) {
+    const amount = parseFloat(payment.amount) + parseFloat(payment.surcharge ?? "0");
+    const metadata = buildRefundMetadata({
+      base: baseMetadata,
+      kind: args.kind,
+      paymentIntentId: payment.stripeRef,
+      paymentId: payment.id,
+      reference: booking.reference,
+      actor: args.actor,
+      // Truncated and stripped of newlines: this reaches Stripe, and a reason is
+      // operator free-text. It must never carry contact details or an access code.
+      reason: args.reason.replace(/\s+/g, " ").slice(0, 400)
+    });
+    assertCompleteRefundMetadata(metadata);
+    try {
+      const refund = await refundPaymentIntent({
+        paymentIntentId: payment.stripeRef,
+        idempotencyKey: `refund:${payment.stripeRef}`,
+        metadata,
+        reason: "requested_by_customer"
+      });
+      await storage.recordPaymentRefund({
+        paymentId: payment.id,
+        bookingId: booking.id,
+        leaseId: null,
+        stripeRefundId: refund.id,
+        stripePaymentIntentId: payment.stripeRef,
+        amount: amount.toFixed(2),
+        kind: args.kind,
+        reason: args.reason.slice(0, 400),
+        actor: args.actor
+      });
+      await storage.updatePayment(payment.id, { status: "REFUNDED" });
+      result.refunded.push({ paymentId: payment.id, stripeRefundId: refund.id, amount: amount.toFixed(2) });
+      result.totalRefunded += amount;
+      log(
+        `stay ${booking.reference}: refunded ${payment.id} (PI ${payment.stripeRef}) \u2192 ${refund.id} by ${args.actor}`,
+        "admin"
+      );
+    } catch (err) {
+      if (err.code === CHARGE_ALREADY_REFUNDED) {
+        await storage.updatePayment(payment.id, { status: "REFUNDED" });
+        result.refunded.push({ paymentId: payment.id, stripeRefundId: null, amount: amount.toFixed(2) });
+        result.totalRefunded += amount;
+        log(
+          `stay ${booking.reference}: PI ${payment.stripeRef} was already refunded \u2014 treated as done`,
+          "admin"
+        );
+        continue;
+      }
+      result.failed.push({
+        paymentId: payment.id,
+        stripePaymentIntentId: payment.stripeRef,
+        error: err.message
+      });
+      log(
+        `stay ${booking.reference}: REFUND FAILED for ${payment.id} (PI ${payment.stripeRef}): ${err.message}`,
+        "admin"
+      );
+    }
+  }
+  if (result.failed.length > 0) {
+    await storage.raiseEscalationOnce({
+      bookingId: booking.id,
+      leaseId: null,
+      kind: "REFUND_FAILED",
+      severity: "HIGH",
+      detail: `Booking ${booking.reference} was cancelled but ${result.failed.length} refund(s) FAILED: ` + result.failed.map((f) => `${f.stripePaymentIntentId} (${f.error})`).join("; ") + `. The dates are released. Refund by hand in Stripe, then re-run the decline.`
+    });
+    const alert = `Booking ${booking.reference} at ${property.name} was cancelled, but ${result.failed.length} refund(s) FAILED. The guest's money has NOT been returned and the dates are back on sale. Refund in Stripe by hand: ` + result.failed.map((f) => f.stripePaymentIntentId).join(", ");
+    await notifyAdmin({
+      subject: `REFUND FAILED - ${booking.reference} cancelled but not refunded`,
+      body: alert,
+      telegramText: alert,
+      context: { bookingId: booking.id, guestId: guest.id, kind: "REFUND_FAILED" }
+    });
+  }
+  if (result.refunded.length > 0) {
+    await onStayDeclined(
+      {
+        booking: { ...booking, status: "CANCELLED" },
+        gate: await storage.getBookingGate(booking.id).then((g) => g ?? null),
+        guest,
+        property,
+        room: room ?? null
+      },
+      {
+        reason: args.kind === "GATE_AUTO_DECLINE" ? null : args.reason,
+        refundAmount: result.totalRefunded,
+        auto: args.kind === "GATE_AUTO_DECLINE"
+      }
+    );
+  }
+  await storage.updateBookingGate(booking.id, {
+    cancelReason: args.reason.slice(0, 1e3),
+    cancelledBy: args.actor
+  });
+  log(
+    `stay ${booking.reference}: declined by ${args.actor} \u2014 ${result.refunded.length} refunded, ${result.failed.length} failed`,
+    "admin"
+  );
+  return result;
+}
+
+// server/lib/stayReminders.ts
+var MS_PER_HOUR = 60 * 60 * 1e3;
+async function guestSendsEnabled2() {
+  const setting = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
+  return setting?.value !== "false";
+}
+var toContext = (stay) => ({
+  booking: stay,
+  gate: stay.gate,
+  guest: stay.guest,
+  property: stay.property,
+  room: stay.room
+});
+function friendlyDate(iso) {
+  const d = /* @__PURE__ */ new Date(`${iso}T12:00:00Z`);
+  return new Intl.DateTimeFormat("en-GB", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    timeZone: "UTC"
+  }).format(d);
+}
+async function runStayGhostSweep(opts) {
+  const now = opts?.now ?? /* @__PURE__ */ new Date();
+  const today = opts?.today ?? todayIso(now);
+  const result = {
+    nudged: 0,
+    declined: 0,
+    refundFailed: 0,
+    escalatedAtCheckIn: 0,
+    suppressed: 0
+  };
+  const stays = await storage.getStaysAwaitingDocs();
+  if (stays.length === 0) return result;
+  const sendsOn = await guestSendsEnabled2();
+  for (const stay of stays) {
+    const outstanding = outstandingItems(stay.gate);
+    if (guestDocsSubmitted(stay.gate)) continue;
+    if (daysUntil(stay.checkIn, today) <= 0) {
+      const raised = await storage.raiseEscalationOnce({
+        bookingId: stay.id,
+        leaseId: null,
+        kind: "GATE_INCOMPLETE_AT_CHECKIN",
+        severity: "HIGH",
+        detail: `Booking ${stay.reference} reaches check-in (${stay.checkIn}) with documents still outstanding: ${outstanding.join(", ")}. The guest has PAID and the room is held. Approve, request a fix, or decline by hand \u2014 the sweep will NOT refund a stay that has already started.`
+      });
+      if (raised) {
+        await notifyAdmin({
+          subject: `Guest arriving with no ID on file - ${stay.reference}`,
+          body: `${stay.guest.name} arrives ${stay.checkIn} at ${stay.property.name}${stay.room ? ` (${roomDisplayName(stay.room)})` : ""} and has still not submitted: ${outstanding.join(", ")}. They have paid and the room is held. This needs a person.`,
+          telegramText: `${stay.guest.name} - ${stay.property.name} - arrives ${stay.checkIn} - ${stay.reference} - documents still missing, needs a decision`,
+          context: { bookingId: stay.id, guestId: stay.guest.id, kind: "ESCALATION" }
+        });
+        result.escalatedAtCheckIn += 1;
+      }
+      continue;
+    }
+    const deadline = stay.gate?.docsDeadlineAt;
+    if (!deadline) continue;
+    const elapsedHours = (now.getTime() - clockStart(stay).getTime()) / MS_PER_HOUR;
+    if (!sendsOn) {
+      result.suppressed += 1;
+      continue;
+    }
+    if (elapsedHours >= GATE_DOCS_DEADLINE_HOURS) {
+      try {
+        const declined = await declineAndRefundBooking({
+          bookingId: stay.id,
+          actor: "system:gate-sweep",
+          reason: `No identification or signed agreement received within ${GATE_DOCS_DEADLINE_HOURS} hours of being asked. Cancelled and refunded automatically.`,
+          confirm: stay.reference,
+          kind: "GATE_AUTO_DECLINE"
+        });
+        result.declined += 1;
+        if (declined.failed.length > 0) result.refundFailed += 1;
+      } catch (err) {
+        log(
+          `stay ${stay.reference}: auto-decline refused \u2014 ${err.message}`,
+          "scheduler"
+        );
+        result.refundFailed += 1;
+      }
+      continue;
+    }
+    const elapsedDays = Math.floor(elapsedHours / 24);
+    const round = (stay.gate?.fixRequestCount ?? 0) + 1;
+    const attempt = elapsedDays >= 2 ? 2 : elapsedDays >= 1 ? 1 : null;
+    if (!attempt) continue;
+    const kind = attempt === 1 ? "STAY_GHOST_NUDGE_1" : "STAY_GHOST_NUDGE_2";
+    if (await storage.hasLifecycleEvent({ bookingId: stay.id }, kind, round)) continue;
+    const url = stayUrl(stay.gate);
+    const tpl = stayGhostNudge({
+      name: stay.guest.name,
+      property: stay.property.name,
+      reference: stay.reference,
+      outstanding,
+      stayUrl: url,
+      smsUrl: await smsLink(url),
+      attempt,
+      deadlineDate: friendlyDate(deadlineIso(stay))
+    });
+    const sent = await notifyGuest({
+      email: stay.guest.email,
+      phone: stay.guest.phone,
+      subject: tpl.subject,
+      body: tpl.body,
+      smsBody: tpl.smsBody,
+      context: { bookingId: stay.id, guestId: stay.guest.id, kind }
+    });
+    await storage.recordLifecycleEvent({
+      bookingId: stay.id,
+      eventType: kind,
+      scheduleSeq: round,
+      status: sent.email.sent ? "SENT" : "SKIPPED",
+      emailSent: sent.email.sent,
+      smsSent: sent.sms.sent
+    });
+    result.nudged += 1;
+  }
+  if (result.nudged || result.declined || result.escalatedAtCheckIn || result.refundFailed) {
+    log(
+      `stay gate sweep: ${result.nudged} nudged, ${result.declined} auto-declined, ${result.escalatedAtCheckIn} escalated at check-in, ${result.refundFailed} refund issues`,
+      "scheduler"
+    );
+  }
+  return result;
+}
+function clockStart(stay) {
+  return stay.gate?.fixRequestedAt ?? stay.gate?.createdAt ?? stay.createdAt;
+}
+function deadlineIso(stay) {
+  const deadline = stay.gate?.docsDeadlineAt;
+  return deadline ? new Date(deadline).toISOString().slice(0, 10) : todayIso();
+}
+async function runStayCheckoutReminders(today = todayIso()) {
+  const result = { sent48: 0, sent24: 0 };
+  const stays = await storage.getStaysCheckingOutBetween(today, addDaysIso(today, 2));
+  for (const stay of stays) {
+    if (!stay.checkOut) continue;
+    if (!isGatedStay({ model: stay.model, checkIn: stay.checkIn, checkOut: stay.checkOut })) {
+      continue;
+    }
+    const d = daysUntil(stay.checkOut, today);
+    const ctx = toContext(stay);
+    const cycle = stay.gate?.extensionCount ?? 0;
+    const accessInfo = await resolveStayAccessInfo({
+      gate: stay.gate,
+      property: stay.property,
+      room: stay.room
+    });
+    const extension = await extensionAvailability(stay);
+    if (d >= 1 && d <= 2) {
+      if (!await storage.hasLifecycleEvent({ bookingId: stay.id }, "STAY_CHECKOUT_48H", cycle)) {
+        const sent = await onStayCheckoutReminder(ctx, {
+          kind: "STAY_CHECKOUT_48H",
+          checkOutBy: accessInfo.checkOutBy,
+          extendAvailable: extension.available,
+          maxExtraNights: extension.maxExtraNights
+        });
+        if (sent) result.sent48 += 1;
+        continue;
+      }
+    }
+    if (d >= 0 && d <= 1) {
+      if (!await storage.hasLifecycleEvent({ bookingId: stay.id }, "STAY_CHECKOUT_24H", cycle)) {
+        const sent = await onStayCheckoutReminder(ctx, {
+          kind: "STAY_CHECKOUT_24H",
+          checkOutBy: accessInfo.checkOutBy,
+          extendAvailable: extension.available,
+          maxExtraNights: extension.maxExtraNights
+        });
+        if (sent) result.sent24 += 1;
+      }
+    }
+  }
+  if (result.sent48 || result.sent24) {
+    log(`stay checkout reminders: ${result.sent48} at 2d, ${result.sent24} at 1d`, "scheduler");
+  }
+  return result;
+}
+async function extensionAvailability(stay) {
+  if (!stay.roomId || !stay.checkOut) return { available: false, maxExtraNights: 0 };
+  let nights = 0;
+  for (let n = 1; n <= 7; n += 1) {
+    const candidate = addDaysIso(stay.checkOut, n);
+    const free = await storage.isRoomAvailableForRange({
+      roomId: stay.roomId,
+      startDate: stay.checkOut,
+      endDate: candidate,
+      endExclusive: true,
+      excludeBookingId: stay.id
+    });
+    if (!free) break;
+    nights = n;
+  }
+  return { available: nights > 0, maxExtraNights: nights };
+}
+async function runStayPreArrival(today = todayIso()) {
+  const result = { sent: 0, blocked: 0 };
+  const stays = await storage.getStaysCheckingInBetween(today, addDaysIso(today, 1));
+  for (const stay of stays) {
+    const d = daysUntil(stay.checkIn, today);
+    if (d !== 1 && d !== 0) continue;
+    if (stay.gate?.approvedAt) continue;
+    if (isGatedStay({ model: stay.model, checkIn: stay.checkIn, checkOut: stay.checkOut })) continue;
+    const info = await resolveStayAccessInfo({
+      gate: stay.gate,
+      property: stay.property,
+      room: stay.room
+    });
+    const missing = missingAccessFields(info, { requireDoorCode: false });
+    if (missing.length > 0) {
+      const raised = await storage.raiseEscalationOnce({
+        bookingId: stay.id,
+        leaseId: null,
+        kind: "ACCESS_INFO_MISSING",
+        severity: "HIGH",
+        // FIELD NAMES ONLY — never the values of the fields that ARE set.
+        detail: `Guest arrives ${stay.checkIn} at ${stay.property.name} but the check-in details cannot be sent: missing ${missing.join(", ")}. Fill these in and the next sweep will send them.`
+      });
+      if (raised) {
+        await notifyAdmin({
+          subject: `Cannot send check-in details - ${stay.property.name} ${stay.checkIn}`,
+          body: `${stay.guest.name} arrives ${stay.checkIn} at ${stay.property.name}, but the property is missing: ${missing.join(", ")}. Nothing has been sent to the guest.`,
+          telegramText: `${stay.guest.name} - ${stay.property.name} - arrives ${stay.checkIn} - access info missing (${missing.join(", ")})`,
+          context: { bookingId: stay.id, guestId: stay.guest.id, kind: "ESCALATION" }
+        });
+      }
+      result.blocked += 1;
+      continue;
+    }
+    if (await onStrPreArrival(toContext(stay))) result.sent += 1;
+  }
+  if (result.sent || result.blocked) {
+    log(`stay pre-arrival: ${result.sent} sent, ${result.blocked} blocked on missing info`, "scheduler");
+  }
+  return result;
+}
+
 // api-src/cron/sweep.ts
 async function handler(req, res) {
   const secret2 = process.env.CRON_SECRET;
@@ -3990,6 +4940,24 @@ async function handler(req, res) {
     const rent = await runScheduledRentSweep();
     const dunning = await runDunningSweep();
     const endingNotices = await runLeaseEndingNotices();
+    let stayGate;
+    try {
+      stayGate = await runStayGhostSweep();
+    } catch (err) {
+      log(`stay gate sweep failed: ${err.message}`, "cron");
+    }
+    let stayReminders;
+    try {
+      stayReminders = await runStayCheckoutReminders();
+    } catch (err) {
+      log(`stay checkout reminders failed: ${err.message}`, "cron");
+    }
+    let stayArrival;
+    try {
+      stayArrival = await runStayPreArrival();
+    } catch (err) {
+      log(`stay pre-arrival failed: ${err.message}`, "cron");
+    }
     const active = (await storage.getBookings({ status: "ACTIVE" })).length;
     if (active > 0) log(`weeklyRentRun: ${active} active co-living booking(s) checked`, "cron");
     const pending = await storage.getPendingManualPayments();
@@ -4004,6 +4972,9 @@ async function handler(req, res) {
       rent,
       dunning,
       endingNotices,
+      stayGate,
+      stayReminders,
+      stayArrival,
       active,
       pending: pending.length,
       snapshot

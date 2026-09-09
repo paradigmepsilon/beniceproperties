@@ -17,6 +17,11 @@ import { runScheduledRentSweep } from "./lib/leasePayments";
 import { runLeaseHoldExpiry } from "./lib/leaseHolds";
 import { runDunningSweep } from "./lib/dunning";
 import { runLeaseEndingNotices } from "./lib/lifecycle";
+import {
+  runStayGhostSweep,
+  runStayCheckoutReminders,
+  runStayPreArrival,
+} from "./lib/stayReminders";
 import { refreshExternalCalendars, checkCalendarSyncHealth } from "./lib/icalSync";
 import { syncRoomOccupancyStatus } from "./lib/occupancy";
 
@@ -68,6 +73,9 @@ class BackgroundScheduler {
       await this.weeklyRentRun();
       await this.dunningRun();
       await this.lifecycleRun();
+      await this.stayGateRun();
+      await this.stayReminderRun();
+      await this.stayArrivalRun();
       await this.paymentStatusCheck();
       await this.dailyKpiRollupAndPush();
     } catch (err) {
@@ -156,6 +164,39 @@ class BackgroundScheduler {
   private async lifecycleRun(): Promise<void> {
     // Phase 7: lease-ending notices (~14 days out). Idempotent via lifecycle_events.
     await runLeaseEndingNotices();
+  }
+
+  // --- Short-stay approval gate ---------------------------------------------
+  // Each of the three carries its OWN try/catch. weeklyRentRun / dunningRun /
+  // lifecycleRun above deliberately do not, and rely on the outer sweep catch —
+  // which means a throw in one aborts the rest of the pass. New jobs must not
+  // inherit that, least of all the one that moves money.
+
+  private async stayGateRun(): Promise<void> {
+    try {
+      // Nudges the silent, escalates a guest arriving with no ID, and — after 72
+      // elapsed hours — cancels and refunds. Placed AFTER the existing money jobs
+      // so a throw in new code can never block rent or late-fee accrual.
+      await runStayGhostSweep();
+    } catch (err) {
+      log(`stay gate sweep failed: ${(err as Error).message}`, "scheduler");
+    }
+  }
+
+  private async stayReminderRun(): Promise<void> {
+    try {
+      await runStayCheckoutReminders();
+    } catch (err) {
+      log(`stay checkout reminders failed: ${(err as Error).message}`, "scheduler");
+    }
+  }
+
+  private async stayArrivalRun(): Promise<void> {
+    try {
+      await runStayPreArrival();
+    } catch (err) {
+      log(`stay pre-arrival failed: ${(err as Error).message}`, "scheduler");
+    }
   }
 
   private async paymentStatusCheck(): Promise<void> {

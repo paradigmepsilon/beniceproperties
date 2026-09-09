@@ -17,6 +17,11 @@ import { refreshExternalCalendars, checkCalendarSyncHealth } from "../../server/
 import { syncRoomOccupancyStatus } from "../../server/lib/occupancy";
 import { log } from "../../server/server-log";
 import { runLeaseHoldExpiry } from "../../server/lib/leaseHolds";
+import {
+  runStayGhostSweep,
+  runStayCheckoutReminders,
+  runStayPreArrival,
+} from "../../server/lib/stayReminders";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Vercel Cron sends `Authorization: Bearer ${CRON_SECRET}`. Reject anything else.
@@ -59,6 +64,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Phase 7: lease-ending notices ~14 days out (idempotent).
     const endingNotices = await runLeaseEndingNotices();
 
+    // --- Short-stay approval gate. THIS is the scheduler that runs in
+    // production; server/scheduler.ts cannot (no long-lived process on Vercel).
+    // Each job is wrapped individually: the rent/dunning/lifecycle calls above
+    // sit in the outer try only, so a throw there 500s the whole cron and skips
+    // the KPI push. The new jobs must never be able to do that — especially the
+    // one that refunds money.
+    let stayGate: Awaited<ReturnType<typeof runStayGhostSweep>> | undefined;
+    try {
+      stayGate = await runStayGhostSweep();
+    } catch (err) {
+      log(`stay gate sweep failed: ${(err as Error).message}`, "cron");
+    }
+    let stayReminders: Awaited<ReturnType<typeof runStayCheckoutReminders>> | undefined;
+    try {
+      stayReminders = await runStayCheckoutReminders();
+    } catch (err) {
+      log(`stay checkout reminders failed: ${(err as Error).message}`, "cron");
+    }
+    let stayArrival: Awaited<ReturnType<typeof runStayPreArrival>> | undefined;
+    try {
+      stayArrival = await runStayPreArrival();
+    } catch (err) {
+      log(`stay pre-arrival failed: ${(err as Error).message}`, "cron");
+    }
+
     const active = (await storage.getBookings({ status: "ACTIVE" })).length;
     if (active > 0) log(`weeklyRentRun: ${active} active co-living booking(s) checked`, "cron");
 
@@ -75,6 +105,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       rent,
       dunning,
       endingNotices,
+      stayGate,
+      stayReminders,
+      stayArrival,
       active,
       pending: pending.length,
       snapshot,
