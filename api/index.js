@@ -3751,6 +3751,13 @@ function roomDisplayName(room) {
 // server/lib/stayLifecycle.ts
 init_schema();
 
+// shared/contact.ts
+var BNP_CONTACT = {
+  phone: "(404) 541-9934",
+  email: "beniceproperties@gmail.com",
+  website: "www.beniceproperties.com"
+};
+
 // server/lib/stayTemplates.ts
 function listOf(items) {
   if (items.length <= 1) return items[0] ?? "";
@@ -3824,11 +3831,16 @@ Reference ${v.reference}.`,
   };
 }
 function stayApprovedWelcome(v) {
-  const shell = (access) => `Hi ${v.name}, you are confirmed. Everything you need for your stay at ${v.property}${roomClause(v.room)} is below.
+  const shell = (access) => `Greetings ${v.name},
+
+We are excited to welcome you to Be Nice Properties and are looking forward to your arrival on ${v.checkIn}. Your reservation has been approved and your payment has been received. Below is your welcome information so you can get settled in comfortably when you arrive.
 
 YOUR STAY
-${v.checkIn} to ${v.checkOut}
-Reference ${v.reference}
+${v.property}${roomClause(v.room)}
+` + (v.propertyAddress ? `${v.propertyAddress}
+` : "") + `Check-in: ${v.checkIn}
+Check-out: ${v.checkOut}
+Reference: ${v.reference}
 
 GETTING IN
 ${access}
@@ -3836,11 +3848,24 @@ ${access}
 HOUSE RULES
 ${v.houseRulesUrl}
 
-Anything you need, reply to this email or use your stay page: ${v.stayUrl}
+DURING YOUR STAY
+If you need anything during your stay, please reach out to us at ${BNP_CONTACT.phone} or ${BNP_CONTACT.email}, or use your stay page: ${v.stayUrl}. We want your stay to feel easy, comfortable, and welcoming.
 
-We are glad to have you.`;
+EXTENSIONS & ADDITIONAL PAYMENTS
+If you would like to extend your stay, you can do so from your stay page. We will also send you an extension link two days before your reservation ends, which you may use to request and pay for additional time.
+
+We recommend securing your extension as soon as possible. Rooms remain available for new reservations until an extension is completed, so booking early helps avoid an interruption in your stay due to a new incoming guest.
+
+Extensions are subject to room availability and are not confirmed until payment is completed. If you need to pay using an option that is not available through the stay page or extension link, please contact us directly for assistance.
+
+If you have any questions before arrival, feel free to reach out. We are happy to help and look forward to having you with us.
+
+Happy Moving!
+
+Best,
+Be Nice Properties Team`;
   return {
-    subject: `You're confirmed - everything you need for ${v.property}`,
+    subject: `Your Be Nice Properties Stay Details - Arrival on ${v.checkIn}`,
     body: shell(v.accessText),
     // Rule 2: the code never leaves by SMS. It points at the email instead.
     smsBody: `BNP: you are confirmed for ${v.checkIn}. Door code, wifi and directions are in your email.`,
@@ -4143,6 +4168,7 @@ async function onStayApproved(ctx) {
     "STAY_APPROVED_WELCOME",
     stayApprovedWelcome({
       ...v,
+      propertyAddress: ctx.property.address,
       checkIn: ctx.booking.checkIn,
       checkOut: ctx.booking.checkOut ?? "",
       accessText: renderAccessInfoText(info),
@@ -4244,45 +4270,78 @@ function fillTokens(template, tokens) {
 
 // server/lib/stayAgreementDocument.ts
 var DEFAULT_STAY_AGREEMENT_TEMPLATE = {
-  title: "Short-Stay Rental Agreement",
-  intro: "This Short-Stay Rental Agreement (the \u201CAgreement\u201D) is entered into between Be Nice Properties (\u201COperator\u201D) and {{guestName}} (\u201CGuest\u201D) for the room and dates described below at {{propertyName}}, {{propertyLocation}}. This is a short-term occupancy agreement for a stay of {{nights}} night(s) paid in full in advance. It does not create a tenancy or a lease.",
+  title: "Room Booking & Resident Acknowledgment",
+  version: "BNP-RBA-2026.3",
+  /** The reservation-details table at the top: [label, text]. */
+  details: [
+    ["Resident legal name", "{{guestName}}"],
+    ["Property address", "{{propertyLocation}}"],
+    ["Assigned room", "{{roomLabel}}"],
+    ["Check-in date", "{{checkIn}} ({{checkInFrom}})"],
+    ["Check-out date", "{{checkOut}} ({{checkOutBy}})"],
+    ["Length of stay", "{{nights}} night(s)"],
+    ["Booking total", "{{totalPaid}}"],
+    ["Amount due", "{{totalPaid}} \u2014 paid in full at booking"]
+  ],
+  intro: "This acknowledgment applies to your furnished private-room reservation with Be Nice Properties (BNP). Your booking details above control your specific room, dates, rate, fees, and amount due. Your reservation is for the assigned bedroom only, with non-exclusive use of approved shared/common areas.",
   sections: [
     {
-      heading: "1. Room and Dates",
-      body: "The Operator makes available to the Guest the following room at {{propertyName}}: {{roomLabel}}. The stay begins on {{checkIn}} ({{checkInFrom}}) and ends on {{checkOut}} ({{checkOutBy}}), a total of {{nights}} night(s). The Guest occupies the named room and shares the common areas of the property with other residents."
+      heading: "Payment & Reservation",
+      bullets: [
+        "Pay all amounts according to the schedule shown in your booking.",
+        "A payment received after the agreed due date is late. BNP's current late fee is $25, unless Management authorizes otherwise.",
+        "No security deposit or reservation hold is required for weekly stays.",
+        "Any cancellation/refund follows the terms shown at booking.",
+        "Staying beyond the confirmed check-out date requires BNP approval and a new or extended reservation. Unless BNP requires a newer agreement version, an approved extension remains subject to this acknowledgment."
+      ]
     },
     {
-      heading: "2. Payment",
-      body: "The total amount for this stay is {{totalPaid}}, charged in full at the time of booking. There is no recurring payment, no installment schedule, and no security deposit for this stay. No further amount is due unless the Guest extends the stay."
+      // NOT in BNP-RBA-2026.3 — describes the app's own approval flow.
+      heading: "Confirmation & Access",
+      body: "This booking is confirmed only after BNP has (a) received this signed acknowledgment, (b) received a government-issued photo identification matching the name signed below, and (c) approved both. Access details, including the door code, are issued on approval and are personal to the Resident. The Resident may not share, copy, or transfer any access code or key."
     },
     {
-      heading: "3. Confirmation and Access",
-      body: "This booking is confirmed only after the Operator has (a) received this signed Agreement, (b) received a government-issued photo identification matching the name signed below, and (c) approved both. Access details, including the door code, are issued on approval and are personal to the Guest. The Guest may not share, copy, or transfer any access code or key."
+      heading: "Room & Common Areas",
+      bullets: [
+        "Only approved residents may occupy the room. Unauthorized occupants are prohibited.",
+        "Residents may use designated shared kitchen, bathroom, laundry, living, parking, and outdoor areas.",
+        "Keep your bedroom reasonably clean. Wash dishes, remove trash, clean spills, and keep shared areas sanitary.",
+        "Weekly common-area housekeeping does not replace your responsibility to clean up after yourself."
+      ]
     },
     {
-      heading: "4. Occupancy",
-      body: "Only the Guest named in this Agreement may occupy the room. The room is not to be sublet, listed, assigned, or shared, and no additional overnight occupant may stay without the Operator's prior written approval."
+      heading: "House & Community Rules",
+      // The link sentence is NOT in BNP-RBA-2026.3; the app incorporates the
+      // published page by reference so the two can never silently diverge.
+      body: "The full house rules are published at {{houseRulesUrl}} and form part of this acknowledgment.",
+      bullets: [
+        "No pets, except approved or legally required accommodations.",
+        "No smoking or vaping inside. Smoking is only permitted in approved outdoor areas.",
+        "Quiet hours: 10:00 p.m.-7:00 a.m.",
+        "Illegal drug activity, criminal conduct, threats, harassment, violence, and unlawful weapons-related conduct are prohibited.",
+        "You are responsible for your guests and for damage caused by you or your guests, to the extent permitted by law.",
+        "Report maintenance, leaks, damage, safety concerns, and access problems promptly.",
+        "Be respectful of residents, neighbors, BNP staff, vendors, and guests."
+      ]
     },
     {
-      heading: "5. Extensions",
-      body: "The Guest may request additional nights before the end of the stay, subject to availability. An extension takes effect only once the additional amount has been paid, and is priced at the rates then in effect for the full length of the stay."
+      heading: "Move-Out",
+      bullets: [
+        "Remove all belongings, food, and trash by check-out. Your property access code will automatically become inactive after your reservation ends.",
+        "Items left behind will be handled under BNP policy and applicable Georgia law."
+      ]
     },
     {
-      heading: "6. House Rules",
-      body: "The Guest agrees to the house rules published at {{houseRulesUrl}}, which form part of this Agreement, and to treat the property, its shared spaces, and other residents with care and respect. Repeated or serious breaches may end the stay."
-    },
-    {
-      heading: "7. Condition and Damage",
-      body: "The Guest agrees to leave the room and shared areas in the condition in which they were received, allowing for ordinary use, and to report any damage or maintenance issue promptly. The Guest is responsible for damage beyond ordinary wear caused by the Guest or the Guest's visitors."
-    },
-    {
-      heading: "8. Departure",
-      body: "The Guest agrees to vacate the room and return or cease using all access codes by {{checkOutBy}} on {{checkOut}}, unless the stay has been extended and paid for."
+      heading: "Violations, Nonpayment & Communications",
+      body: "Failure to pay amounts due or serious/repeated violations may result in warnings, charges permitted by the reservation, refusal of an extension, termination procedures, or other action permitted by law. Nothing in this acknowledgment permits BNP to bypass any notice, possession, dispossessory, or other process required by Georgia law. You agree that BNP may communicate with you by text, email, booking/property-management software, and other electronic methods regarding your stay."
     }
   ],
+  /** The owner's checkbox statement, rendered immediately above the signature block. */
+  acknowledgment: "I have read and agree to the Be Nice Properties Room Booking & Resident Acknowledgment (Version {{version}}) and the reservation details above. I understand my room, dates, payment terms, house/community rules, and that staying beyond my confirmed check-out date requires BNP approval and an extension or new reservation. By signing below and completing my booking, I electronically acknowledge and agree to these terms to the extent permitted by law.",
+  bookingRecord: "Booking Record: Reservation # {{reference}} | Agreement Version {{version}}",
   signatureStatement: ESIGN_ATTESTATION
 };
-function stayAgreementTokens(data) {
+function stayAgreementTokens(data, template = DEFAULT_STAY_AGREEMENT_TEMPLATE) {
   return {
     guestName: data.guestName,
     propertyName: data.propertyName,
@@ -4293,6 +4352,8 @@ function stayAgreementTokens(data) {
     nights: String(stayNights(data.checkIn, data.checkOut)),
     totalPaid: fmtMoney(data.totalPaid),
     houseRulesUrl: data.houseRulesUrl,
+    reference: data.reference,
+    version: template.version,
     // Fall back to plain language rather than rendering an empty parenthesis when
     // a property has not had its arrival times filled in yet.
     checkInFrom: data.checkInFrom || "check-in time as advised",
@@ -4300,13 +4361,21 @@ function stayAgreementTokens(data) {
   };
 }
 function bodyHtml(data, template) {
-  const tokens = stayAgreementTokens(data);
-  const sections = template.sections.map(
-    (s) => `<section><h2 style="font-size:15px;margin:18px 0 6px">${esc(s.heading)}</h2><p style="margin:0;line-height:1.5">${esc(fillTokens(s.body, tokens))}</p></section>`
-  ).join("");
-  return `<h1 style="font-size:20px;margin:0 0 4px">${esc(template.title)}</h1><p style="color:#555;margin:0 0 16px;line-height:1.5">${esc(
-    fillTokens(template.intro, tokens)
-  )}</p>` + sections;
+  const tokens = stayAgreementTokens(data, template);
+  const fill2 = (s) => esc(fillTokens(s, tokens));
+  const details = `<table style="width:100%;border-collapse:collapse;margin:0 0 16px;font-size:14px">` + template.details.map(
+    ([label, text2]) => `<tr><th style="text-align:left;padding:6px 8px;border:1px solid #ddd;background:#f5f5f5;width:38%">${esc(
+      label
+    )}</th><td style="padding:6px 8px;border:1px solid #ddd">${fill2(text2)}</td></tr>`
+  ).join("") + `</table>`;
+  const sections = template.sections.map((s) => {
+    const body = s.body ? `<p style="margin:0 0 6px;line-height:1.5">${fill2(s.body)}</p>` : "";
+    const bullets = s.bullets?.length ? `<ul style="margin:0;padding-left:20px;line-height:1.5">${s.bullets.map((b) => `<li>${fill2(b)}</li>`).join("")}</ul>` : "";
+    return `<section><h2 style="font-size:15px;margin:18px 0 6px">${esc(s.heading)}</h2>` + body + bullets + `</section>`;
+  }).join("");
+  return `<h1 style="font-size:20px;margin:0 0 2px">${esc(template.title)}</h1><p style="color:#555;margin:0 0 14px;font-size:13px">Version ${esc(template.version)}</p>` + details + `<p style="margin:0 0 4px;line-height:1.5">${fill2(template.intro)}</p>` + sections + `<p style="margin:18px 0 0;padding:10px 12px;border:2px solid #7a9a2e;line-height:1.5;font-weight:bold">${fill2(
+    template.acknowledgment
+  )}</p><p style="color:#555;margin:10px 0 0;font-size:12px">${fill2(template.bookingRecord)}</p>`;
 }
 function renderStayAgreementHtml(data, template = DEFAULT_STAY_AGREEMENT_TEMPLATE) {
   return documentPage(
@@ -4406,7 +4475,8 @@ async function agreementData(stay) {
     totalPaid: parseFloat(stay.booking.quotedTotal),
     houseRulesUrl: houseRulesUrl(),
     checkInFrom: info.checkInFrom ?? "",
-    checkOutBy: info.checkOutBy ?? ""
+    checkOutBy: info.checkOutBy ?? "",
+    reference: stay.booking.reference
   };
 }
 async function previewStayAgreement(token) {

@@ -3746,3 +3746,124 @@ escalation detail.
   `getColivingBookingsForRoom` and `getOccupiedRoomIdsOn` (pre-existing).
 
 PHASE BOOKING-APPROVAL-GATE: COMPLETE — tests green
+
+---
+
+## BOOKING-APPROVAL-GATE — OWNER STEPS PASS — 2026-09-09
+
+Branch `feat/booking-approval-gate` (still stacked on `feat/uo-pricing-writeback`). Asked to
+complete the seven owner steps from the 2026-09-08 entry. Owner also supplied, mid-task, the real
+house rules ("10 Coliving House Rules"), the **Room Booking & Resident Acknowledgment v2026.3**,
+the **Welcome Email Template v3**, and a signed long-term Rooms Rental Agreement (example).
+
+### What was found (read-only checks, no writes)
+
+| Item | State on 2026-09-09 |
+|---|---|
+| Vercel production env | HAS `CRON_SECRET`, Twilio ×3, SMTP ×4, `MAIL_FROM`, `ADMIN_NOTIFY_EMAIL`, `UO_BNP_API_TOKEN`. **MISSING** R2 ×4, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`. |
+| Neon DB that `.env`/scripts point at | `leases.late_fee_per_day_snapshot` / `card_surcharge_rate_snapshot` **absent** (pricing migration not run). `booking_gate`, `payment_refunds`, `property_access_info`, `room_access_info` **absent** (gate migration not run). |
+| UO | Already has the four `R2_*` values in its `.env` (same bucket, `unified-ops`). Holds door code / wifi / parking per listing in Prisma `BnpListingAccess`, as free text — not shaped for BNP's typed fields. |
+| Telegram | No bot token in UO's env; one exists in the Alex Wiki `.env` (names only inspected). |
+
+So steps 2 (Twilio) and 3 (`CRON_SECRET`) were already done in Vercel. The rest is below.
+
+### What was built (this pass)
+
+- **Step 7 — `.env.example`** now documents `CRON_SECRET`, `ADMIN_NOTIFY_EMAIL`, Telegram ×2, R2 ×4,
+  and the platform-injected vars. Every `process.env.X` read by server/api-src/shared/scripts is now
+  named there.
+- **Step 3, code side — cron auth fails CLOSED on Vercel.** `server/lib/cronAuth.ts` (+ test):
+  on any Vercel deployment (`VERCEL=1`) an unset `CRON_SECRET` → 503, never open; wrong bearer →
+  401; constant-time compare; local dev without a secret stays open. Both `api-src/cron/*.ts` use
+  it; `api/` bundle regenerated (`npm run build:api`).
+- **Step 5 — house rules populated** in `client/src/content/house-rules.ts` from the owner's text
+  (typographic edits only; "cigarette buds" → "butts"). Sections: check-in/out (4 PM / 11 AM ET),
+  room + shared spaces, doors/codes/security, quiet hours 10 PM–8 AM, no parties, kitchen/cleaning/
+  toilet, no smoking inside, no pets, leaving, "why we have house rules" (+ public email).
+  `parking` and `ending-early` remain empty (no owner copy). `HOUSE_RULES_UPDATED = 2026-09-09`.
+- **Step 6 — owner tool for access info:** `scripts/set-access-info.mjs` (+ test, + gitignored
+  `scripts/access-info.local.json`, + `access-info.example.json`). Dry run lists inventory ids and
+  which properties still block approval (field NAMES only — never a wifi password or entry code);
+  `--apply` upserts `property_access_info` / `room_access_info` with MERGE semantics (`""` clears a
+  key). Validation mirrors the Zod schemas and the test proves the limits match one-for-one.
+- **Agreement body → owner's document.** `stayAgreementDocument.ts` now renders
+  **BNP-RBA-2026.3** verbatim: reservation-details table, intro, Payment & Reservation, Room &
+  Common Areas, House & Community Rules, Move-Out, Violations/Nonpayment/Communications, the
+  owner's acknowledgment statement, and a "Booking Record: Reservation # … | Agreement Version …"
+  line. Two non-RBA additions, marked inline: the house-rules link sentence, and the
+  "Confirmation & Access" section (describes the app's own flow). E-SIGN attestation unchanged.
+  `StayAgreementData.reference` added (portal passes `booking.reference`).
+- **Welcome letter → owner's template v3** (`stayApprovedWelcome`): subject "Your Be Nice
+  Properties Stay Details - Arrival on …", greeting, details block with address, GETTING IN
+  (unchanged credential block), DURING YOUR STAY with `(404) 541-9934` /
+  `beniceproperties@gmail.com` (new `shared/contact.ts`), EXTENSIONS & ADDITIONAL PAYMENTS,
+  "Happy Moving!". Two deliberate deviations to stay truthful to the app: extend "from your stay
+  page" (not "a new booking"), and extensions confirm on payment (no separate approval). "48
+  hours" → "two days" because `bookingMessageLinks.test.ts` forbids any hour figure but 24.
+
+### Tests / verification
+`npx tsc` 0 · `npx vitest run` **1076 passed / 72 files, 0 failed** (7 new tests in
+`cronAuth.test.ts`, 8 in `set-access-info.test.ts`, agreement tests rewritten to pin the owner's
+text) · `npm run build:api` 0 (bundle contains the fail-closed message) · `npx vite build` 0 ·
+sample acknowledgment + welcome rendered and inspected. **Not run:** the migration, any Vercel env
+write, the dev server (its scheduler would run against the prod DB), an end-to-end signature.
+
+### ⚠️ OWNER RUNBOOK — what is still yours, in order
+
+1. **R2 → Vercel** (copies UO's values without ever displaying them):
+   ```bash
+   UO="/Users/alexhenry/Projects/Unified Ops Folder/Unified-Ops/.env"
+   for k in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET_NAME; do
+     grep "^$k=" "$UO" | cut -d= -f2- | tr -d '"' | vercel env add "$k" production
+   done
+   ```
+2. **Telegram → Vercel** (reuse the existing bot or make a new one in BotFather; chat id from
+   `getUpdates`):
+   ```bash
+   vercel env add TELEGRAM_BOT_TOKEN production
+   vercel env add TELEGRAM_ADMIN_CHAT_ID production
+   ```
+   Optional: without these, admin alerts only log; nothing breaks.
+3. **Migrations, in this order, from the BNP repo with `.env` pointing at production:**
+   ```bash
+   node scripts/backup-tables.mjs bookings payments leases
+   node scripts/push-pricing-snapshots.mjs   # feat/uo-pricing-writeback — MUST land first
+   node scripts/push-booking-gate.mjs        # this branch; additive, IF NOT EXISTS throughout
+   ```
+4. **Arrival info per co-living property:**
+   ```bash
+   cp scripts/access-info.example.json scripts/access-info.local.json   # fill in
+   node scripts/set-access-info.mjs            # dry run: inventory + what still blocks approval
+   node scripts/set-access-info.mjs --apply
+   ```
+   Minimum per property: `wifiSsid` + `directions`; set `checkInFrom` "4:00 PM" / `checkOutBy`
+   "11:00 AM" so the agreement and welcome letter print them.
+5. **Merge + deploy**: pricing branch → deploy → this branch → deploy. Env changes need a redeploy.
+6. Optional: `SENDGRID_API_KEY` is unnecessary (SMTP is configured).
+
+### ⚠️ DECISIONS NEEDED — the owner's documents disagree with each other
+
+Both the house-rules page and the acknowledgment are now in the signed package, verbatim, so these
+are live contradictions until one side is edited (each is a one-line change):
+
+1. **Quiet hours** — house rules: 10 PM–8 AM · RBA-2026.3: 10 PM–7 AM · (long-term lease: 10–7).
+2. **Pets** — house rules: "not allowed" · RBA: "no pets, except approved or legally required
+   accommodations". Recommend the RBA wording on the page (assistance animals under FHA/ADA).
+3. **Late fee** — RBA: "$50" flat · app + CLAUDE.md decided: `late_fee_per_day` ($25/day) for
+   leases. Inert for a paid-in-full stay, but the two signed documents state different numbers.
+4. **Smoking** — compatible (page: none inside · RBA: none inside, approved outdoor areas only).
+
+### ⚠️ LEGAL — still flagged, not resolved
+- Counsel review of BNP-RBA-2026.3 is not confirmed to this codebase; ask before the first real
+  signature. Structure/attestation unchanged from the reviewed lease.
+- Extensions past 28 nights, Klarna/wallet surcharge, door code in `message_log` — unchanged from
+  the 2026-09-08 entry.
+- **Sensitive file:** `~/Downloads/Taylor_Room Rental Agreement.v3.pdf` contains a real guest's
+  name and driver's-licence number. Nothing from it was copied anywhere; consider moving it out of
+  Downloads.
+
+### Deferred
+- UO write-through: UO already holds `BnpListingAccess` (door code, wifi, parking) per listing;
+  a UO-side save that PUTs `/api/uo/properties/:id/access-info` would retire the script.
+- `check:api` is referenced in `scripts/build-api.mjs` comments but is not a package script.
+- `parking` / `ending-early` house-rules sections await owner copy.

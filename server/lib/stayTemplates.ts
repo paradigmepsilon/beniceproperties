@@ -30,6 +30,9 @@
 // and a final warning names a DATE rather than an hour.
 // =============================================================================
 
+// Pure constants only — no server-module import, so no cycle (see header).
+import { BNP_CONTACT } from "@shared/contact";
+
 export interface StayTemplate {
   subject: string;
   body: string;
@@ -180,6 +183,8 @@ export function stayApprovedWelcome(v: {
   name: string;
   property: string;
   room: string | null;
+  /** Street address, when the property has one on file. */
+  propertyAddress?: string | null;
   checkIn: string;
   checkOut: string;
   reference: string;
@@ -191,16 +196,41 @@ export function stayApprovedWelcome(v: {
   stayUrl: string;
   smsUrl: string;
 }): StayTemplate {
+  // Body follows the owner's "Welcome Email Template v3" (2026-09-09). Two
+  // deliberate deviations, both to match what the app actually does: extensions
+  // are made from the stay page (not "a new booking through our website"), and an
+  // extension is confirmed on payment (the app applies it without a separate
+  // approval step), so the template's "until approved by BNP" is not repeated.
   const shell = (access: string) =>
-    `Hi ${v.name}, you are confirmed. Everything you need for your stay at ${v.property}` +
-    `${roomClause(v.room)} is below.\n\n` +
-    `YOUR STAY\n${v.checkIn} to ${v.checkOut}\nReference ${v.reference}\n\n` +
+    `Greetings ${v.name},\n\n` +
+    `We are excited to welcome you to Be Nice Properties and are looking forward to your ` +
+    `arrival on ${v.checkIn}. Your reservation has been approved and your payment has been ` +
+    `received. Below is your welcome information so you can get settled in comfortably when ` +
+    `you arrive.\n\n` +
+    `YOUR STAY\n${v.property}${roomClause(v.room)}\n` +
+    (v.propertyAddress ? `${v.propertyAddress}\n` : "") +
+    `Check-in: ${v.checkIn}\nCheck-out: ${v.checkOut}\nReference: ${v.reference}\n\n` +
     `GETTING IN\n${access}\n\n` +
     `HOUSE RULES\n${v.houseRulesUrl}\n\n` +
-    `Anything you need, reply to this email or use your stay page: ${v.stayUrl}\n\n` +
-    `We are glad to have you.`;
+    `DURING YOUR STAY\n` +
+    `If you need anything during your stay, please reach out to us at ${BNP_CONTACT.phone} or ` +
+    `${BNP_CONTACT.email}, or use your stay page: ${v.stayUrl}. We want your stay to feel ` +
+    `easy, comfortable, and welcoming.\n\n` +
+    `EXTENSIONS & ADDITIONAL PAYMENTS\n` +
+    `If you would like to extend your stay, you can do so from your stay page. We will also ` +
+    `send you an extension link two days before your reservation ends, which you may use to ` +
+    `request and pay for additional time.\n\n` +
+    `We recommend securing your extension as soon as possible. Rooms remain available for new ` +
+    `reservations until an extension is completed, so booking early helps avoid an ` +
+    `interruption in your stay due to a new incoming guest.\n\n` +
+    `Extensions are subject to room availability and are not confirmed until payment is ` +
+    `completed. If you need to pay using an option that is not available through the stay ` +
+    `page or extension link, please contact us directly for assistance.\n\n` +
+    `If you have any questions before arrival, feel free to reach out. We are happy to help ` +
+    `and look forward to having you with us.\n\n` +
+    `Happy Moving!\n\nBest,\nBe Nice Properties Team`;
   return {
-    subject: `You're confirmed - everything you need for ${v.property}`,
+    subject: `Your Be Nice Properties Stay Details - Arrival on ${v.checkIn}`,
     body: shell(v.accessText),
     // Rule 2: the code never leaves by SMS. It points at the email instead.
     smsBody: `BNP: you are confirmed for ${v.checkIn}. Door code, wifi and directions are in your email.`,

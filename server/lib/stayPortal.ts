@@ -141,6 +141,7 @@ async function agreementData(stay: ResolvedStay): Promise<StayAgreementData> {
     houseRulesUrl: houseRulesUrl(),
     checkInFrom: info.checkInFrom ?? "",
     checkOutBy: info.checkOutBy ?? "",
+    reference: stay.booking.reference,
   };
 }
 

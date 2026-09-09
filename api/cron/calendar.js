@@ -3017,6 +3017,22 @@ async function checkCalendarSyncHealth(now = /* @__PURE__ */ new Date()) {
   return { stale, failed, alerted };
 }
 
+// server/lib/cronAuth.ts
+import { timingSafeEqual } from "node:crypto";
+function cronAuthFailure(authorization, env = process.env) {
+  const secret = env.CRON_SECRET;
+  if (!secret) {
+    if (env.VERCEL) {
+      return { status: 503, message: "CRON_SECRET is not configured" };
+    }
+    return null;
+  }
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const actual = Buffer.from(authorization ?? "");
+  const ok = expected.length === actual.length && timingSafeEqual(expected, actual);
+  return ok ? null : { status: 401, message: "Unauthorized" };
+}
+
 // server/lib/leaseHolds.ts
 init_dates();
 init_schema();
@@ -3182,10 +3198,8 @@ async function syncRoomOccupancyStatus(today = todayIso()) {
 
 // api-src/cron/calendar.ts
 async function handler(req, res) {
-  const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.authorization !== `Bearer ${secret}`) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+  const denied = cronAuthFailure(req.headers.authorization);
+  if (denied) return res.status(denied.status).json({ message: denied.message });
   try {
     const result = await refreshExternalCalendars();
     if (result.totalListings > 0) {

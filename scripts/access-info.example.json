@@ -1,0 +1,29 @@
+{
+  "_readme": [
+    "Copy to scripts/access-info.local.json (gitignored) and fill in. Values are never printed.",
+    "property: exact property name OR id (run the script once with no file to list them).",
+    "Required before a stay can be approved: wifiSsid + directions. Door code is per-booking.",
+    "Omitted keys are left unchanged; set a key to \"\" to clear it."
+  ],
+  "properties": [
+    {
+      "property": "EXACT PROPERTY NAME OR UUID",
+      "info": {
+        "wifiSsid": "",
+        "wifiPassword": "",
+        "buildingEntry": "",
+        "directions": "",
+        "parking": "",
+        "checkInFrom": "4:00 PM",
+        "checkOutBy": "11:00 AM",
+        "notes": ""
+      }
+    }
+  ],
+  "rooms": [
+    {
+      "room": "ROOM UUID FROM THE INVENTORY LISTING",
+      "info": { "findingNotes": "", "floor": "", "doorLabel": "" }
+    }
+  ]
+}

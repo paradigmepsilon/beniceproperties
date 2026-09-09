@@ -16,6 +16,7 @@ import { runLeaseEndingNotices } from "../../server/lib/lifecycle";
 import { refreshExternalCalendars, checkCalendarSyncHealth } from "../../server/lib/icalSync";
 import { syncRoomOccupancyStatus } from "../../server/lib/occupancy";
 import { log } from "../../server/server-log";
+import { cronAuthFailure } from "../../server/lib/cronAuth";
 import { runLeaseHoldExpiry } from "../../server/lib/leaseHolds";
 import {
   runStayGhostSweep,
@@ -24,11 +25,10 @@ import {
 } from "../../server/lib/stayReminders";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Vercel Cron sends `Authorization: Bearer ${CRON_SECRET}`. Reject anything else.
-  const secret = process.env.CRON_SECRET;
-  if (secret && req.headers.authorization !== `Bearer ${secret}`) {
-    return res.status(401).json({ message: "Unauthorized" });
-  }
+  // Vercel Cron sends `Authorization: Bearer ${CRON_SECRET}`. Fails CLOSED on
+  // Vercel when the secret is unset — see server/lib/cronAuth.ts.
+  const denied = cronAuthFailure(req.headers.authorization);
+  if (denied) return res.status(denied.status).json({ message: denied.message });
 
   try {
     // Refresh Airbnb iCal blocks first so the guest calendar + guards are fresh

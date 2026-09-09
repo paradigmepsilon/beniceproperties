@@ -15,3 +15,6 @@ migrations/meta/_journal.json.lock
 
 # Table exports taken before destructive migrations (may hold guest PII)
 docs/migration-backups/
+
+# Per-property arrival info (wifi password, entry codes) fed to scripts/set-access-info.mjs
+scripts/access-info.local.json

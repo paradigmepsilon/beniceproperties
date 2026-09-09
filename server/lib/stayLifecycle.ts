@@ -251,6 +251,7 @@ export async function onStayApproved(ctx: StayContext): Promise<void> {
     "STAY_APPROVED_WELCOME",
     T.stayApprovedWelcome({
       ...v,
+      propertyAddress: ctx.property.address,
       checkIn: ctx.booking.checkIn,
       checkOut: ctx.booking.checkOut ?? "",
       accessText: renderAccessInfoText(info),
