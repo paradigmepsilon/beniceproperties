@@ -3915,3 +3915,68 @@ MIGRATION-2026-09-09: COMPLETE — pricing snapshots + booking gate live
 
 Still open: `wifiSsid` (+ password) for Hutchens Home and OBC Home — the only thing blocking a
 stay approval.
+
+### Addendum 3 — 2026-09-09, "Connect BNP API" on UO's calendar page + token rotation tooling
+
+**Symptom:** UO's BNP Calendar page showed the `Connect BNP API` notice instead of the block /
+sync / message / conflict buttons.
+
+**Root cause — local env, not production.** Addendum 2's parity check covered the Vercel
+**production** env on both projects; the local `.env` files were never wired. In UO's local `.env`:
+`BNP_API_TOKEN` was present but assigned an **empty string** (so `bnpApiConfigured()` is false and
+the notice is correct, not a bug), and `BNP_API_URL` was `beniceproperties.com` — **no scheme**,
+which `fetch` cannot parse, and the **apex**, which 308-redirects to `www`. That redirect is
+cross-origin, so undici strips the `Authorization` header and BNP answers 401 with a token that is
+actually fine. BNP's local `.env` had no `UO_BNP_API_TOKEN` at all (local `/api/uo/*` → 503).
+Production was healthy throughout: `GET https://www.beniceproperties.com/api/uo/properties` → 401
+(not 503), and both Vercel projects hold their keys.
+
+**Built:**
+- `scripts/rotate-uo-token.mjs` — rotates the one shared secret that BNP reads as
+  `UO_BNP_API_TOKEN` and UO sends as `BNP_API_TOKEN`, and pins UO's `BNP_API_URL` to the canonical
+  origin. **Dry run by default**; `--write-local` edits both `.env` files in place (backup first,
+  key replaced in position, never duplicated); `--verify` compares what the two files hold.
+  `--emit-token-file` re-creates the 0600 scratch file from the token already in local `.env`
+  **without rotating** — the file is meant to be destroyed after `vercel env add`, and needing it
+  again must not force a second rotation and a second window of 401s.
+  **Never prints the token** — all reporting is by 12-char sha256 fingerprint, same discipline as
+  `set-access-info.mjs`. Does not touch Vercel and does not deploy: it prints the commands for the
+  owner. Refuses a `--token-file` inside either repo.
+- `scripts/rotate-uo-token.test.ts` — 19 tests: lossless `.env` rewrite, present-but-empty vs
+  absent keys, the URL shapes that silently 401, and a source scan proving no `console.*` call and
+  no non-0600 write can disclose the token.
+- `.gitignore`: `.env` / `.env.local` → `.env*` + `!.env.example`. A `.env.bak-<ts>` was **not**
+  ignored under the old rules — the backup this script writes would have been committable with
+  every secret in it. UO already had this catch-all.
+- UO `src/lib/bnp/api-client.ts`: `baseUrl()` prepends `https://` to a scheme-less host and throws
+  a named `BnpApiError(500)` on an unusable URL rather than falling through to a relative request
+  against UO itself; `bnpApiConfigured()` now checks presence only, so a **malformed** value reads
+  as broken (red error) instead of absent (the misleading "set these vars" notice); a 401/403 that
+  followed a redirect now says the redirect stripped the header. +8 tests (20 total).
+
+**Tests run:** BNP `tsc --noEmit` 0 errors · `vitest run` **1097/1097** (73 files).
+UO `tsc --noEmit` 0 errors · `vitest run` **4523/4523** (256 files).
+
+**Rotation COMPLETE — 2026-09-09, owner-executed.** New token fingerprint `5a179bee0594`
+(sha256/12; the value appears nowhere in this log or the transcript). Set on BNP production as
+`UO_BNP_API_TOKEN` and UO production as `BNP_API_TOKEN`, single row each, no duplicates; UO
+`BNP_API_URL` re-added as `https://www.beniceproperties.com`. Both projects redeployed — BNP
+`beniceproperties-nku9u9b91` (aliased to www.beniceproperties.com), UO `unified-ellobdjmo`.
+
+Live verification after the redeploys: new token -> **200** · no auth header -> **401** (401 not
+503, so the token IS configured and the surface is fail-closed) · wrong bearer -> **401** ·
+non-Bearer scheme -> **401** · public `/api/properties` -> **200** · `/api/cron/sweep` without
+bearer -> **401** (the earlier fail-closed cron guard survived the redeploy).
+
+Sequencing note that IS the proof: the same new token returned **401 before** the BNP redeploy and
+**200 after** it, with no env change in between — that is what demonstrates the redeploy took, and
+it is the check to repeat on any future rotation. The PREVIOUS token could not be tested as
+rejected: its value only ever existed in Vercel (BNP local `.env` had no such key, UO local held
+an empty string) and the `env rm` overwrote it.
+
+**Still not done:** nothing is committed on either repo — BNP carries the script, its tests, the
+`.gitignore` fix and this entry; UO carries the api-client hardening on `feat/uo-pricing-writeback`.
+`vercel redeploy` rebuilds the SAME source commit, so that hardening is NOT in production; the
+production URL is correct, so nothing depends on it today. Local dev servers (:3000, :3008) must be
+restarted to pick up the new `.env`. The `.env.bak-*` files in both repos hold the pre-rotation
+secrets and are gitignored — delete them once the rotation is settled.

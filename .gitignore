@@ -1,7 +1,10 @@
 node_modules/
 dist/
-.env
-.env.local
+# Catch-all: a bare `.env` rule does not cover `.env.bak-<ts>` (written by
+# scripts/rotate-uo-token.mjs), `.env.old`, or anything else created while
+# debugging — and every one of those holds the same secrets as `.env`.
+.env*
+!.env.example
 *.log
 .DS_Store
 tsbuildinfo
