@@ -44,6 +44,7 @@ import {
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
 import { buildStrAvailability, buildRoomAvailability, isRoomBookableStatus, roomAvailableForDates } from "./lib/availability";
 import { todayIso } from "@shared/dates";
+import { postPaymentStatusFor } from "@shared/bookingGate";
 import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./lib/nextOpening";
 import {
   buildStrChargeMetadata,
@@ -2230,10 +2231,12 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
         await storage.updatePayment(payment.id, { status: "PAID", paidAt: new Date() });
       }
 
-      // Confirm booking; co-living becomes ACTIVE and the room is occupied.
-      await storage.updateBooking(booking.id, {
-        status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
-      });
+      // Confirm booking; the room is occupied either way. A gated co-living stay
+      // (7–28 nights) lands PENDING_APPROVAL rather than ACTIVE — this legacy
+      // hosted-Checkout path must not be a way around the ID + agreement gate.
+      // See shared/bookingGate.ts.
+      const liveStatus = postPaymentStatusFor(booking);
+      await storage.updateBooking(booking.id, { status: liveStatus });
       if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
 
       // If this checkout also created a subscription (co-living weekly), record it.
@@ -2273,10 +2276,7 @@ async function handleStripeEvent(event: import("stripe").Stripe.Event): Promise<
         const confirmedRoom = booking.roomId ? await storage.getRoom(booking.roomId) : null;
         if (confirmedProperty) {
           await onBookingConfirmed({
-            booking: {
-              ...booking,
-              status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED",
-            },
+            booking: { ...booking, status: liveStatus },
             property: confirmedProperty,
             room: confirmedRoom,
             guest: confirmedGuest,

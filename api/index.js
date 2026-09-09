@@ -162,6 +162,13 @@ var init_schema = __esm({
     BOOKING_MODELS = ["STR", "COLIVING"];
     BOOKING_STATUSES = [
       "PENDING_PAYMENT",
+      // Paid IN FULL, but held for human approval: a co-living stay of 7–28 nights
+      // whose guest must upload a driver's license and sign a rental agreement, and
+      // whose admin must check the name and set a door code, before it goes live.
+      // BLOCKS DATES — the guest's money is in hand, so the room is theirs while the
+      // review happens. Deliberately absent from NON_BLOCKING_BOOKING_STATUSES; see
+      // shared/bookingGate.ts and its test for the ratchet on that.
+      "PENDING_APPROVAL",
       "CONFIRMED",
       "ACTIVE",
       "COMPLETED",
@@ -2349,7 +2356,7 @@ import helmet from "helmet";
 import express from "express";
 import multer from "multer";
 import { z as z4 } from "zod";
-import { differenceInCalendarDays as differenceInCalendarDays2, parseISO as parseISO5 } from "date-fns";
+import { differenceInCalendarDays as differenceInCalendarDays3, parseISO as parseISO6 } from "date-fns";
 
 // server/auth.ts
 init_storage();
@@ -3090,11 +3097,28 @@ async function buildRoomAvailability(roomId) {
 // server/routes.ts
 init_dates();
 
+// shared/bookingGate.ts
+init_schema();
+import { differenceInCalendarDays as differenceInCalendarDays2, parseISO as parseISO4 } from "date-fns";
+function stayNights(checkIn, checkOut) {
+  const n = differenceInCalendarDays2(parseISO4(checkOut), parseISO4(checkIn));
+  return Number.isFinite(n) ? Math.max(0, n) : 0;
+}
+function isGatedStay(stay) {
+  if (stay.model !== "COLIVING") return false;
+  if (!stay.checkOut) return false;
+  return isDirectCoLivingStay(stayNights(stay.checkIn, stay.checkOut));
+}
+function postPaymentStatusFor(stay) {
+  if (isGatedStay(stay)) return "PENDING_APPROVAL";
+  return stay.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+}
+
 // server/lib/nextOpening.ts
-import { addDays as addDays5, parseISO as parseISO4 } from "date-fns";
+import { addDays as addDays5, parseISO as parseISO5 } from "date-fns";
 var ymd = (d) => d.toISOString().slice(0, 10);
 function dayAfter(isoDate) {
-  return ymd(addDays5(parseISO4(isoDate), 1));
+  return ymd(addDays5(parseISO5(isoDate), 1));
 }
 function strNextOpening(stays, today) {
   const spans = stays.filter((s) => s.checkOut != null).sort((a, b) => a.checkIn.localeCompare(b.checkIn));
@@ -4818,7 +4842,7 @@ async function materializeShortStayBooking(pi, deps = defaultDeps()) {
     reference,
     quotedTotal: m.quoted_total ?? "0"
   };
-  const okStatus = model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  const okStatus = postPaymentStatusFor({ model, checkIn, checkOut: checkOut ?? null });
   let booking;
   if (conflictReason) {
     booking = await storage2.createBooking({ ...baseBooking, status: "CONFLICT" });
@@ -4953,7 +4977,7 @@ async function confirmConflictBooking(bookingId, actor) {
       throw new BookingError("Those dates are still taken for this property \u2014 cannot confirm", 409);
     }
   }
-  const status = booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  const status = postPaymentStatusFor(booking);
   let updated;
   try {
     updated = await storage.updateBooking(booking.id, { status }) ?? { ...booking, status };
@@ -4990,7 +5014,8 @@ async function cancelBooking(args) {
       alreadyCancelled: true,
       roomFreed: false,
       refunded: false,
-      refundIds: []
+      refundIds: [],
+      alreadyRefunded: []
     };
   }
   if (!alreadyCancelled) await storage.updateBooking(booking.id, { status: "CANCELLED" });
@@ -5011,22 +5036,37 @@ async function cancelBooking(args) {
     }
   }
   const refundIds = [];
+  const alreadyRefunded = [];
   if (args.refund === true) {
     const payments2 = await storage.getPaymentsByBooking(booking.id);
     for (const p of payments2) {
       if (p.method !== "STRIPE" || p.status !== "PAID" || !p.stripeRef) continue;
-      const refund = await refundPaymentIntent({
-        paymentIntentId: p.stripeRef,
-        // Stable key: a retry returns the SAME refund instead of a second one.
-        idempotencyKey: `refund:${p.stripeRef}`
-      });
-      refundIds.push(refund.id);
-      log(
-        `booking ${booking.reference}: refunded payment ${p.id} (PI ${p.stripeRef}) \u2192 ${refund.id} by ${args.actor}`,
-        "admin"
-      );
+      try {
+        const refund = await refundPaymentIntent({
+          paymentIntentId: p.stripeRef,
+          // Stable key: a retry WITHIN 24 HOURS returns the same refund instead of
+          // a second one. Stripe expires idempotency keys after that, so the key
+          // is only the first line of defence — see the catch below.
+          idempotencyKey: `refund:${p.stripeRef}`
+        });
+        refundIds.push(refund.id);
+        log(
+          `booking ${booking.reference}: refunded payment ${p.id} (PI ${p.stripeRef}) \u2192 ${refund.id} by ${args.actor}`,
+          "admin"
+        );
+      } catch (err) {
+        if (err.code === "charge_already_refunded") {
+          alreadyRefunded.push(p.stripeRef);
+          log(
+            `booking ${booking.reference}: PI ${p.stripeRef} was already refunded \u2014 treating as done`,
+            "admin"
+          );
+          continue;
+        }
+        throw err;
+      }
     }
-    if (refundIds.length === 0) {
+    if (refundIds.length === 0 && alreadyRefunded.length === 0) {
       log(
         `booking ${booking.reference}: refund requested but no PAID Stripe payment to refund (manual payments settle off-band)`,
         "admin"
@@ -5039,8 +5079,9 @@ async function cancelBooking(args) {
     reference: booking.reference,
     alreadyCancelled,
     roomFreed,
-    refunded: refundIds.length > 0,
-    refundIds
+    refunded: refundIds.length > 0 || alreadyRefunded.length > 0,
+    refundIds,
+    alreadyRefunded
   };
 }
 
@@ -5643,7 +5684,7 @@ async function settleManualBookingPayment(args, deps = defaultDeps2()) {
     paidAt: /* @__PURE__ */ new Date()
   }) ?? payment;
   if (!booking) return { payment: updatedPayment, booking: null };
-  const liveStatus = booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  const liveStatus = postPaymentStatusFor(booking);
   const updatedBooking = await storage2.updateBooking(booking.id, { status: liveStatus }) ?? {
     ...booking,
     status: liveStatus
@@ -6859,7 +6900,7 @@ ${parts.join("\n")}
       const ci = typeof req.query.checkIn === "string" ? req.query.checkIn : "";
       const co = typeof req.query.checkOut === "string" ? req.query.checkOut : "";
       const dated = ISO.test(ci) && ISO.test(co) && co > ci && ci >= today ? { checkIn: ci, checkOut: co } : null;
-      const searchNights = dated ? differenceInCalendarDays2(parseISO5(dated.checkOut), parseISO5(dated.checkIn)) : 0;
+      const searchNights = dated ? differenceInCalendarDays3(parseISO6(dated.checkOut), parseISO6(dated.checkIn)) : 0;
       const colivingBelowMin = Boolean(dated) && searchNights < COLIVING_MIN_DAYS;
       const props = await storage.getProperties({ activeOnly: true });
       const withRent = await Promise.all(
@@ -8237,9 +8278,8 @@ async function handleStripeEvent(event) {
       if (payment) {
         await storage.updatePayment(payment.id, { status: "PAID", paidAt: /* @__PURE__ */ new Date() });
       }
-      await storage.updateBooking(booking.id, {
-        status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"
-      });
+      const liveStatus = postPaymentStatusFor(booking);
+      await storage.updateBooking(booking.id, { status: liveStatus });
       if (booking.roomId) await storage.updateRoom(booking.roomId, { status: "OCCUPIED" });
       if (session2.mode === "subscription" && session2.subscription) {
         const subId = typeof session2.subscription === "string" ? session2.subscription : session2.subscription.id;
@@ -8274,10 +8314,7 @@ async function handleStripeEvent(event) {
         const confirmedRoom = booking.roomId ? await storage.getRoom(booking.roomId) : null;
         if (confirmedProperty) {
           await onBookingConfirmed({
-            booking: {
-              ...booking,
-              status: booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED"
-            },
+            booking: { ...booking, status: liveStatus },
             property: confirmedProperty,
             room: confirmedRoom,
             guest: confirmedGuest

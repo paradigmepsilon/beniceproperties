@@ -55,6 +55,13 @@ export const ROOM_UNBOOKABLE_STATUSES = ["HOLD", "MAINTENANCE", "INACTIVE"] as c
 export const BOOKING_MODELS = ["STR", "COLIVING"] as const;
 export const BOOKING_STATUSES = [
   "PENDING_PAYMENT",
+  // Paid IN FULL, but held for human approval: a co-living stay of 7–28 nights
+  // whose guest must upload a driver's license and sign a rental agreement, and
+  // whose admin must check the name and set a door code, before it goes live.
+  // BLOCKS DATES — the guest's money is in hand, so the room is theirs while the
+  // review happens. Deliberately absent from NON_BLOCKING_BOOKING_STATUSES; see
+  // shared/bookingGate.ts and its test for the ratchet on that.
+  "PENDING_APPROVAL",
   "CONFIRMED",
   "ACTIVE",
   "COMPLETED",

@@ -24,6 +24,7 @@ import { onBookingConfirmed } from "./lifecycle";
 import { todayIso } from "@shared/dates";
 import { log } from "../server-log";
 import type { Booking } from "@shared/schema";
+import { postPaymentStatusFor } from "@shared/bookingGate";
 
 /** Postgres `exclusion_violation` — the range-overlap constraint rejected the row. */
 const PG_EXCLUSION_VIOLATION = "23P01";
@@ -90,7 +91,10 @@ export async function confirmConflictBooking(bookingId: string, actor: string): 
     }
   }
 
-  const status = booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  // Resolving a CONFLICT hands the booking back into the normal lifecycle, which
+  // for a gated co-living stay means PENDING_APPROVAL — not ACTIVE. Confirming
+  // out of conflict must not be a way around the ID check.
+  const status = postPaymentStatusFor(booking);
   // The gate above is a read-then-write race window: another confirmation (or a
   // fresh paid booking) can take the dates between the check and this UPDATE. The
   // Postgres exclusion constraint is the real arbiter, and it raises 23P01 —
@@ -128,8 +132,14 @@ export interface CancelBookingResult {
   reference: string;
   alreadyCancelled: boolean;
   roomFreed: boolean;
+  /** True when the money is back with the guest — whether we refunded it on this
+   *  pass or Stripe told us it was already refunded on an earlier one. */
   refunded: boolean;
+  /** Stripe refund ids created by THIS call. */
   refundIds: string[];
+  /** PaymentIntents Stripe reported as already refunded — a retry outside the
+   *  24h idempotency-key window. Money is back; there is just no new refund id. */
+  alreadyRefunded: string[];
 }
 
 /**
@@ -160,6 +170,7 @@ export async function cancelBooking(args: {
       roomFreed: false,
       refunded: false,
       refundIds: [],
+      alreadyRefunded: [],
     };
   }
 
@@ -187,22 +198,42 @@ export async function cancelBooking(args: {
 
   // --- Refund: explicit opt-in only ---
   const refundIds: string[] = [];
+  const alreadyRefunded: string[] = [];
   if (args.refund === true) {
     const payments = await storage.getPaymentsByBooking(booking.id);
     for (const p of payments) {
       if (p.method !== "STRIPE" || p.status !== "PAID" || !p.stripeRef) continue;
-      const refund = await refundPaymentIntent({
-        paymentIntentId: p.stripeRef,
-        // Stable key: a retry returns the SAME refund instead of a second one.
-        idempotencyKey: `refund:${p.stripeRef}`,
-      });
-      refundIds.push(refund.id);
-      log(
-        `booking ${booking.reference}: refunded payment ${p.id} (PI ${p.stripeRef}) → ${refund.id} by ${args.actor}`,
-        "admin",
-      );
+      try {
+        const refund = await refundPaymentIntent({
+          paymentIntentId: p.stripeRef,
+          // Stable key: a retry WITHIN 24 HOURS returns the same refund instead of
+          // a second one. Stripe expires idempotency keys after that, so the key
+          // is only the first line of defence — see the catch below.
+          idempotencyKey: `refund:${p.stripeRef}`,
+        });
+        refundIds.push(refund.id);
+        log(
+          `booking ${booking.reference}: refunded payment ${p.id} (PI ${p.stripeRef}) → ${refund.id} by ${args.actor}`,
+          "admin",
+        );
+      } catch (err) {
+        // Past the 24h key window Stripe stops deduping and instead rejects the
+        // second attempt as `charge_already_refunded`. That is the SUCCESS case:
+        // the guest's money is already back. Treating it as a failure would make
+        // a daily retry (the ghost-booking sweep) look permanently broken and
+        // leave an operator unable to tell whether money had moved.
+        if ((err as { code?: string }).code === "charge_already_refunded") {
+          alreadyRefunded.push(p.stripeRef);
+          log(
+            `booking ${booking.reference}: PI ${p.stripeRef} was already refunded — treating as done`,
+            "admin",
+          );
+          continue;
+        }
+        throw err;
+      }
     }
-    if (refundIds.length === 0) {
+    if (refundIds.length === 0 && alreadyRefunded.length === 0) {
       log(
         `booking ${booking.reference}: refund requested but no PAID Stripe payment to refund (manual payments settle off-band)`,
         "admin",
@@ -217,7 +248,8 @@ export async function cancelBooking(args: {
     reference: booking.reference,
     alreadyCancelled,
     roomFreed,
-    refunded: refundIds.length > 0,
+    refunded: refundIds.length > 0 || alreadyRefunded.length > 0,
     refundIds,
+    alreadyRefunded,
   };
 }

@@ -32,6 +32,7 @@ import {
 import { posthog } from "./posthog";
 import { log } from "../server-log";
 import type { Booking } from "@shared/schema";
+import { postPaymentStatusFor } from "@shared/bookingGate";
 
 /** Postgres `exclusion_violation` — the range-overlap constraint rejected the row. */
 const PG_EXCLUSION_VIOLATION = "23P01";
@@ -302,7 +303,11 @@ export async function materializeShortStayBooking(
     reference,
     quotedTotal: m.quoted_total ?? "0",
   };
-  const okStatus = model === "COLIVING" ? ("ACTIVE" as const) : ("CONFIRMED" as const);
+  // One source of truth for the post-payment status. A gated co-living stay
+  // (7–28 nights) lands PENDING_APPROVAL, not ACTIVE — it blocks the dates but
+  // waits on the guest's ID + signature and an admin's review. See
+  // shared/bookingGate.ts.
+  const okStatus = postPaymentStatusFor({ model, checkIn, checkOut: checkOut ?? null });
 
   let booking;
   if (conflictReason) {

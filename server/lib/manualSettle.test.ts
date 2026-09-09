@@ -62,15 +62,31 @@ describe("settleManualBookingPayment", () => {
     expect(deps.storage.isRoomAvailableForRange).toHaveBeenCalledWith(expect.objectContaining({ roomId: "r1", excludeBookingId: "b1", endExclusive: true }));
   });
 
-  it("marks the payment PAID, activates the co-living booking, occupies the room, confirms to the guest", async () => {
+  // Settling by hand must NOT be the way around the approval gate. The fixture is
+  // a 9-night co-living stay, so it is gated: the payment goes PAID and the room
+  // is occupied, but the booking waits on the guest's ID + signature.
+  it("marks the payment PAID and occupies the room, but holds a gated co-living stay for approval", async () => {
     const { deps, calls } = makeDeps();
     const result = await settleManualBookingPayment({ paymentId: "pay1", adminId: "a1", actor: "admin@x" }, deps);
     expect(result.payment.status).toBe("PAID");
-    expect(result.booking.status).toBe("ACTIVE");
+    expect(result.booking.status).toBe("PENDING_APPROVAL");
     expect(deps.storage.updatePayment).toHaveBeenCalledWith("pay1", expect.objectContaining({ status: "PAID", confirmedBy: "a1" }));
     expect(deps.storage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
-    expect(deps.onBookingConfirmed).toHaveBeenCalledWith(expect.objectContaining({ booking: expect.objectContaining({ id: "b1", status: "ACTIVE" }) }));
+    expect(deps.onBookingConfirmed).toHaveBeenCalledWith(expect.objectContaining({ booking: expect.objectContaining({ id: "b1", status: "PENDING_APPROVAL" }) }));
     expect(calls.indexOf("updatePayment")).toBeLessThan(calls.indexOf("onBookingConfirmed"));
+  });
+
+  // The gate is length-scoped, not model-scoped: an open-ended co-living stay has
+  // unknowable nights, so it keeps the pre-gate behaviour.
+  it("still activates an open-ended co-living stay (null checkOut is ungated)", async () => {
+    const { deps } = makeDeps();
+    (deps.storage.getBooking as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: "b1", propertyId: "p1", roomId: "r1", guestId: "g1", model: "COLIVING",
+      checkIn: "2026-10-01", checkOut: null,
+      status: "PENDING_PAYMENT", reference: "BNP-TEST-0003", quotedTotal: "300.00",
+    });
+    const result = await settleManualBookingPayment({ paymentId: "pay1", adminId: "a1", actor: "admin@x" }, deps);
+    expect(result.booking.status).toBe("ACTIVE");
   });
 
   it("uses the STR gate for a whole-property booking and confirms it as CONFIRMED", async () => {

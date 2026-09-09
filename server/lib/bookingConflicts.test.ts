@@ -119,6 +119,34 @@ describe("cancelBooking", () => {
     expect(res.refundIds).toEqual(["re_1"]);
   });
 
+  // A Stripe idempotency key only lives 24 HOURS. `refund:<pi>` therefore stops
+  // protecting anything the moment a retry lands a day later — and the upcoming
+  // ghost-booking sweep retries DAILY. Past that window Stripe answers with
+  // `charge_already_refunded`, which used to propagate as a failure: the caller
+  // saw a 500 and could not tell whether money had moved. The already-refunded
+  // answer IS the success answer.
+  it("treats charge_already_refunded as success (the 24h idempotency key has expired)", async () => {
+    mockStripe.refundPaymentIntent.mockRejectedValueOnce(
+      Object.assign(new Error("Charge has already been refunded."), { code: "charge_already_refunded" }),
+    );
+
+    const res = await cancelBooking({ bookingId: "bk-1", actor: "admin@bnp", refund: true });
+
+    expect(res.refunded).toBe(true);
+    expect(res.alreadyRefunded).toEqual(["pi_123"]);
+    expect(res.refundIds).toEqual([]);
+  });
+
+  it("still surfaces a real Stripe failure rather than silently claiming a refund", async () => {
+    mockStripe.refundPaymentIntent.mockRejectedValueOnce(
+      Object.assign(new Error("Your card issuer declined the refund."), { code: "card_declined" }),
+    );
+
+    await expect(
+      cancelBooking({ bookingId: "bk-1", actor: "admin@bnp", refund: true }),
+    ).rejects.toThrow(/declined the refund/);
+  });
+
   it("never refunds a manual (CashApp/Zelle) or unpaid payment through Stripe", async () => {
     mockStorage.getPaymentsByBooking.mockResolvedValue([
       { ...paidStripePayment, id: "pay-2", method: "CASHAPP", stripeRef: null },
@@ -219,15 +247,18 @@ describe("confirmConflictBooking", () => {
       endExclusive: true,
       excludeBookingId: "bk-1",
     });
-    expect(mockStorage.updateBooking).toHaveBeenCalledWith("bk-1", { status: "ACTIVE" });
+    // The fixture is a 9-night co-living stay, so resolving the conflict hands it
+    // back into the gate rather than straight to ACTIVE. Confirming out of
+    // CONFLICT must not be an admin shortcut past the ID + agreement check.
+    expect(mockStorage.updateBooking).toHaveBeenCalledWith("bk-1", { status: "PENDING_APPROVAL" });
     expect(mockStorage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
     expect(mockStorage.updateEscalation).toHaveBeenCalledWith(
       "esc-1",
       expect.objectContaining({ status: "RESOLVED", resolvedBy: "admin@bnp" }),
     );
     expect(mockLifecycle.onBookingConfirmed).toHaveBeenCalledTimes(1);
-    expect(mockLifecycle.onBookingConfirmed.mock.calls[0][0].booking.status).toBe("ACTIVE");
-    expect(res.status).toBe("ACTIVE");
+    expect(mockLifecycle.onBookingConfirmed.mock.calls[0][0].booking.status).toBe("PENDING_APPROVAL");
+    expect(res.status).toBe("PENDING_APPROVAL");
   });
 
   it("confirms an STR booking as CONFIRMED and never touches a room", async () => {

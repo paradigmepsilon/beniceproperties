@@ -102,12 +102,15 @@ beforeEach(() => {
 });
 
 describe("materializeShortStayBooking — happy path", () => {
-  it("writes a CONFIRMED/ACTIVE booking, occupies the room, and fires the confirmation", async () => {
+  it("writes a gated booking, occupies the room, and fires the confirmation", async () => {
     const deps = makeDeps();
     await run(pi(), deps);
 
     const created = deps.storage.createBooking.mock.calls[0][0];
-    expect(created.status).toBe("ACTIVE"); // COLIVING short stay
+    // The fixture is a co-living stay inside the 7–28 night window, so it is held
+    // for approval rather than going live. The room is still occupied and the
+    // dates still blocked — the guest paid in full. See shared/bookingGate.ts.
+    expect(created.status).toBe("PENDING_APPROVAL");
     expect(created.reference).toBe("BNP-7QK4-2F9X");
     expect(deps.storage.updateRoom).toHaveBeenCalledWith("r1", { status: "OCCUPIED" });
     expect(deps.storage.createPayment.mock.calls[0][0]).toMatchObject({
@@ -117,6 +120,37 @@ describe("materializeShortStayBooking — happy path", () => {
     expect(deps.onBookingConfirmed).toHaveBeenCalledTimes(1);
     expect(deps.storage.raiseEscalationOnce).not.toHaveBeenCalled();
     expect(mockStripe.refundPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  // The gate must DISCRIMINATE, not just fire. These two prove it: a themed
+  // date-night STR booking cannot be made to wait 24 hours for an ID check, and
+  // an open-ended co-living stay has no computable night count.
+  it("leaves a whole-property STR booking CONFIRMED — never gated", async () => {
+    const deps = makeDeps();
+    await run(pi({ model: "STR", room_id: "null", room_name: "null", check_out: "2026-07-03" }), deps);
+
+    expect(deps.storage.createBooking.mock.calls[0][0].status).toBe("CONFIRMED");
+    expect(deps.onBookingConfirmed).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an open-ended co-living stay ACTIVE — ungated, behaviour preserved", async () => {
+    const deps = makeDeps();
+    await run(pi({ check_out: "null" }), deps);
+
+    expect(deps.storage.createBooking.mock.calls[0][0].status).toBe("ACTIVE");
+  });
+
+  it("gates a stay at each end of the 7–28 night window and not outside it", async () => {
+    for (const [checkOut, expected] of [
+      ["2026-07-07", "ACTIVE"],            // 6 nights — below the co-living minimum
+      ["2026-07-08", "PENDING_APPROVAL"],  // 7 — gate opens
+      ["2026-07-29", "PENDING_APPROVAL"],  // 28 — gate closes
+      ["2026-07-30", "ACTIVE"],            // 29 — a lease, never a booking
+    ] as const) {
+      const deps = makeDeps();
+      await run(pi({ check_out: checkOut }), deps);
+      expect(deps.storage.createBooking.mock.calls[0][0].status, `check_out ${checkOut}`).toBe(expected);
+    }
   });
 
   it("is idempotent across Stripe retries (booking already exists for the reference)", async () => {
@@ -255,7 +289,11 @@ describe("materializeShortStayBooking — CONFLICT instead of auto-refund", () =
     await run(pi(), deps);
 
     expect(deps.storage.createBooking).toHaveBeenCalledTimes(2);
-    expect(deps.storage.createBooking.mock.calls[0][0].status).toBe("ACTIVE");
+    // First attempt uses the gated status; the constraint rejects it, and the
+    // retry writes CONFLICT — which is exempt from the constraint, so it lands.
+    // CONFLICT outranks the gate: an unresolved paid booking is an admin problem,
+    // not a "please upload your ID" problem.
+    expect(deps.storage.createBooking.mock.calls[0][0].status).toBe("PENDING_APPROVAL");
     expect(deps.storage.createBooking.mock.calls[1][0].status).toBe("CONFLICT");
     expect(deps.storage.createPayment.mock.calls[0][0]).toMatchObject({ status: "PAID" });
     expect(mockStripe.refundPaymentIntent).not.toHaveBeenCalled();

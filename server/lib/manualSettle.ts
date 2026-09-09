@@ -17,6 +17,7 @@ import { BookingError, strHasConflict as realStrHasConflict } from "./booking";
 import { onBookingConfirmed as realOnBookingConfirmed } from "./lifecycle";
 import { notifyAdmin as realNotifyAdmin } from "./notifications";
 import type { Booking, Payment } from "@shared/schema";
+import { postPaymentStatusFor } from "@shared/bookingGate";
 
 export interface ManualSettleDeps {
   storage: Pick<
@@ -86,7 +87,10 @@ export async function settleManualBookingPayment(
 
   if (!booking) return { payment: updatedPayment, booking: null };
 
-  const liveStatus = booking.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  // A manually-settled CashApp/Zelle booking goes through the SAME approval gate
+  // as a card one — otherwise settling by hand would be the way to skip the ID
+  // check. See shared/bookingGate.ts.
+  const liveStatus = postPaymentStatusFor(booking);
   const updatedBooking = (await storage.updateBooking(booking.id, { status: liveStatus })) ?? {
     ...booking,
     status: liveStatus,

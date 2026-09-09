@@ -318,9 +318,17 @@ function PayForm({
     identify(email);
     track("checkout_contact_attached", { reference });
 
+    // `redirect: "if_required"` keeps the card path on this page, but Stripe still
+    // needs a return_url for any method that MUST redirect (3DS challenge, Cash App
+    // Pay, Klarna, Link). Without one it throws an IntegrationError at confirm
+    // time — the guest picks a method and gets a generic failure. The confirmation
+    // page reads the redirected-back PaymentIntent from the query string.
     const { error, paymentIntent } = await stripe.confirmPayment({
       elements,
       redirect: "if_required",
+      confirmParams: {
+        return_url: `${window.location.origin}/confirmation/${reference}`,
+      },
     });
 
     if (error) {
