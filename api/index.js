@@ -4260,6 +4260,9 @@ function lookupUrl() {
 function portalUrl(lease) {
   return lease.portalToken ? `${publicBaseUrl()}/portal/${lease.portalToken}` : lookupUrl();
 }
+function stayUrl(gate) {
+  return gate?.gateToken ? `${publicBaseUrl()}/stay/${gate.gateToken}` : lookupUrl();
+}
 
 // server/lib/dunning.ts
 var MS_PER_DAY2 = 24 * 60 * 60 * 1e3;
@@ -5001,16 +5004,138 @@ async function chargeCleaningFeeOffSession(leaseId, paymentMethodId) {
 
 // server/lib/materialize.ts
 init_storage();
+
+// server/lib/stayLifecycle.ts
+init_storage();
+init_schema();
+
+// server/lib/stayTemplates.ts
+function listOf(items) {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+var roomClause = (room) => room ? ` (${room})` : "";
+function stayDocsRequired(v) {
+  const what = listOf(v.outstanding);
+  return {
+    subject: `Thanks for booking \u2014 ${v.outstanding.length} thing${v.outstanding.length === 1 ? "" : "s"} left to finish (${v.reference})`,
+    body: `Hi ${v.name}, thank you for booking${roomClause(v.room)} at ${v.property} from ${v.checkIn} to ${v.checkOut}. Your payment of ${v.total} has gone through and your dates are held.
+
+TO COMPLETE YOUR BOOKING we still need ${what}. It takes about two minutes:
+${v.stayUrl}
+
+Once we have everything, we review it and confirm \u2014 that can take up to 24 hours. We will email you your door code and arrival details as soon as it is approved.
+
+Reference ${v.reference}.`,
+    smsBody: `BNP: payment received for ${v.reference}. Finish your booking (ID + agreement): ${v.smsUrl}`
+  };
+}
+
+// server/lib/accessInfo.ts
+init_storage();
+
+// server/lib/stayLifecycle.ts
+async function guestSendsEnabled() {
+  const setting = await storage.getSetting(GUEST_AUTO_NOTIFICATIONS_SETTING);
+  return setting?.value !== "false";
+}
+function outstandingItems(gate) {
+  const items = [];
+  if (!gate?.agreementSignedAt) items.push("your signed rental agreement");
+  if (!gate || !["PENDING_REVIEW", "APPROVED"].includes(gate.verificationStatus)) {
+    items.push("a photo of your driver's licence");
+  }
+  return items;
+}
+async function sendGuest(ctx, kind, tpl, scheduleSeq = null) {
+  if (await storage.hasLifecycleEvent({ bookingId: ctx.booking.id }, kind, scheduleSeq)) {
+    return false;
+  }
+  const enabled = await guestSendsEnabled();
+  if (!enabled) {
+    await storage.recordLifecycleEvent({
+      bookingId: ctx.booking.id,
+      eventType: kind,
+      scheduleSeq,
+      status: "SKIPPED",
+      emailSent: false,
+      smsSent: false
+    });
+    return false;
+  }
+  const sent = await notifyGuest({
+    email: ctx.guest.email,
+    phone: ctx.guest.phone,
+    subject: tpl.subject,
+    body: tpl.body,
+    smsBody: tpl.smsBody,
+    logBody: tpl.logBody,
+    context: { bookingId: ctx.booking.id, guestId: ctx.guest.id, kind }
+  });
+  await storage.recordLifecycleEvent({
+    bookingId: ctx.booking.id,
+    eventType: kind,
+    scheduleSeq,
+    status: sent.email.sent ? "SENT" : "SKIPPED",
+    emailSent: sent.email.sent,
+    smsSent: sent.sms.sent
+  });
+  return sent.email.sent;
+}
+async function vars(ctx) {
+  const url = stayUrl(ctx.gate);
+  return {
+    name: ctx.guest.name,
+    property: ctx.property.name,
+    room: roomDisplayName(ctx.room),
+    reference: ctx.booking.reference,
+    stayUrl: url,
+    // Routed through the A2P 10DLC switch: when SMS links are off this is "" and
+    // the template renders without one.
+    smsUrl: await smsLink(url)
+  };
+}
+async function onStayBookingConfirmed(ctx) {
+  const v = await vars(ctx);
+  const tpl = stayDocsRequired({
+    ...v,
+    checkIn: ctx.booking.checkIn,
+    checkOut: ctx.booking.checkOut ?? "",
+    total: fmtMoney(parseFloat(ctx.booking.quotedTotal)),
+    outstanding: outstandingItems(ctx.gate)
+  });
+  await sendGuest(ctx, "STAY_DOCS_REQUIRED", tpl);
+  log(`stay ${ctx.booking.reference}: gated \u2014 documents requested`, "lifecycle");
+}
+
+// server/lib/gateToken.ts
+import { customAlphabet as customAlphabet3 } from "nanoid";
+var ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+var GATE_TOKEN_LENGTH = 24;
+var gateTokenGen = customAlphabet3(ALPHABET, GATE_TOKEN_LENGTH);
+var GATE_DOCS_DEADLINE_HOURS = 72;
+var GATE_DOCS_DEADLINE_MS = GATE_DOCS_DEADLINE_HOURS * 60 * 60 * 1e3;
+
+// server/lib/materialize.ts
 var PG_EXCLUSION_VIOLATION = "23P01";
 var defaultDeps = () => ({
   storage,
   resolveBooking,
   notifyAdmin,
-  onBookingConfirmed
+  onBookingConfirmed,
+  onStayBookingConfirmed
 });
+async function fireConfirmation(args, deps) {
+  if (args.booking.status === "PENDING_APPROVAL") {
+    const gate = await deps.storage.getBookingGate(args.booking.id);
+    await deps.onStayBookingConfirmed({ ...args, gate: gate ?? null });
+    return;
+  }
+  await deps.onBookingConfirmed(args);
+}
 async function repairExistingBooking(args) {
   const { existing, pi, reference, deps } = args;
-  const { storage: storage2, notifyAdmin: notifyAdmin2, onBookingConfirmed: onBookingConfirmed2 } = deps;
+  const { storage: storage2, notifyAdmin: notifyAdmin2 } = deps;
   const m = pi.metadata ?? {};
   const payment = await storage2.getPaymentByStripeRef(pi.id);
   if (!payment) {
@@ -5065,14 +5190,14 @@ async function repairExistingBooking(args) {
     log(`short-stay ${reference} already exists as CONFLICT \u2014 escalation re-checked`, "stripe");
     return;
   }
-  if (existing.status === "CONFIRMED" || existing.status === "ACTIVE") {
+  if (existing.status === "CONFIRMED" || existing.status === "ACTIVE" || existing.status === "PENDING_APPROVAL") {
     const [property, room, guest] = await Promise.all([
       storage2.getProperty(existing.propertyId),
       existing.roomId ? storage2.getRoom(existing.roomId) : Promise.resolve(void 0),
       storage2.getGuest(existing.guestId)
     ]);
     if (property && guest) {
-      await onBookingConfirmed2({ booking: existing, property, room: room ?? null, guest });
+      await fireConfirmation({ booking: existing, property, room: room ?? null, guest }, deps);
     }
     log(`short-stay booking ${reference} already exists \u2014 confirmation re-checked`, "stripe");
     return;
@@ -5084,7 +5209,7 @@ function brokenIntentBody(pi, m, reason) {
   return `PaymentIntent ${pi.id}${m.reference && m.reference !== "null" ? ` for reference ${m.reference}` : ""} ($${m.quoted_total ?? m.amount ?? "?"}${where ? `, ${where}` : ""}) succeeded but ${reason}, so no booking row could be written. The charge stands. Reconcile this manually in Stripe and the admin console.`;
 }
 async function materializeShortStayBooking(pi, deps = defaultDeps()) {
-  const { storage: storage2, resolveBooking: resolveBooking2, notifyAdmin: notifyAdmin2, onBookingConfirmed: onBookingConfirmed2 } = deps;
+  const { storage: storage2, resolveBooking: resolveBooking2, notifyAdmin: notifyAdmin2 } = deps;
   const m = pi.metadata ?? {};
   const reference = m.reference;
   if (!reference) {
@@ -5189,6 +5314,12 @@ async function materializeShortStayBooking(pi, deps = defaultDeps()) {
       booking = await storage2.createBooking({ ...baseBooking, status: "CONFLICT" });
     }
   }
+  if (booking.status === "PENDING_APPROVAL") {
+    await storage2.ensureBookingGate(booking.id, {
+      gateToken: gateTokenGen(),
+      docsDeadlineAt: new Date(Date.now() + GATE_DOCS_DEADLINE_MS)
+    });
+  }
   await storage2.createPayment({
     bookingId: booking.id,
     type: "ONE_TIME",
@@ -5254,7 +5385,7 @@ async function materializeShortStayBooking(pi, deps = defaultDeps()) {
     }
   });
   if (property) {
-    await onBookingConfirmed2({ booking, property, room: room ?? null, guest: guestRow });
+    await fireConfirmation({ booking, property, room: room ?? null, guest: guestRow }, deps);
   }
   log(`short-stay booking ${reference} materialized + confirmed via ${pi.id}`, "stripe");
 }

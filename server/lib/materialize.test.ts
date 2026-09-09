@@ -85,10 +85,16 @@ function makeDeps() {
       getRoom: vi.fn().mockResolvedValue(ROOM),
       raiseEscalationOnce: vi.fn().mockResolvedValue({ id: "esc-1" }),
       getGuest: vi.fn().mockResolvedValue(GUEST),
+      ensureBookingGate: vi.fn().mockImplementation(async (bookingId: string, seed: Record<string, unknown>) => ({
+        bookingId,
+        ...seed,
+      })),
+      getBookingGate: vi.fn().mockResolvedValue({ bookingId: "bk-1", gateToken: "tok" }),
     },
     resolveBooking: vi.fn().mockResolvedValue({}),
     notifyAdmin: vi.fn().mockResolvedValue({ email: { sent: true }, telegram: { sent: true } }),
     onBookingConfirmed: vi.fn().mockResolvedValue(undefined),
+    onStayBookingConfirmed: vi.fn().mockResolvedValue(undefined),
   };
 }
 
@@ -117,7 +123,16 @@ describe("materializeShortStayBooking — happy path", () => {
       status: "PAID",
       stripeRef: "pi_123",
     });
-    expect(deps.onBookingConfirmed).toHaveBeenCalledTimes(1);
+    // Routed to the GATED confirmation, never the plain "you're booked" email —
+    // that one says nothing about the licence and agreement still owed, so a
+    // guest who received it would believe they were finished.
+    expect(deps.onStayBookingConfirmed).toHaveBeenCalledTimes(1);
+    expect(deps.onBookingConfirmed).not.toHaveBeenCalled();
+    // And the gate row is minted BEFORE the send, since the email carries its link.
+    expect(deps.storage.ensureBookingGate).toHaveBeenCalledTimes(1);
+    const [, seed] = deps.storage.ensureBookingGate.mock.calls[0];
+    expect(seed.gateToken).toHaveLength(24);
+    expect(seed.docsDeadlineAt).toBeInstanceOf(Date);
     expect(deps.storage.raiseEscalationOnce).not.toHaveBeenCalled();
     expect(mockStripe.refundPaymentIntent).not.toHaveBeenCalled();
   });
@@ -130,7 +145,10 @@ describe("materializeShortStayBooking — happy path", () => {
     await run(pi({ model: "STR", room_id: "null", room_name: "null", check_out: "2026-07-03" }), deps);
 
     expect(deps.storage.createBooking.mock.calls[0][0].status).toBe("CONFIRMED");
+    // Ungated: the plain confirmation, and NO gate row at all.
     expect(deps.onBookingConfirmed).toHaveBeenCalledTimes(1);
+    expect(deps.onStayBookingConfirmed).not.toHaveBeenCalled();
+    expect(deps.storage.ensureBookingGate).not.toHaveBeenCalled();
   });
 
   it("leaves an open-ended co-living stay ACTIVE — ungated, behaviour preserved", async () => {

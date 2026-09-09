@@ -31,7 +31,9 @@ import {
 } from "./lifecycle";
 import { posthog } from "./posthog";
 import { log } from "../server-log";
-import type { Booking } from "@shared/schema";
+import type { Booking, Guest, Property, Room } from "@shared/schema";
+import { onStayBookingConfirmed as realOnStayBookingConfirmed } from "./stayLifecycle";
+import { gateTokenGen, GATE_DOCS_DEADLINE_MS } from "./gateToken";
 import { postPaymentStatusFor } from "@shared/bookingGate";
 
 /** Postgres `exclusion_violation` — the range-overlap constraint rejected the row. */
@@ -42,6 +44,8 @@ export interface MaterializeDeps {
   resolveBooking: typeof realResolveBooking;
   notifyAdmin: typeof realNotifyAdmin;
   onBookingConfirmed: typeof realOnBookingConfirmed;
+  /** Gated co-living stays go here instead of onBookingConfirmed. */
+  onStayBookingConfirmed: typeof realOnStayBookingConfirmed;
 }
 
 const defaultDeps = (): MaterializeDeps => ({
@@ -49,7 +53,29 @@ const defaultDeps = (): MaterializeDeps => ({
   resolveBooking: realResolveBooking,
   notifyAdmin: realNotifyAdmin,
   onBookingConfirmed: realOnBookingConfirmed,
+  onStayBookingConfirmed: realOnStayBookingConfirmed,
 });
+
+/**
+ * Route a freshly-live booking to the right confirmation.
+ *
+ * A GATED stay must not receive the plain "you're booked" email — that message
+ * says nothing about the licence and agreement still owed, and a guest who
+ * believes they are done will not come back until the nudge (or the auto-decline)
+ * arrives. Called from BOTH places a booking becomes live, because a Stripe
+ * retry lands in repairExistingBooking, not here.
+ */
+async function fireConfirmation(
+  args: { booking: Booking; property: Property; room: Room | null; guest: Guest },
+  deps: MaterializeDeps,
+): Promise<void> {
+  if (args.booking.status === "PENDING_APPROVAL") {
+    const gate = await deps.storage.getBookingGate(args.booking.id);
+    await deps.onStayBookingConfirmed({ ...args, gate: gate ?? null });
+    return;
+  }
+  await deps.onBookingConfirmed(args);
+}
 
 /**
  * A booking already exists for this reference — repair whatever the previous
@@ -62,7 +88,8 @@ const defaultDeps = (): MaterializeDeps => ({
  *    (bookingId, kind, OPEN)); the admin is paged only when that returns a NEW
  *    row, so a webhook retry storm cannot re-page. Never a guest send, never a
  *    room grab.
- *  - live booking (CONFIRMED/ACTIVE): `onBookingConfirmed` re-runs, deduped via
+ *  - live booking (CONFIRMED/ACTIVE/PENDING_APPROVAL): the matching confirmation
+ *    re-runs via fireConfirmation, deduped via
  *    lifecycle_events, so a confirmation lost to a mid-flight crash still lands.
  *  - CANCELLED/other: left alone — a human already decided.
  */
@@ -73,7 +100,7 @@ async function repairExistingBooking(args: {
   deps: MaterializeDeps;
 }): Promise<void> {
   const { existing, pi, reference, deps } = args;
-  const { storage, notifyAdmin, onBookingConfirmed } = deps;
+  const { storage, notifyAdmin } = deps;
   const m = pi.metadata ?? {};
 
   const payment = await storage.getPaymentByStripeRef(pi.id);
@@ -136,14 +163,20 @@ async function repairExistingBooking(args: {
     return;
   }
 
-  if (existing.status === "CONFIRMED" || existing.status === "ACTIVE") {
+  if (
+    existing.status === "CONFIRMED" ||
+    existing.status === "ACTIVE" ||
+    existing.status === "PENDING_APPROVAL"
+  ) {
     const [property, room, guest] = await Promise.all([
       storage.getProperty(existing.propertyId),
       existing.roomId ? storage.getRoom(existing.roomId) : Promise.resolve(undefined),
       storage.getGuest(existing.guestId),
     ]);
     if (property && guest) {
-      await onBookingConfirmed({ booking: existing, property, room: room ?? null, guest });
+      // A gated booking must re-fire its GATED confirmation, not the plain one —
+      // both are deduped through lifecycle_events, so a retry storm is safe.
+      await fireConfirmation({ booking: existing, property, room: room ?? null, guest }, deps);
     }
     log(`short-stay booking ${reference} already exists — confirmation re-checked`, "stripe");
     return;
@@ -185,7 +218,7 @@ export async function materializeShortStayBooking(
   pi: import("stripe").Stripe.PaymentIntent,
   deps: MaterializeDeps = defaultDeps(),
 ): Promise<void> {
-  const { storage, resolveBooking, notifyAdmin, onBookingConfirmed } = deps;
+  const { storage, resolveBooking, notifyAdmin } = deps;
   const m = pi.metadata ?? {};
   const reference = m.reference;
   if (!reference) {
@@ -325,6 +358,17 @@ export async function materializeShortStayBooking(
     }
   }
 
+  // Mint the gate row BEFORE any confirmation fires: the email carries the guest
+  // their document link, so the token has to exist first. ensureBookingGate is
+  // ON CONFLICT DO NOTHING, so a Stripe retry reuses the SAME token rather than
+  // dead-linking the message already sent.
+  if (booking.status === "PENDING_APPROVAL") {
+    await storage.ensureBookingGate(booking.id, {
+      gateToken: gateTokenGen(),
+      docsDeadlineAt: new Date(Date.now() + GATE_DOCS_DEADLINE_MS),
+    });
+  }
+
   // The guest paid either way — always record the money.
   await storage.createPayment({
     bookingId: booking.id,
@@ -397,7 +441,7 @@ export async function materializeShortStayBooking(
     },
   });
   if (property) {
-    await onBookingConfirmed({ booking, property, room: room ?? null, guest: guestRow });
+    await fireConfirmation({ booking, property, room: room ?? null, guest: guestRow }, deps);
   }
   log(`short-stay booking ${reference} materialized + confirmed via ${pi.id}`, "stripe");
 }
