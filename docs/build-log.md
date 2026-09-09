@@ -3895,3 +3895,23 @@ Executed, in order:
 authorized list) · wifi per property.
 
 MIGRATION-2026-09-09: COMPLETE — pricing snapshots + booking gate live
+
+### Addendum 2 — 2026-09-09, Telegram wired + UO companion shipped (owner-authorized)
+
+- **Telegram:** BNP shares the Unified Ops bot ("Henry's COS"). `TELEGRAM_BOT_TOKEN` +
+  `TELEGRAM_ADMIN_CHAT_ID` pulled from UO's Vercel production env into BNP's (values never
+  displayed; pulled files deleted). UO's chat-id value is the `Name:id,Name:id` form, so
+  `server/lib/telegram.ts#adminChatIds` now strips names and drops non-integer entries (+ tests).
+  Commit `0e68a8d`, on main, deployed. **No test message was sent** — the first approval-queue
+  alert will be the live check.
+- **Token parity verified by hash:** UO `BNP_API_TOKEN` == BNP `UO_BNP_API_TOKEN`; UO
+  `BNP_API_URL` = `https://www.beniceproperties.com`; both bot tokens identical.
+- **UO `feat/uo-pricing-writeback` shipped:** main had moved (2 TRAD commits), so a merge commit
+  `66b5175` rather than a fast-forward. Pre-push: typecheck 0 · vitest 4536/4536 · lint delta on
+  changed files 0 (5 pre-existing errors on both sides) · `bnp:schema:check` 0 errors. Pushed;
+  Vercel production Ready. The system-map verification ("edit a room's biweekly rate in UO →
+  BNP 14-night quote reflects it") is a UI step still to be done by hand.
+- BNP redeployed after the env additions; live: cron without bearer 401, `/api/properties` 200.
+
+Still open: `wifiSsid` (+ password) for Hutchens Home and OBC Home — the only thing blocking a
+stay approval.
