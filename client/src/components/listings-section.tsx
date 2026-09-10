@@ -11,7 +11,8 @@
 // bar and dates never apply. `searchPlacement` puts whichever bar is enabled
 // above the heading (default) or below the grid.
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import type { PropertyListItem } from "@shared/schema";
 import { PropertyCard, cardUnavailable } from "@/components/property-card";
@@ -42,9 +43,16 @@ interface Props {
   /**
    * Where the search band sits relative to the heading + grid. "top" (default)
    * is the classic search-then-browse order; "bottom" leads with the inventory
-   * and puts the refine controls under it. Applies to whichever bar is enabled.
+   * and puts the refine controls under it. "external" renders nothing inline —
+   * use with `portalTargetId` to place the bar elsewhere on the page while this
+   * section still owns its data/filter state. Applies to whichever bar is enabled.
    */
-  searchPlacement?: "top" | "bottom";
+  searchPlacement?: "top" | "bottom" | "external";
+  /**
+   * DOM id of an element (rendered elsewhere on the page) to portal the search
+   * band into. Only used when `searchPlacement` is "external".
+   */
+  portalTargetId?: string;
   /** DOM id for #hash scroll targets (e.g. "stays"). */
   id?: string;
   className?: string;
@@ -57,9 +65,17 @@ export function ListingsSection({
   enableDateSearch = false,
   enableColivingSearch = false,
   searchPlacement = "top",
+  portalTargetId,
   id,
   className,
 }: Props) {
+  const [portalEl, setPortalEl] = useState<HTMLElement | null>(null);
+  useEffect(() => {
+    if (searchPlacement === "external" && portalTargetId) {
+      setPortalEl(document.getElementById(portalTargetId));
+    }
+  }, [searchPlacement, portalTargetId]);
+
   const [city, setCity] = useState<string>("ALL");
   const [checkIn, setCheckIn] = useState("");
   const [checkOut, setCheckOut] = useState("");
@@ -130,7 +146,8 @@ export function ListingsSection({
     <div
       className={cn(
         "relative left-1/2 right-1/2 -mx-[50vw] w-screen border-y bg-card py-6",
-        searchPlacement === "bottom" ? "mt-14" : "mb-8",
+        searchPlacement === "bottom" && "mt-14",
+        searchPlacement === "top" && "mb-8",
       )}
     >
       <div className="mx-auto w-full max-w-6xl px-6">
@@ -164,6 +181,7 @@ export function ListingsSection({
 
   return (
     <section id={id} className={cn("scroll-mt-24", className)}>
+      {searchPlacement === "external" && portalEl && searchBand && createPortal(searchBand, portalEl)}
       {searchPlacement === "top" && searchBand}
 
       <div className="flex flex-wrap items-end justify-between gap-4">

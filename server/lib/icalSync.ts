@@ -183,9 +183,10 @@ export interface ParseICalOpts {
   today?: string;
   /**
    * When true, Airbnb "Not available" host-blocks are kept (normalized to
-   * summary "Airbnb (Not available)") instead of being skipped. Default false
-   * preserves the original behavior. Driven by the `ical_honor_host_blocks`
-   * app setting via syncAllListings.
+   * summary "Airbnb (Not available)") instead of being skipped. Default
+   * false — the production call path (syncAllListings) always uses the
+   * default: only confirmed "Reserved" events block BNP's calendar. This
+   * flag exists for direct unit testing of parseICalData only.
    */
   honorHostBlocks?: boolean;
 }
@@ -343,7 +344,6 @@ export interface SyncResult {
   listings: ListingSyncResult[];
 }
 
-const HONOR_HOST_BLOCKS_SETTING = "ical_honor_host_blocks";
 const LAST_SYNC_AT_SETTING = "ical_last_sync_at";
 const LAST_SYNC_RESULT_SETTING = "ical_last_sync_result";
 
@@ -438,26 +438,19 @@ export async function syncListing(
 /**
  * Sync every listing that has an Airbnb iCal URL, sequentially (low volume;
  * avoids hammering Airbnb). The URL lives on properties/rooms.airbnb_ical_url.
- * Reads the `ical_honor_host_blocks` app setting once per run (missing or
- * "true" → honor host blocks; only the literal "false" disables) and passes
- * it to every listing. Always records `ical_last_sync_at` /
+ * Host-blocks ("Not available" events — host-blocked dates or dates outside
+ * the host's bookable window) are always skipped; only "Reserved" events
+ * (confirmed guest bookings) block BNP's calendar. Off-platform occupancy is
+ * tracked via manual_blocks instead. Always records `ical_last_sync_at` /
  * `ical_last_sync_result` after the run — even when some listings failed —
  * so checkCalendarSyncHealth has fresh status to read. A failure writing
  * those settings is logged, never thrown.
  */
 export async function syncAllListings(dryRun = false): Promise<SyncResult> {
-  let honorHostBlocks = true;
-  try {
-    const setting = await storage.getSetting(HONOR_HOST_BLOCKS_SETTING);
-    honorHostBlocks = setting?.value !== "false";
-  } catch {
-    honorHostBlocks = true;
-  }
-
   const listings = await storage.getListingsWithIcalUrl();
   const results: ListingSyncResult[] = [];
   for (const l of listings) {
-    results.push(await syncListing(l, dryRun, honorHostBlocks));
+    results.push(await syncListing(l, dryRun));
   }
 
   const ok = results.filter((r) => r.ok).length;

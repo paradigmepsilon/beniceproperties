@@ -345,7 +345,7 @@ describe("syncListing — idempotent create/update/remove + dedup", () => {
   });
 });
 
-// ─── syncAllListings — honor-host-blocks setting + sync-status bookkeeping ────
+// ─── syncAllListings — host-blocks are never synced + sync-status bookkeeping ─
 
 describe("syncAllListings", () => {
   const listingA: IcalListing = {
@@ -363,20 +363,9 @@ describe("syncAllListings", () => {
     label: "Room 1",
   };
 
-  it("defaults ical_honor_host_blocks to true when the setting is missing (host block kept)", async () => {
+  it("skips host-blocks (only confirmed 'Reserved' events block the calendar)", async () => {
     store.listings = [listingA];
-    store.settings = {}; // no setting row
-    stubFetchByUrl({
-      [listingA.url]: ics(vevent("hb", fd(BASE_DAYS_AHEAD), fd(BASE_DAYS_AHEAD + 2), "Not available")),
-    });
-    await syncAllListings(false);
-    expect(store.upserts).toHaveLength(1);
-    expect(store.upserts[0].summary).toBe("Airbnb (Not available)");
-  });
-
-  it("disables honoring host blocks only on the literal 'false' setting", async () => {
-    store.listings = [listingA];
-    store.settings = { ical_honor_host_blocks: "false" };
+    store.settings = {};
     stubFetchByUrl({
       [listingA.url]: ics(vevent("hb", fd(BASE_DAYS_AHEAD), fd(BASE_DAYS_AHEAD + 2), "Not available")),
     });
@@ -384,14 +373,14 @@ describe("syncAllListings", () => {
     expect(store.upserts).toHaveLength(0);
   });
 
-  it("treats any non-'false' value (e.g. 'true') as honoring host blocks", async () => {
+  it("ignores any stray legacy ical_honor_host_blocks setting value — host-blocks are always skipped", async () => {
     store.listings = [listingA];
     store.settings = { ical_honor_host_blocks: "true" };
     stubFetchByUrl({
       [listingA.url]: ics(vevent("hb", fd(BASE_DAYS_AHEAD), fd(BASE_DAYS_AHEAD + 2), "Not available")),
     });
     await syncAllListings(false);
-    expect(store.upserts).toHaveLength(1);
+    expect(store.upserts).toHaveLength(0);
   });
 
   it("writes ical_last_sync_at and ical_last_sync_result after a run, including when one listing failed", async () => {

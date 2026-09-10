@@ -1,11 +1,10 @@
 // client/src/pages/home.tsx
-// Co-living-focused home: hero → trust band → co-living search + listings grid
-// → what's-included → testimonials → reassurance band → FAQ.
+// Co-living-focused home: hero → co-living search + listings grid → what's-included
+// → testimonials → reassurance band → FAQ.
 // Co-living is the whole page, so the grid shows COLIVING only; the two doors are
 // the wayfinding to the other products (short-term getaways, long-term homes).
 
 import { useEffect } from "react";
-import { CalendarCheck, Handshake, Star } from "lucide-react";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
 import { PageHero, HeroCta } from "@/components/page-hero";
 import { InclusionsGrid } from "@/components/inclusions-grid";
@@ -23,12 +22,6 @@ const COLIVING_GRADIENT = "linear-gradient(135deg, #2C6E8F, #1C4A61)";
 // Placeholder marketing copy — shipped verbatim from the design template by
 // owner decision (2026-07-02). Edit freely; nothing below is computed.
 // -----------------------------------------------------------------------------
-const TRUST_ITEMS = [
-  { icon: Star, title: "4.9 average", sub: "Across 200+ stays" },
-  { icon: CalendarCheck, title: "Free cancellation", sub: "On most bookings" },
-  { icon: Handshake, title: "Book direct", sub: "You skip the platform markup" },
-];
-
 const STEPS = [
   {
     n: "01 · Find",
@@ -77,27 +70,16 @@ export default function Home() {
         accent={COLIVING_GRADIENT}
       />
 
-      {/* Trust band — a thin credibility strip riding directly under the hero,
-          before the search bar and listings. */}
-      <section className="border-b bg-card">
-        <div className="mx-auto grid w-full max-w-6xl grid-cols-1 gap-6 px-6 py-6 sm:grid-cols-3">
-          {TRUST_ITEMS.map(({ icon: Icon, title, sub }) => (
-            <div key={title} className="flex items-center gap-3">
-              <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-segment-room-tint text-segment-room">
-                <Icon className="h-5 w-5" />
-              </div>
-              <div>
-                <strong className="block text-sm font-bold">{title}</strong>
-                <span className="text-xs text-muted-foreground">{sub}</span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </section>
+      {/* Search bar — portaled here from ListingsSection below (see
+          searchPlacement="external" on that call) so it rides right under the
+          hero while the section still owns the search state and the results
+          grid stays with its "Available rooms" heading. */}
+      <div id="coliving-search-slot" />
 
       {/* Co-living listings (the home's lead product) sit high on the page, right
-          after the trust band and above the first editorial image. Rooms lead;
-          the search band rides underneath them as the refine step. The section
+          after the trust band and above the first editorial image. The search
+          bar itself is portaled up to the slot above the trust band; this
+          section still owns the search state and results grid. The section
           owns id="stays" so "Search rooms" scrolls back up to the results. */}
       <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-14">
         <ListingsSection
@@ -106,7 +88,8 @@ export default function Home() {
           heading="Available rooms"
           subhead="Private rooms open right now across Atlanta and Antigua."
           enableColivingSearch
-          searchPlacement="bottom"
+          searchPlacement="external"
+          portalTargetId="coliving-search-slot"
         />
       </main>
 
