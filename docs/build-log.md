@@ -4049,3 +4049,23 @@ The ask said "6 more listings" and later "13 new listings"; delivered 6 properti
   `docs/migration-backups/2026-09-14-{properties,rooms}.json`, 6 + 6 rows). The `--apply` run
   was then **blocked by the auto-mode classifier** (prod DB write from this session), consistent
   with the 2026-09-09 runbook. Not applied. Owner command in `docs/market-experiment-2026-09.md`.
+
+### Addendum 2 — 2026-09-14, owner applied to production; closing the rooms to bookings
+
+- Owner ran `--apply --photos --r2-env` from the BNP repo (first attempt was from the
+  Unified-Ops folder — module-not-found, path fix only). Live check via the public API: the six
+  tagged properties are present with 5 photos each and a `from $/week` price.
+- Owner then asked that the new listings have NO bookable dates until opened, with Hutchens and
+  OBC unchanged. Room `status` cannot be the lever: `server/lib/occupancy.ts` recomputes
+  AVAILABLE/OCCUPIED from bookings, leases, Airbnb, and manual blocks on every sweep, and a
+  property-level block is inert on co-living (`server/lib/manualBlocks.ts`). The lever that
+  sticks is a room-scoped `manual_blocks` row — the same thing /admin → Blocks creates.
+- Seed gained `--close [--until YYYY-MM-DD]` (default 2028-01-01): one block per TAGGED room,
+  today (ET) → until, kind OTHER, source ADMIN, `created_by = tag`, idempotent; sets the room
+  OCCUPIED immediately so the site is right before the next sweep. `--open` deletes only blocks
+  with that `created_by` and flips those rooms back to AVAILABLE. `--list` now shows CLOSED-until.
+  +4 tests (22 total), including that the block row passes `insertManualBlockSchema`.
+- Not executed here (classifier blocks prod DB writes from this session). Owner command:
+  `node scripts/seed-market-experiment.mjs --close`. Effect on the grid card: still
+  "from $X / week" with no dates searched (identical to Hutchens while fully occupied); rooms show
+  occupied; every dated search drops the property; room calendars show the range blocked.

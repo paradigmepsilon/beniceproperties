@@ -5,7 +5,8 @@ Jacksonville, priced with the BNHG Co-Living Profitability Worksheet model. This
 owner's manifest: how to recognize the rows, where every price came from, and how to add or
 remove them.
 
-Status: **prepared, not applied.** Nothing has been written to the database. See "Runbook".
+Status: **applied to production 2026-09-14** by the owner (six properties, 22 rooms, photos on
+R2). Closing the rooms to bookings is step 3b of the runbook.
 
 ## How owners recognize these rows
 
@@ -104,6 +105,18 @@ node scripts/seed-market-experiment.mjs --apply --photos --r2-env "../Unified Op
 
 # 3. Confirm.
 node scripts/seed-market-experiment.mjs --list
+
+# 3b. Close every market-test room (no bookable dates until you open it). One room-scoped
+#     manual block per tagged room, today -> 2028-01-01 (or --until YYYY-MM-DD), kind OTHER,
+#     created_by = the tag. Rooms read OCCUPIED, dated searches drop them, calendars show the
+#     range blocked. Hutchens / OBC are never touched (only rows carrying the tag).
+#     Room `status` alone is NOT the lever: the scheduler's occupancy sweep recomputes it from
+#     blocks/leases/bookings, so a hand-set OCCUPIED would be undone; the block is what sticks.
+node scripts/seed-market-experiment.mjs --close
+
+#     Open one room: /admin -> Blocks -> delete its block (the sweep flips it AVAILABLE within
+#     the next pass). Open all of them at once:
+node scripts/seed-market-experiment.mjs --open
 curl -s https://beniceproperties.vercel.app/api/properties | jq '.[] | select(.priorNames[]? == "market-test-2026-09") | {name, location, fromWeeklyRent}'
 
 # 4. Arrival info (only if you ever intend to APPROVE a short stay on one of these — approve
@@ -128,9 +141,10 @@ Re-runs are safe: a property whose name already exists is skipped with its rooms
 - **Real addresses on a public site.** The full address shows on each property detail page,
   exactly as it does for Hutchens and OBC. These are homes currently for sale by other people.
   If that's not the intent, set `address` to the neighborhood only before applying.
-- **Inquiries will be real.** Rooms seed as `AVAILABLE`, so guests can request them and
-  Telegram will ping you like any other booking. Have the "not available" reply ready, or seed
-  `--inactive` and flip on only what you want to test.
+- **Inquiries.** Rooms seed as `AVAILABLE`; run `--close` right after `--apply` so no date is
+  bookable until you open a room (see step 3b). The grid card still shows "from $X / week"
+  with no dates searched, exactly as Hutchens does while fully occupied; the room list shows
+  each room as occupied and every dated search drops the property.
 - **Fair-housing / advertising rules.** Advertising housing you do not control is a
   misrepresentation risk in NC, SC, and FL. Flagging, not judging — your call and a lawyer's.
 

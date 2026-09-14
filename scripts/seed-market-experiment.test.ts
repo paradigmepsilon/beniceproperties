@@ -22,7 +22,11 @@ import {
   r2KeyFor,
   loadR2Env,
   r2PublicBase,
+  todayEt,
+  DEFAULT_CLOSE_UNTIL,
+  CLOSE_NOTE,
 } from "./seed-market-experiment.mjs";
+import { MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, insertManualBlockSchema } from "@shared/schema";
 
 const data = JSON.parse(readFileSync(DEFAULT_FILE, "utf8"));
 
@@ -156,6 +160,46 @@ describe("CLI safety", () => {
 
   it("refuses --apply together with --remove", () => {
     expect(() => parseArgs(["--apply", "--remove"])).toThrow();
+  });
+
+  it("--close and --open are modes of their own and exclude each other", () => {
+    expect(parseArgs(["--close"]).close).toBe(true);
+    expect(parseArgs(["--close"]).until).toBe(DEFAULT_CLOSE_UNTIL);
+    expect(parseArgs(["--close", "--until", "2027-06-01"]).until).toBe("2027-06-01");
+    expect(parseArgs(["--open"]).open).toBe(true);
+    expect(() => parseArgs(["--close", "--open"])).toThrow(/exclusive/);
+    expect(() => parseArgs(["--close", "--apply"])).toThrow(/exclusive/);
+  });
+
+  it("--until must be a real date after today", () => {
+    expect(() => parseArgs(["--close", "--until", "next-year"])).toThrow(/YYYY-MM-DD/);
+    expect(() => parseArgs(["--close", "--until", "2026-13-40"])).toThrow(/YYYY-MM-DD/);
+    expect(() => parseArgs(["--close", "--until", "2020-01-01"])).toThrow(/after today/);
+    expect(() => parseArgs(["--close", "--until", todayEt()])).toThrow(/after today/);
+  });
+
+  it("todayEt is a YYYY-MM-DD in America/New_York", () => {
+    expect(todayEt()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    // 03:30 UTC on the 15th is still the 14th in New York.
+    expect(todayEt(new Date("2026-09-15T03:30:00Z"))).toBe("2026-09-14");
+    expect(todayEt(new Date("2026-09-15T12:00:00Z"))).toBe("2026-09-15");
+  });
+
+  it("the block --close writes is one the admin API would accept", () => {
+    const row = {
+      propertyId: "00000000-0000-0000-0000-000000000000",
+      roomId: "00000000-0000-0000-0000-000000000001",
+      startDate: todayEt(),
+      endDate: DEFAULT_CLOSE_UNTIL,
+      kind: "OTHER",
+      note: CLOSE_NOTE,
+      source: "ADMIN",
+      createdBy: "market-test-2026-09",
+    };
+    expect(insertManualBlockSchema.safeParse(row).success).toBe(true);
+    expect(MANUAL_BLOCK_KINDS).toContain("OTHER");
+    expect(MANUAL_BLOCK_SOURCES).toContain("ADMIN");
+    expect(DEFAULT_CLOSE_UNTIL > todayEt()).toBe(true);
   });
 
   it("writes photo keys in the shape production already uses", () => {

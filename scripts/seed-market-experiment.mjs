@@ -35,8 +35,21 @@
 //   node scripts/seed-market-experiment.mjs --apply --photos --r2-env "../Unified Ops Folder/Unified-Ops/.env"   # insert + upload photos
 //   node scripts/seed-market-experiment.mjs --apply --inactive # insert with active=false (hidden until flipped)
 //   node scripts/seed-market-experiment.mjs --list         # show every row carrying the tag
+//   node scripts/seed-market-experiment.mjs --close        # close every tagged room: one manual block per room, today -> --until
+//   node scripts/seed-market-experiment.mjs --close --until 2027-06-01
+//   node scripts/seed-market-experiment.mjs --open         # delete those blocks; rooms read AVAILABLE again
 //   node scripts/seed-market-experiment.mjs --remove       # delete tagged rows (refuses if booked/leased)
 //   node scripts/seed-market-experiment.mjs --file other.json ...
+//
+// --close / --open (owner-controlled availability). Room `status` is NOT the lever:
+// server/lib/occupancy.ts recomputes AVAILABLE/OCCUPIED from bookings, leases, Airbnb,
+// and manual blocks on every scheduler sweep, so a hand-set OCCUPIED would be
+// undone. The lever that survives is a room-scoped manual_blocks row (the same
+// thing the admin Blocks panel creates): with a block covering today the room
+// reads OCCUPIED, every dated search drops it, its calendar shows the range as
+// unavailable, and deleting the block (here with --open, or in /admin → Blocks)
+// opens it. Blocks are keyed by `created_by = <tag>` so only these are touched.
+// Only rooms carrying the tag are affected — Hutchens, OBC, etc. are never read.
 //
 // No secrets are ever printed.
 // =============================================================================
@@ -159,8 +172,24 @@ export function r2KeyFor(kind, file) {
   return `bnp/${kind}/${randomUUID()}${ext}`;
 }
 
+/** Default exclusive end of a --close block: far enough out that "closed until the owner opens it" holds. */
+export const DEFAULT_CLOSE_UNTIL = "2028-01-01";
+export const CLOSE_NOTE = "Market test: closed until opened by the owner. Delete this block (or run --open) to take bookings.";
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Today's calendar date in America/New_York (the site's operating timezone), as YYYY-MM-DD. */
+export function todayEt(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York", year: "numeric", month: "2-digit", day: "2-digit" }).formatToParts(now);
+  const get = (t) => parts.find((p) => p.type === t).value;
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 export function parseArgs(argv) {
-  const args = { apply: false, photos: false, inactive: false, list: false, remove: false, file: DEFAULT_FILE, photoDir: DEFAULT_PHOTO_DIR, r2Env: null };
+  const args = {
+    apply: false, photos: false, inactive: false, list: false, remove: false, close: false, open: false,
+    until: DEFAULT_CLOSE_UNTIL, file: DEFAULT_FILE, photoDir: DEFAULT_PHOTO_DIR, r2Env: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--apply") args.apply = true;
@@ -168,12 +197,20 @@ export function parseArgs(argv) {
     else if (a === "--inactive") args.inactive = true;
     else if (a === "--list") args.list = true;
     else if (a === "--remove") args.remove = true;
+    else if (a === "--close") args.close = true;
+    else if (a === "--open") args.open = true;
+    else if (a === "--until") args.until = argv[++i];
     else if (a === "--file") args.file = argv[++i];
     else if (a === "--photo-dir") args.photoDir = argv[++i];
     else if (a === "--r2-env") args.r2Env = argv[++i];
     else throw new Error(`unknown argument ${a}`);
   }
-  if ((args.apply ? 1 : 0) + (args.list ? 1 : 0) + (args.remove ? 1 : 0) > 1) throw new Error("--apply, --list and --remove are mutually exclusive");
+  const modes = ["apply", "list", "remove", "close", "open"].filter((m) => args[m]);
+  if (modes.length > 1) throw new Error(`--${modes.join(", --")} are mutually exclusive`);
+  if (typeof args.until !== "string" || !ISO_DATE_RE.test(args.until) || Number.isNaN(Date.parse(args.until))) {
+    throw new Error(`--until must be a YYYY-MM-DD date (got ${args.until})`);
+  }
+  if (args.until <= todayEt()) throw new Error(`--until must be after today (${todayEt()})`);
   return args;
 }
 
@@ -270,8 +307,11 @@ async function listTagged(sql, tag) {
   }
   for (const p of props) {
     console.log(`\n${p.name}  id=${p.id}  active=${p.active}  ${p.location}; ${p.address}  photos=${p.photo_count}  tags=${JSON.stringify(p.prior_names)}`);
-    const rooms = await sql`SELECT id, room_number, name, status, weekly_rent, monthly_rate, jsonb_array_length(photos) AS photo_count FROM rooms WHERE property_id = ${p.id} ORDER BY room_number`;
-    for (const r of rooms) console.log(`   #${r.room_number} ${r.name}  id=${r.id}  ${r.status}  weekly $${r.weekly_rent}  monthly $${r.monthly_rate}  photos=${r.photo_count}`);
+    const rooms = await sql`
+      SELECT r.id, r.room_number, r.name, r.status, r.weekly_rent, r.monthly_rate, jsonb_array_length(r.photos) AS photo_count,
+             (SELECT max(b.end_date) FROM manual_blocks b WHERE b.room_id = r.id AND b.created_by = ${tag} AND b.end_date > ${todayEt()}) AS closed_until
+      FROM rooms r WHERE r.property_id = ${p.id} ORDER BY r.room_number`;
+    for (const r of rooms) console.log(`   #${r.room_number} ${r.name}  id=${r.id}  ${r.status}  weekly $${r.weekly_rent}  monthly $${r.monthly_rate}  photos=${r.photo_count}${r.closed_until ? `  CLOSED until ${r.closed_until}` : "  open"}`);
   }
 }
 
@@ -298,6 +338,62 @@ async function removeTagged(sql, tag) {
   }
 }
 
+/** Every room carrying the tag, with its property — the ONLY rows --close/--open touch. */
+async function taggedRooms(sql, tag) {
+  return sql`
+    SELECT r.id, r.room_number, r.name, r.status, p.id AS property_id, p.name AS property_name
+    FROM rooms r JOIN properties p ON p.id = r.property_id
+    WHERE r.prior_names ? ${tag}
+    ORDER BY p.name, r.room_number
+  `;
+}
+
+async function closeTagged(sql, tag, until) {
+  const rooms = await taggedRooms(sql, tag);
+  if (rooms.length === 0) {
+    console.log(`No rooms carry tag "${tag}" — nothing to close.`);
+    return;
+  }
+  const start = todayEt();
+  let created = 0;
+  let skipped = 0;
+  for (const r of rooms) {
+    const existing = await sql`SELECT id, end_date FROM manual_blocks WHERE room_id = ${r.id} AND created_by = ${tag} AND end_date > ${start} LIMIT 1`;
+    if (existing.length) {
+      skipped += 1;
+      console.log(`skip (already closed until ${existing[0].end_date}): ${r.property_name} #${r.room_number} ${r.name}`);
+      continue;
+    }
+    await sql`
+      INSERT INTO manual_blocks (property_id, room_id, start_date, end_date, kind, note, source, created_by)
+      VALUES (${r.property_id}, ${r.id}, ${start}, ${until}, 'OTHER', ${CLOSE_NOTE}, 'ADMIN', ${tag})
+    `;
+    // The scheduler's occupancy sweep would set this on its next pass; set it now so the site is right immediately.
+    if (r.status === "AVAILABLE") await sql`UPDATE rooms SET status = 'OCCUPIED', updated_at = now() WHERE id = ${r.id}`;
+    created += 1;
+    console.log(`closed ${start} -> ${until}: ${r.property_name} #${r.room_number} ${r.name}`);
+  }
+  const verify = await sql`SELECT count(*)::int AS n FROM manual_blocks WHERE created_by = ${tag} AND end_date > ${start}`;
+  console.log(`\nVERIFY — active market-test blocks: ${verify[0].n} (rooms tagged: ${rooms.length}). ${created} created, ${skipped} already closed.`);
+  console.log("Open a room again from /admin → Blocks (delete its block) or run --open for all of them.");
+}
+
+async function openTagged(sql, tag) {
+  const rooms = await taggedRooms(sql, tag);
+  const deleted = await sql`DELETE FROM manual_blocks WHERE created_by = ${tag} RETURNING room_id`;
+  const freed = new Set(deleted.map((d) => d.room_id));
+  let flipped = 0;
+  for (const r of rooms) {
+    if (!freed.has(r.id) || r.status !== "OCCUPIED") continue;
+    // Only flip rooms we ourselves closed and that have nothing else occupying them today.
+    const other = await sql`SELECT 1 FROM manual_blocks WHERE room_id = ${r.id} AND start_date <= ${todayEt()} AND end_date > ${todayEt()} LIMIT 1`;
+    if (other.length) continue;
+    await sql`UPDATE rooms SET status = 'AVAILABLE', updated_at = now() WHERE id = ${r.id}`;
+    flipped += 1;
+  }
+  console.log(`opened: ${deleted.length} block(s) deleted, ${flipped} room(s) set AVAILABLE (the occupancy sweep reconciles the rest).`);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const data = loadData(args.file);
@@ -308,10 +404,12 @@ async function main() {
     process.exit(1);
   }
 
-  if (args.list || args.remove) {
+  if (args.list || args.remove || args.close || args.open) {
     const sql = await connect();
     if (args.list) await listTagged(sql, data.tag);
-    else await removeTagged(sql, data.tag);
+    else if (args.remove) await removeTagged(sql, data.tag);
+    else if (args.close) await closeTagged(sql, data.tag, args.until);
+    else await openTagged(sql, data.tag);
     return;
   }
 
