@@ -23,14 +23,16 @@
 // Photos: with --photos, each listing photo in scripts/data/market-experiment-photos/
 // (gitignored) is uploaded to R2 under the same key shape production uses
 // (bnp/properties/<uuid>.jpg, bnp/rooms/<uuid>.jpg) and the public URL is stored
-// on the row. Needs the four R2_* vars plus R2_PUBLIC_BASE_URL (the bucket's
-// public r2.dev / custom-domain base). Without --photos the rows get photos: []
-// and the site shows its branded "photo coming soon" placeholder.
+// on the row. Needs the four R2_* vars plus R2_PUBLIC_BASE_URL (UO's spelling
+// R2_PUBLIC_URL_BASE is accepted). BNP's local .env does not carry them; pass
+// `--r2-env "<path to Unified-Ops/.env>"` and ONLY the R2_* keys are read from
+// that file — its DATABASE_URL is never touched. Without --photos the rows get
+// photos: [] and the site shows its branded "photo coming soon" placeholder.
 //
 // Usage:
 //   node scripts/seed-market-experiment.mjs                # DRY RUN: validate + print the plan. No DB connection.
 //   node scripts/seed-market-experiment.mjs --apply        # insert (needs DATABASE_URL)
-//   node scripts/seed-market-experiment.mjs --apply --photos   # insert + upload photos to R2
+//   node scripts/seed-market-experiment.mjs --apply --photos --r2-env "../Unified Ops Folder/Unified-Ops/.env"   # insert + upload photos
 //   node scripts/seed-market-experiment.mjs --apply --inactive # insert with active=false (hidden until flipped)
 //   node scripts/seed-market-experiment.mjs --list         # show every row carrying the tag
 //   node scripts/seed-market-experiment.mjs --remove       # delete tagged rows (refuses if booked/leased)
@@ -158,7 +160,7 @@ export function r2KeyFor(kind, file) {
 }
 
 export function parseArgs(argv) {
-  const args = { apply: false, photos: false, inactive: false, list: false, remove: false, file: DEFAULT_FILE, photoDir: DEFAULT_PHOTO_DIR };
+  const args = { apply: false, photos: false, inactive: false, list: false, remove: false, file: DEFAULT_FILE, photoDir: DEFAULT_PHOTO_DIR, r2Env: null };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     if (a === "--apply") args.apply = true;
@@ -168,6 +170,7 @@ export function parseArgs(argv) {
     else if (a === "--remove") args.remove = true;
     else if (a === "--file") args.file = argv[++i];
     else if (a === "--photo-dir") args.photoDir = argv[++i];
+    else if (a === "--r2-env") args.r2Env = argv[++i];
     else throw new Error(`unknown argument ${a}`);
   }
   if ((args.apply ? 1 : 0) + (args.list ? 1 : 0) + (args.remove ? 1 : 0) > 1) throw new Error("--apply, --list and --remove are mutually exclusive");
@@ -200,16 +203,49 @@ async function connect() {
   return neon(process.env.DATABASE_URL);
 }
 
+/** R2 variable names, with UO's spelling of the public base accepted as an alias. */
+export const R2_KEYS = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_PUBLIC_BASE_URL", "R2_PUBLIC_URL_BASE"];
+
+/**
+ * Pull ONLY the R2_* keys out of another env file (e.g. Unified Ops' .env, which
+ * holds the same bucket's credentials) into process.env, without touching
+ * DATABASE_URL or anything else in that file. Returns the key NAMES loaded.
+ */
+export function loadR2Env(path, env = process.env) {
+  if (!existsSync(path)) throw new Error(`--r2-env file not found: ${path}`);
+  const loaded = [];
+  for (const raw of readFileSync(path, "utf8").split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim();
+    if (!R2_KEYS.includes(key)) continue;
+    let value = line.slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) value = value.slice(1, -1);
+    if (value && !env[key]) {
+      env[key] = value;
+      loaded.push(key);
+    }
+  }
+  return loaded;
+}
+
+export function r2PublicBase(env = process.env) {
+  return (env.R2_PUBLIC_BASE_URL || env.R2_PUBLIC_URL_BASE || "").replace(/\/+$/, "");
+}
+
 async function makeUploader(photoDir) {
-  const missing = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME", "R2_PUBLIC_BASE_URL"].filter((k) => !process.env[k]);
-  if (missing.length) throw new Error(`--photos needs env: ${missing.join(", ")} (values never printed)`);
+  const missing = ["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET_NAME"].filter((k) => !process.env[k]);
+  if (!r2PublicBase()) missing.push("R2_PUBLIC_BASE_URL (or R2_PUBLIC_URL_BASE)");
+  if (missing.length) throw new Error(`--photos needs env: ${missing.join(", ")} (values never printed; pass --r2-env <path to an env file holding them>)`);
   const { S3Client, PutObjectCommand } = await import("@aws-sdk/client-s3");
   const client = new S3Client({
     region: "auto",
     endpoint: `https://${process.env.R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
     credentials: { accessKeyId: process.env.R2_ACCESS_KEY_ID, secretAccessKey: process.env.R2_SECRET_ACCESS_KEY },
   });
-  const base = process.env.R2_PUBLIC_BASE_URL.replace(/\/+$/, "");
+  const base = r2PublicBase();
   const cache = new Map(); // file -> public url (same photo reused across property + rooms uploads once)
   return async function upload(kind, file) {
     const cacheKey = `${kind}:${file}`;
@@ -280,6 +316,11 @@ async function main() {
   }
 
   printPlan(data, args);
+
+  if (args.r2Env) {
+    const loaded = loadR2Env(args.r2Env);
+    console.log(`\nLoaded ${loaded.length} R2 key(s) from ${args.r2Env}: ${loaded.join(", ") || "(none — all already set or absent)"}`);
+  }
 
   if (args.photos) {
     const missing = referencedPhotoFiles(data).filter((f) => !existsSync(join(args.photoDir, f)));

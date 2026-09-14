@@ -66,23 +66,41 @@ Per-room breakdown (size band, room features, base / premiums, model monthly, BN
   HUD Small Area FMRs were the intended anchor but the FY2026 files were not retrievable
   from here; swap them in if you want a government source.
 
-## Runbook (owner-run, production)
+## Runbook
+
+### Local preview on :3008 (Neon branch, production untouched)
+
+The dev server on :3008 normally runs against the production database (the `.env`
+`DATABASE_URL`). `scripts/market-test-preview.sh` creates a Neon branch off production, seeds
+the inventory into it, and restarts :3008 against the branch. Needs a Neon CLI login once
+(`npx neonctl auth`, browser); the stored session on this machine was rejected on 2026-09-14.
+
+```bash
+npx neonctl auth                                                     # once, opens a browser
+bash scripts/market-test-preview.sh                                  # placeholder art
+bash scripts/market-test-preview.sh --photos --r2-env "../Unified Ops Folder/Unified-Ops/.env"
+# when done:
+npx neonctl branches delete market-test-preview --project-id <id>
+```
+
+`--r2-env` reads ONLY the `R2_*` keys from that file (UO's `.env` holds the same bucket's
+credentials and `R2_PUBLIC_URL_BASE`); its `DATABASE_URL` is never touched.
+
+### Production (owner-run)
 
 The classifier blocks this session from touching the production database, so these are yours
 to run from the BNP repo with `.env` pointing at production.
 
 ```bash
 # 0. Backup first (repo floor #1 — data-only, but still).
-node scripts/backup-tables.mjs            # or your usual export of properties + rooms
+node scripts/backup-tables.mjs properties rooms
 
 # 1. Dry run — validates the data file and prints the plan. Makes no DB connection.
-node scripts/seed-market-experiment.mjs --photos
+node scripts/seed-market-experiment.mjs --photos --r2-env "../Unified Ops Folder/Unified-Ops/.env"
 
 # 2. Insert. Add --inactive to seed hidden, then flip `active` per property from the admin.
-#    --photos needs R2_ACCOUNT_ID / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET_NAME
-#    (same values UO uses) plus R2_PUBLIC_BASE_URL = the bucket's public base
-#    (the existing listing photos are served from https://pub-….r2.dev — use that base).
-node scripts/seed-market-experiment.mjs --apply --photos
+#    BNP's .env has no R2 vars; --r2-env borrows UO's (R2_* keys only).
+node scripts/seed-market-experiment.mjs --apply --photos --r2-env "../Unified Ops Folder/Unified-Ops/.env"
 
 # 3. Confirm.
 node scripts/seed-market-experiment.mjs --list
@@ -119,7 +137,8 @@ Re-runs are safe: a property whose name already exists is skipped with its rooms
 ## Files
 
 - `scripts/data/market_experiment_2026_09.json` — all content, prices, provenance
-- `scripts/seed-market-experiment.mjs` — dry-run / apply / list / remove
+- `scripts/seed-market-experiment.mjs` — dry-run / apply / list / remove; `--r2-env` for photos
+- `scripts/market-test-preview.sh` — Neon branch + seed + dev server on :3008, production untouched
 - `scripts/seed-market-experiment.test.ts` — pins the data to the real insert schemas + tier math
 - `client/src/content/neighborhoods.ts` — Charlotte, Charleston, Jacksonville neighborhood blocks
 - `scripts/data/market-experiment-photos/` — 30 listing photos, gitignored

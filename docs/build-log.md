@@ -4030,3 +4030,22 @@ detail pages; rooms seed `AVAILABLE` so inquiries will be real; advertising hous
 control is a misrepresentation / fair-housing question in NC, SC, FL — flagged, not judged.
 The ask said "6 more listings" and later "13 new listings"; delivered 6 properties + 22 rooms
 (rooms are the bookable listings here). 13 happens to be the Charlotte room count (3 + 5 + 5).
+
+### Addendum — 2026-09-14, enabling local + production (owner steps remain)
+
+- Owner asked to commit to main (done: `6c74d07`) and then to "make the Neon branch changes to
+  enable local and production". Port 3008 was confirmed to be serving the production database
+  (identical property ids to `beniceproperties.vercel.app`), so a local preview needs a Neon branch.
+- `npx neonctl` on this machine has a stored session that Neon's auth server now rejects
+  (`invalid_request` on the redirect_uri) — creating the branch needs `npx neonctl auth` in a
+  browser, which only the owner can do. Built `scripts/market-test-preview.sh`: creates or reuses
+  a `market-test-preview` branch, seeds it, restarts :3008 against it (connection string never
+  echoed; dotenv cannot override it). Not executed for that reason.
+- BNP's `.env` carries no `R2_*` vars; Unified Ops' does (`R2_PUBLIC_URL_BASE` spelling). Seed
+  gained `--r2-env <file>`, which loads ONLY `R2_*` keys from that file (its `DATABASE_URL` is
+  ignored), plus the alias. +4 tests (18 total). Dry run with `--photos --r2-env` reports the five
+  keys by name and 30/30 photos present.
+- Production: backup floor satisfied (`node scripts/backup-tables.mjs properties rooms` →
+  `docs/migration-backups/2026-09-14-{properties,rooms}.json`, 6 + 6 rows). The `--apply` run
+  was then **blocked by the auto-mode classifier** (prod DB write from this session), consistent
+  with the 2026-09-09 runbook. Not applied. Owner command in `docs/market-experiment-2026-09.md`.
