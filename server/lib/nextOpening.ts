@@ -4,8 +4,45 @@
 // stay — used to render "Next opening · <date>" on fully-booked cards.
 
 import { addDays, parseISO } from "date-fns";
+import type { BusyRange } from "@shared/api-types";
+import { daysUntil } from "@shared/dates";
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * How far ahead a co-living room must open for its property to read "Available"
+ * on the date-blind grid card. 90 days = the maximum lease term (server/lib/lease.ts),
+ * so a room under a lease that started today still counts, while a room blocked
+ * for the foreseeable future (an owner hold with no end in sight) reads
+ * "Fully booked" rather than advertising a price nobody can book.
+ */
+export const COLIVING_OPENING_HORIZON_DAYS = 90;
+
+/**
+ * First date on/after `from` not covered by any busy range. Ranges are half-open
+ * (`end` = first free day, the AvailabilityResponse wire contract). Overlapping
+ * and back-to-back ranges chain; a gap of even one night ends the chain.
+ */
+export function firstFreeDate(busy: Array<Pick<BusyRange, "start" | "end">>, from: string): string {
+  const spans = [...busy].sort((a, b) => a.start.localeCompare(b.start));
+  let free = from;
+  for (const s of spans) {
+    if (s.start <= free && s.end > free) free = s.end;
+  }
+  return free;
+}
+
+/**
+ * Does this room have a bookable night within `horizonDays` of `today`?
+ * Drives the date-blind "from $X / week" vs "Fully booked" decision on the grid.
+ */
+export function roomOpensWithin(
+  busy: Array<Pick<BusyRange, "start" | "end">>,
+  today: string,
+  horizonDays: number = COLIVING_OPENING_HORIZON_DAYS,
+): boolean {
+  return daysUntil(firstFreeDate(busy, today), today) <= horizonDays;
+}
 
 /** Day after an inclusive last-occupied date (lease endDate = last night). */
 export function dayAfter(isoDate: string): string {

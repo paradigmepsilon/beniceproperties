@@ -271,8 +271,8 @@ export function SiteFooter() {
               <span className="font-display text-lg font-semibold">Be Nice Properties</span>
             </div>
             <p className="mt-3 text-sm text-white/60">
-              Co-living rooms, short-term getaways, and long-term homes in Atlanta, and
-              beyond. Book direct, Be Nice.
+              Co-living rooms, short-term getaways, and long-term homes across the
+              Southeast United States and beyond. Book direct, Be Nice.
             </p>
           </div>
           {/* Grid, not flex. The previous `flex-wrap ... md:flex-nowrap` turned
@@ -321,7 +321,7 @@ export function SiteFooter() {
 
         <div className="mt-12 flex flex-wrap items-center justify-between gap-3 border-t border-white/15 pt-6 text-xs text-white/50">
           <span>© {new Date().getFullYear()} Be Nice Properties.</span>
-          <span>U.S. · Antigua</span>
+          <span>Southeast U.S. · Antigua</span>
         </div>
       </div>
     </footer>

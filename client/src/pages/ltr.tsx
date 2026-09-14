@@ -23,9 +23,9 @@ const HIGHLIGHTS = [
 
 export default function Ltr() {
   useSeo({
-    title: "Long-Term Furnished Home Rentals in Atlanta",
+    title: "Long-Term Furnished Home Rentals in the Southeast",
     description:
-      "Furnished long-term homes in Atlanta for a season, a year, or longer. Move-in ready and managed by the people who own them. Tell us what you're looking for.",
+      "Furnished long-term homes across the Southeast United States for a season, a year, or longer. Move-in ready and managed by the people who own them. Tell us what you're looking for.",
     path: "/ltr",
   });
 

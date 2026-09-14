@@ -53,7 +53,7 @@ const STRIP = [
 
 export default function Community() {
   useSeo({
-    title: "Our Co-living Community in Atlanta",
+    title: "Our Co-living Community across the Southeast",
     description:
       "We run homes, not listings. Meet the hosts behind Be Nice Properties, see how our co-living community works, and read what guests say.",
     path: "/community",

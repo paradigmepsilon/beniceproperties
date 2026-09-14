@@ -21,9 +21,9 @@ const HIGHLIGHTS = [
 
 export default function Str() {
   useSeo({
-    title: "Whole-Home Short-Term Rentals in Atlanta",
+    title: "Whole-Home Short-Term Rentals in the Southeast",
     description:
-      "Book a whole-home short-term rental in Atlanta and beyond. Themed, beautifully designed homes for a weekend away or a special occasion. Book direct, no platform markup.",
+      "Book a whole-home short-term rental across the Southeast United States and in Antigua. Themed, beautifully designed homes for a weekend away or a special occasion. Book direct, no platform markup.",
     path: "/str",
     jsonLd: STR_JSON_LD,
   });
@@ -65,7 +65,7 @@ export default function Str() {
           type="STR"
           id="stays"
           heading="Available getaways"
-          subhead="Whole-home stays across Atlanta and Antigua. Search your dates for live pricing."
+          subhead="Whole-home stays across the Southeast United States and in Antigua. Search your dates for live pricing."
           enableDateSearch
           className="mx-auto w-full max-w-6xl px-6 py-14"
         />

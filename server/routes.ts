@@ -58,7 +58,7 @@ import { listPendingApprovals, approveStay, requestStayFix } from "./lib/stayApp
 import { declineAndRefundBooking } from "./lib/bookingGateDecline";
 import { extensionOptions, startExtension, applyExtension } from "./lib/stayExtension";
 import { propertyAccessInfoSchema, roomAccessInfoSchema } from "@shared/schema";
-import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./lib/nextOpening";
+import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent, roomOpensWithin } from "./lib/nextOpening";
 import {
   buildStrChargeMetadata,
   buildLeaseChargeMetadata,
@@ -577,18 +577,21 @@ export async function registerRoutes(app: Express): Promise<void> {
       const withRent = await Promise.all(
         props.map(async (p) => {
           // Co-living cards price "from" the cheapest room a guest can actually
-          // book. Date-blind default: rooms not pulled off the market
-          // (ROOM_UNBOOKABLE_STATUSES: HOLD/MAINTENANCE/INACTIVE — OCCUPIED does
-          // NOT disqualify a room here). Dated search: those rooms AND free for
-          // [checkIn, checkOut) (leases ∪ Airbnb ∪ manual ∪ direct bookings).
-          // null fromWeeklyRent → card shows "Fully booked" / unavailable.
+          // book. Rooms pulled off the market (ROOM_UNBOOKABLE_STATUSES:
+          // HOLD/MAINTENANCE/INACTIVE) never count. Date-blind default: a room
+          // counts when it has a bookable night within COLIVING_OPENING_HORIZON_DAYS
+          // (90 = the max lease term) per its busy ranges (leases ∪ direct
+          // bookings ∪ Airbnb ∪ manual blocks) — so an OCCUPIED room under a
+          // normal lease still counts, while a room held for the foreseeable
+          // future does not. Dated search: those rooms AND free for
+          // [checkIn, checkOut). null fromWeeklyRent → card shows "Fully booked".
           let fromWeeklyRent: string | null = null;
           let availableForDates = true;
           if (p.type === "COLIVING") {
             const rooms = await storage.getRoomsByProperty(p.id);
             const openRooms = rooms.filter((r) => isRoomBookableStatus(r.status));
             // Pair each open room with whether it's free for the searched range
-            // (date-blind default: all open rooms count as free). The pure
+            // (date-blind: whether it opens within the horizon). The pure
             // cheapestAvailableWeeklyRent picks the from-price + availability.
             let free: boolean[];
             if (dated) {
@@ -603,7 +606,9 @@ export async function registerRoutes(app: Express): Promise<void> {
                 ),
               );
             } else {
-              free = openRooms.map(() => true);
+              free = await Promise.all(
+                openRooms.map(async (r) => roomOpensWithin((await buildRoomAvailability(r.id)).busy, today)),
+              );
             }
             const priced = cheapestAvailableWeeklyRent(
               openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] })),

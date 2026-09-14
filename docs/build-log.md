@@ -4069,3 +4069,31 @@ The ask said "6 more listings" and later "13 new listings"; delivered 6 properti
   `node scripts/seed-market-experiment.mjs --close`. Effect on the grid card: still
   "from $X / week" with no dates searched (identical to Hutchens while fully occupied); rooms show
   occupied; every dated search drops the property; room calendars show the range blocked.
+
+## 2026-09-14 — "Southeast United States" site copy + honest "Fully booked" for rooms held beyond the lease horizon
+
+**Ask:** (1) site verbiage should say homes across the Southeast United States, not "Atlanta and
+Antigua"; (2) the six market-test listings should carry the "Fully booked" label instead of
+"Available", with Hutchens / OBC unchanged.
+
+**Copy:** every marketing surface that named Atlanta/Antigua as the footprint now reads "across the
+Southeast United States" (and "in Antigua" where whole-home stays are meant): `client/index.html`
+metas, `lib/seo.ts` (descriptions + `areaServed` now lists Atlanta, Douglasville, Charlotte,
+Charleston, Jacksonville, St. John's), home / str / ltr / about / community / property-detail SEO
+and hero copy, both footer blurbs + "Southeast U.S. · Antigua", FAQ "Where are the homes located?",
+hosts and company story. Property-specific copy (Hutchens/OBC descriptions, neighborhood blocks,
+testimonials) and the `cityOf` fallback untouched.
+
+**Label:** the grid card reads "Fully booked" only when `fromWeeklyRent` is null, and the date-blind
+path counted every AVAILABLE/OCCUPIED room — so a house whose rooms are blocked to 2028 still
+advertised "from $310 / week" while Hutchens (fully occupied under normal leases) read the same.
+Rule change in `GET /api/properties` (date-blind co-living only): a room counts toward the
+from-price when it has a bookable night within `COLIVING_OPENING_HORIZON_DAYS` = 90 (the max lease
+term) per its busy ranges (`buildRoomAvailability`: leases ∪ direct bookings ∪ Airbnb ∪ manual
+blocks). Pure helpers `firstFreeDate` / `roomOpensWithin` in `server/lib/nextOpening.ts` (+9 tests).
+No status semantics changed; HOLD/MAINTENANCE/INACTIVE still never count; dated searches unchanged.
+Prediction from LIVE public data before deploy is in the transcript/next addendum: the six
+market-test houses (rooms blocked 2026-09-14 → 2028-01-01) flip to "Fully booked"; Hutchens / OBC
+outcome depends on whether any room opens within 90 days — verified after deploy.
+
+**Tests run:** `tsc` 0 errors · `vitest run` **1125/1125** (74 files).

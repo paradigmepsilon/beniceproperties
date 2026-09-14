@@ -117,7 +117,7 @@ export const ORGANIZATION_JSON_LD = {
   "@id": `${SITE_URL}/#organization`,
   name: SITE_NAME,
   description:
-    "Furnished co-living rooms, whole-home short-term rentals, and long-term homes in Atlanta and Antigua. Book direct.",
+    "Furnished co-living rooms, whole-home short-term rentals, and long-term homes across the Southeast United States and in Antigua. Book direct.",
   url: SITE_URL,
   image: DEFAULT_OG_IMAGE,
   logo: DEFAULT_OG_IMAGE,
@@ -127,7 +127,7 @@ export const ORGANIZATION_JSON_LD = {
     addressRegion: "GA",
     addressCountry: "US",
   },
-  areaServed: ["Atlanta, GA", "Douglasville, GA", "St. John's, Antigua"],
+  areaServed: ["Atlanta, GA", "Douglasville, GA", "Charlotte, NC", "Charleston, SC", "Jacksonville, FL", "St. John's, Antigua"],
   priceRange: "$$",
   knowsAbout: [
     "co-living",
@@ -156,7 +156,7 @@ export const STR_JSON_LD = {
   "@id": `${SITE_URL}/str#lodging`,
   name: `${SITE_NAME} — Whole-Home Short-Term Rentals`,
   description:
-    "Whole-home short-term rentals in the Atlanta area and Antigua. Themed, beautifully designed homes booked by the night, direct with no platform markup.",
+    "Whole-home short-term rentals across the Southeast United States and in Antigua. Themed, beautifully designed homes booked by the night, direct with no platform markup.",
   url: `${SITE_URL}/str`,
   image: DEFAULT_OG_IMAGE,
   address: {
@@ -165,7 +165,7 @@ export const STR_JSON_LD = {
     addressRegion: "GA",
     addressCountry: "US",
   },
-  areaServed: ["Atlanta, GA", "St. John's, Antigua"],
+  areaServed: ["Atlanta, GA", "Charlotte, NC", "Charleston, SC", "Jacksonville, FL", "St. John's, Antigua"],
   priceRange: "$$",
   parentOrganization: ORGANIZATION_REF,
 };
@@ -178,7 +178,7 @@ export const ABOUT_JSON_LD = {
   url: `${SITE_URL}/about`,
   name: `About ${SITE_NAME}`,
   description:
-    "The people and story behind Be Nice Properties. We own and manage every home ourselves, from co-living rooms to whole-home getaways in Atlanta and Antigua.",
+    "The people and story behind Be Nice Properties. We own and manage every home ourselves, from co-living rooms to whole-home getaways across the Southeast United States and in Antigua.",
   mainEntity: ORGANIZATION_REF,
 };
 

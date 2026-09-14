@@ -42,9 +42,9 @@ const STEPS = [
 
 export default function Home() {
   useSeo({
-    title: "Furnished Co-living Rooms & Rentals in Atlanta",
+    title: "Furnished Co-living Rooms & Rentals in the Southeast",
     description:
-      "Private furnished co-living rooms, whole-home short-term rentals, and long-term homes in Atlanta and Antigua. Book direct with the people who run the place.",
+      "Private furnished co-living rooms, whole-home short-term rentals, and long-term homes across the Southeast United States and in Antigua. Book direct with the people who run the place.",
     path: "/",
     appendSiteName: false,
     jsonLd: [ORGANIZATION_JSON_LD, buildFaqJsonLd(COLIVING_FAQS, `${SITE_URL}/`)],
@@ -63,9 +63,9 @@ export default function Home() {
 
       {/* Shared hero — image slideshow at the common height, teal (co-living) accent. */}
       <PageHero
-        eyebrow="Co-living in Atlanta and beyond"
+        eyebrow="Co-living across the Southeast"
         title="A furnished room that already feels like home."
-        subtitle="Private, furnished rooms in beautifully run co-living homes across Atlanta. Book direct, skip the platform fees."
+        subtitle="Private, furnished rooms in beautifully run co-living homes across the Southeast United States. Book direct, skip the platform fees."
         cta={<HeroCta href="/#stays">See available rooms</HeroCta>}
         accent={COLIVING_GRADIENT}
       />
@@ -86,7 +86,7 @@ export default function Home() {
           type="COLIVING"
           id="stays"
           heading="Available rooms"
-          subhead="Private rooms open right now across Atlanta and Antigua."
+          subhead="Private rooms across the Southeast United States."
           enableColivingSearch
           searchPlacement="external"
           portalTargetId="coliving-search-slot"
@@ -106,7 +106,7 @@ export default function Home() {
         <Testimonials
           className="mx-auto w-full max-w-6xl px-6 py-14"
           heading="Guests who booked direct"
-          subhead="A few words from people who've stayed with us across Atlanta and Antigua."
+          subhead="A few words from people who've stayed with us across the Southeast and in Antigua."
           layout="scroll"
           limit={10}
         />

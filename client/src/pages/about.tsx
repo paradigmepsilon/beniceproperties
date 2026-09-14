@@ -18,7 +18,7 @@ export default function About() {
   useSeo({
     title: "About",
     description:
-      "The people and story behind Be Nice Properties. We own and manage every home ourselves, from co-living rooms to whole-home getaways in Atlanta and Antigua.",
+      "The people and story behind Be Nice Properties. We own and manage every home ourselves, from co-living rooms to whole-home getaways across the Southeast United States and in Antigua.",
     path: "/about",
     jsonLd: ABOUT_JSON_LD,
   });

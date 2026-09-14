@@ -21,11 +21,11 @@ export const HOSTS: Host[] = [
   {
     id: "host-alex",
     name: "Alex",
-    area: "Atlanta homes",
+    area: "Co-living homes",
     city: "Atlanta",
     role: "Founder & host",
     blurb:
-      "Runs the Atlanta co-living homes day to day. If something needs fixing or you just have a question about the neighborhood, Alex is the person you'll be texting.",
+      "Runs the co-living homes across the Southeast day to day. If something needs fixing or you just have a question about the neighborhood, Alex is the person you'll be texting.",
   },
   {
     id: "host-della",

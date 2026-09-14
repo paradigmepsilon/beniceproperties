@@ -54,6 +54,6 @@ export const COLIVING_FAQS: Faq[] = [
   },
   {
     q: "Where are the homes located?",
-    a: "In the Atlanta area, out west toward Douglasville, with more locations opening as we grow. Every home is one we own or manage ourselves, so they all meet the same standard.",
+    a: "Across the Southeast United States: Atlanta, Charlotte, Charleston, and Jacksonville, plus a whole-home getaway in Antigua, with more locations opening as we grow. Every home is one we own or manage ourselves, so they all meet the same standard.",
   },
 ];

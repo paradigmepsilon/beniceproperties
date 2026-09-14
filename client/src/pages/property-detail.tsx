@@ -100,7 +100,7 @@ export default function PropertyDetail() {
     title: seoProp ? `${seoProp.name} in ${cityOf(seoProp.location)}` : "Stay",
     description:
       seoProp?.description?.slice(0, 200) ??
-      "Book direct with Be Nice Properties. Furnished homes and rooms in Atlanta and Antigua.",
+      "Book direct with Be Nice Properties. Furnished homes and rooms across the Southeast United States and in Antigua.",
     path: `/property/${id ?? ""}`,
     image: seoImage,
     jsonLd: seoProp

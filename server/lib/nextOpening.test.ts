@@ -1,7 +1,64 @@
 // server/lib/nextOpening.test.ts
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { dayAfter, strNextOpening, cheapestAvailableWeeklyRent } from "./nextOpening";
+import {
+  dayAfter,
+  strNextOpening,
+  cheapestAvailableWeeklyRent,
+  firstFreeDate,
+  roomOpensWithin,
+  COLIVING_OPENING_HORIZON_DAYS,
+} from "./nextOpening";
+
+describe("firstFreeDate", () => {
+  const today = "2026-09-14";
+
+  it("is today when nothing busy covers today", () => {
+    expect(firstFreeDate([], today)).toBe(today);
+    expect(firstFreeDate([{ start: "2026-10-01", end: "2026-10-08" }], today)).toBe(today);
+    // A range that ended yesterday (exclusive end == today) does not cover today.
+    expect(firstFreeDate([{ start: "2026-09-01", end: "2026-09-14" }], today)).toBe(today);
+  });
+
+  it("is the exclusive end of the range covering today", () => {
+    expect(firstFreeDate([{ start: "2026-09-10", end: "2026-09-20" }], today)).toBe("2026-09-20");
+  });
+
+  it("chains back-to-back and overlapping ranges, regardless of input order", () => {
+    const busy = [
+      { start: "2026-09-25", end: "2026-10-05" }, // starts after the gap — not part of the chain
+      { start: "2026-09-18", end: "2026-09-22" }, // overlaps the first
+      { start: "2026-09-10", end: "2026-09-20" }, // covers today
+      { start: "2026-09-22", end: "2026-09-24" }, // back-to-back with the second
+    ];
+    expect(firstFreeDate(busy, today)).toBe("2026-09-24");
+  });
+});
+
+describe("roomOpensWithin", () => {
+  const today = "2026-09-14";
+
+  it("an unblocked room opens today", () => {
+    expect(roomOpensWithin([], today)).toBe(true);
+  });
+
+  it("a room under a full 90-day lease that started today still counts (the horizon = the max term)", () => {
+    // 90 inclusive days from 09-14 ends 12-12; exclusive end 12-13 = day 90.
+    expect(roomOpensWithin([{ start: "2026-09-14", end: "2026-12-13" }], today)).toBe(true);
+    expect(COLIVING_OPENING_HORIZON_DAYS).toBe(90);
+  });
+
+  it("a room held far into the future does not", () => {
+    expect(roomOpensWithin([{ start: "2026-09-14", end: "2028-01-01" }], today)).toBe(false);
+    // Just past the horizon.
+    expect(roomOpensWithin([{ start: "2026-09-14", end: "2026-12-14" }], today)).toBe(false);
+  });
+
+  it("honors a custom horizon", () => {
+    expect(roomOpensWithin([{ start: "2026-09-14", end: "2026-09-20" }], today, 3)).toBe(false);
+    expect(roomOpensWithin([{ start: "2026-09-14", end: "2026-09-17" }], today, 3)).toBe(true);
+  });
+});
 
 describe("dayAfter", () => {
   it("returns the day after an inclusive end date", () => {
