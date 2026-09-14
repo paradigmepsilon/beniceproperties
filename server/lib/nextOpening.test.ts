@@ -42,16 +42,23 @@ describe("roomOpensWithin", () => {
     expect(roomOpensWithin([], today)).toBe(true);
   });
 
-  it("a room under a full 90-day lease that started today still counts (the horizon = the max term)", () => {
-    // 90 inclusive days from 09-14 ends 12-12; exclusive end 12-13 = day 90.
-    expect(roomOpensWithin([{ start: "2026-09-14", end: "2026-12-13" }], today)).toBe(true);
-    expect(COLIVING_OPENING_HORIZON_DAYS).toBe(90);
+  it("two back-to-back max-term leases starting today still count (the horizon = 2 x the max term)", () => {
+    expect(COLIVING_OPENING_HORIZON_DAYS).toBe(180);
+    // 90 inclusive days from 09-14 ends 12-12 (exclusive 12-13); a second 90-day
+    // lease 12-13 → 03-12 (exclusive 03-13) = day 180.
+    const chain = [
+      { start: "2026-09-14", end: "2026-12-13" },
+      { start: "2026-12-13", end: "2027-03-13" },
+    ];
+    expect(roomOpensWithin(chain, today)).toBe(true);
+    // A single lease, or a hold of a few months, obviously counts too.
+    expect(roomOpensWithin([{ start: "2026-09-14", end: "2026-12-31" }], today)).toBe(true);
   });
 
   it("a room held far into the future does not", () => {
     expect(roomOpensWithin([{ start: "2026-09-14", end: "2028-01-01" }], today)).toBe(false);
-    // Just past the horizon.
-    expect(roomOpensWithin([{ start: "2026-09-14", end: "2026-12-14" }], today)).toBe(false);
+    // Just past the horizon (day 181).
+    expect(roomOpensWithin([{ start: "2026-09-14", end: "2027-03-14" }], today)).toBe(false);
   });
 
   it("honors a custom horizon", () => {

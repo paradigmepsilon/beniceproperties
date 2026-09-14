@@ -580,7 +580,7 @@ export async function registerRoutes(app: Express): Promise<void> {
           // book. Rooms pulled off the market (ROOM_UNBOOKABLE_STATUSES:
           // HOLD/MAINTENANCE/INACTIVE) never count. Date-blind default: a room
           // counts when it has a bookable night within COLIVING_OPENING_HORIZON_DAYS
-          // (90 = the max lease term) per its busy ranges (leases ∪ direct
+          // (180 = two max-term leases) per its busy ranges (leases ∪ direct
           // bookings ∪ Airbnb ∪ manual blocks) — so an OCCUPIED room under a
           // normal lease still counts, while a room held for the foreseeable
           // future does not. Dated search: those rooms AND free for

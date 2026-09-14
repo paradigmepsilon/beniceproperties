@@ -6,17 +6,19 @@
 import { addDays, parseISO } from "date-fns";
 import type { BusyRange } from "@shared/api-types";
 import { daysUntil } from "@shared/dates";
+import { MAX_LEASE_DAYS } from "@shared/schema";
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
 
 /**
  * How far ahead a co-living room must open for its property to read "Available"
- * on the date-blind grid card. 90 days = the maximum lease term (server/lib/lease.ts),
- * so a room under a lease that started today still counts, while a room blocked
- * for the foreseeable future (an owner hold with no end in sight) reads
- * "Fully booked" rather than advertising a price nobody can book.
+ * on the date-blind grid card: two back-to-back maximum-term leases (2 × 90 =
+ * 180 days). A room turning over from one full lease straight into another
+ * always opens inside that window, so normal occupancy (Hutchens, OBC) keeps
+ * its from-price; only a room held with no end in sight (an owner hold years
+ * out) reads "Fully booked" instead of advertising a price nobody can book.
  */
-export const COLIVING_OPENING_HORIZON_DAYS = 90;
+export const COLIVING_OPENING_HORIZON_DAYS = 2 * MAX_LEASE_DAYS;
 
 /**
  * First date on/after `from` not covered by any busy range. Ranges are half-open

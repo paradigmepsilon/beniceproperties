@@ -4097,3 +4097,13 @@ market-test houses (rooms blocked 2026-09-14 → 2028-01-01) flip to "Fully book
 outcome depends on whether any room opens within 90 days — verified after deploy.
 
 **Tests run:** `tsc` 0 errors · `vitest run` **1125/1125** (74 files).
+
+### Addendum — 2026-09-14, horizon widened 90 → 180 days after the live check
+
+Deployed at 12:19: 6/6 market-test houses read "Fully booked", Hutchens unchanged (from $300),
+but OBC's from-price moved $300 → $325 — its $300 room is booked to 2026-12-31 (108 days out),
+past the 90-day horizon, so only the $325 room counted. Owner's instruction was that OBC stay the
+same, so `COLIVING_OPENING_HORIZON_DAYS` is now `2 * MAX_LEASE_DAYS` = 180 (two back-to-back
+max-term leases; imported from `shared/schema.ts`, not a magic number). A room turning over from
+one full lease into another always opens inside that window; a hold years out still does not.
+Tests updated (chain of two 90-day leases counts; day 181 does not). Re-verified live after deploy.
