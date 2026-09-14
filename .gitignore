@@ -21,3 +21,6 @@ docs/migration-backups/
 
 # Per-property arrival info (wifi password, entry codes) fed to scripts/set-access-info.mjs
 scripts/access-info.local.json
+
+# Listing photos for the 2026-09 market-test inventory (third-party MLS images, kept local only)
+scripts/data/market-experiment-photos/

@@ -1,0 +1,679 @@
+{
+  "_readme": [
+    "Market-test inventory (2026-09). Six co-living listings modeled on public for-sale listings in Charlotte, Charleston, and Jacksonville.",
+    "DATA ONLY — fed to scripts/seed-market-experiment.mjs. Adding these requires zero schema change (EXPANSION RULE).",
+    "Owner identification: every property and room carries the tag list in `ownerTags` (stored in prior_names, which nothing renders),",
+    "every property `address` is the real listing address, and docs/market-experiment-2026-09.md is the manifest.",
+    "Pricing: every room's weekly_rent comes from the BNHG Co-Living Profitability Worksheet model (benicehospitality/src/lib/resources/breakeven-analysis-worksheet/pricing.ts):",
+    "  monthly = 65% of the comparable 1-bed rent + room premium (bath, size, parking, window) + property premium (laundry, kitchen, backyard, utilities, wifi, walk/transit/bike).",
+    "  BNP tiers follow the production convention: weekly = monthly / 4 rounded to $5, monthly_rate = weekly x 4, daily_rate = round(weekly / 7), deposit $200, cleaning fee $0.",
+    "Photo files are listing photos held locally in scripts/data/market-experiment-photos/ (gitignored). See the copyright note in the docs manifest."
+  ],
+  "tag": "market-test-2026-09",
+  "roomIncluded": { "roomCleanings": true, "linens": true },
+  "propertyIncluded": { "utilitiesIncluded": true, "wifiIncluded": true },
+  "properties": [
+    {
+      "name": "Midwood Bungalow",
+      "location": "Charlotte",
+      "address": "1900 Thomas Ave, Charlotte, NC 28205",
+      "ownerTags": ["market-test-2026-09", "src:zillow:6187957"],
+      "source": {
+        "url": "https://www.zillow.com/homedetails/1900-Thomas-Ave-Charlotte-NC-28205/6187957_zpid/",
+        "listPrice": 799000, "beds": 3, "baths": 1, "sqft": 1454, "yearBuilt": 1925,
+        "neighborhood": "Plaza Midwood",
+        "fmv1Bed": 1482, "fmvSource": "Zumper, Plaza Midwood 1-bed median, Sep 2026",
+        "walk": 69, "transit": 43, "bike": 53,
+        "propertyFeatures": { "laundry": true, "stockedKitchen": true, "workspace": true, "backyard": true },
+        "propertyPremium": 215
+      },
+      "description": "Midwood Bungalow is a furnished co-living home in Charlotte's Plaza Midwood, a 1920s house on a big corner lot with a rocking-chair front porch and a screened back porch. You rent a private room and share a well-kept house with a few other working adults, ten minutes from Uptown.",
+      "listingContent": {
+        "hook": "A front porch in Plaza Midwood, and Uptown ten minutes away.",
+        "whoFor": "Travel nurses, new hires, and anyone landing in Charlotte who wants a walkable neighborhood and a calm house to come home to.",
+        "essentials": [
+          { "icon": "furnished", "label": "Fully furnished" },
+          { "icon": "wifi", "label": "High-speed Wi-Fi" },
+          { "icon": "kitchen", "label": "Full kitchen" },
+          { "icon": "laundry", "label": "Laundry on site" },
+          { "icon": "housekeeping", "label": "Weekly housekeeping" },
+          { "icon": "yard", "label": "Screened porch & patio" }
+        ],
+        "gettingAround": [
+          { "time": "10 min", "place": "Uptown Charlotte" },
+          { "time": "8 min", "place": "Novant Presbyterian Medical Center" },
+          { "time": "Walkable", "place": "Central Ave shops & dining" },
+          { "time": "20 min", "place": "Charlotte Douglas (CLT)" }
+        ]
+      },
+      "photoFiles": ["thomas-1.jpg", "thomas-2.jpg", "thomas-3.jpg", "thomas-4.jpg", "thomas-5.jpg"],
+      "rooms": [
+        {
+          "roomNumber": "1",
+          "name": "Bright Corner Room with Parking",
+          "description": "The largest of the three bedrooms at Midwood Bungalow, with big windows and a dedicated driveway space. The bathroom is shared across the house. A comfortable pick for a longer Charlotte stay when you're bringing a car.",
+          "listingContent": {
+            "hook": "The big room at the front of the house, with a parking space to match.",
+            "whoFor": "Someone staying a few months who wants natural light and a place to park.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom" },
+              { "icon": "parking", "label": "Driveway parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["thomas-2.jpg", "thomas-3.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1288, "base": 963, "roomPremium": 110, "propertyPremium": 215 },
+          "weeklyRent": "320.00", "monthlyRate": "1280.00", "dailyRate": "46.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "2",
+          "name": "Quiet Room with Parking",
+          "description": "A furnished private bedroom at Midwood Bungalow with a driveway space of its own. It shares a bathroom with the rest of the three-bedroom house and sits off the main hall, away from the living room.",
+          "listingContent": {
+            "hook": "Your own quiet corner, a few steps from the screened porch.",
+            "whoFor": "Interns and professionals settling into Charlotte for a few weeks or more.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom" },
+              { "icon": "parking", "label": "Driveway parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "furnished", "label": "Furnished" }
+            ]
+          },
+          "photoFiles": ["thomas-4.jpg", "thomas-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1288, "base": 963, "roomPremium": 110, "propertyPremium": 215 },
+          "weeklyRent": "320.00", "monthlyRate": "1280.00", "dailyRate": "46.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "3",
+          "name": "Budget Room on the Bus Line",
+          "description": "The easy, budget-minded room at Midwood Bungalow: a furnished private bedroom with a shared bathroom and no parking space attached, which suits someone arriving without a car. CATS bus stops on Central Ave are a short walk.",
+          "listingContent": {
+            "hook": "The easy landing spot when all you need is good sleep and a short commute.",
+            "whoFor": "A working professional arriving without a car who wants a simple, affordable room.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom" },
+              { "icon": "transit", "label": "CATS bus stops nearby" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["thomas-5.jpg", "thomas-3.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true }, "modelMonthly": 1248, "base": 963, "roomPremium": 70, "propertyPremium": 215 },
+          "weeklyRent": "310.00", "monthlyRate": "1240.00", "dailyRate": "44.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        }
+      ]
+    },
+    {
+      "name": "Dilworth House",
+      "location": "Charlotte",
+      "address": "2121 Charlotte Dr, Charlotte, NC 28203",
+      "ownerTags": ["market-test-2026-09", "src:zillow:6221718"],
+      "source": {
+        "url": "https://www.zillow.com/homedetails/2121-Charlotte-Dr-Charlotte-NC-28203/6221718_zpid/",
+        "listPrice": 1550000, "beds": 5, "baths": 3, "sqft": 2630, "yearBuilt": 1941,
+        "neighborhood": "Dilworth",
+        "fmv1Bed": 1665, "fmvSource": "Zumper, Dilworth 1-bed median, Sep 2026",
+        "walk": 80, "transit": 35, "bike": 57,
+        "propertyFeatures": { "upgraded": true, "laundry": true, "stockedKitchen": true, "backyard": true },
+        "propertyPremium": 250
+      },
+      "description": "Dilworth House is a furnished five-bedroom co-living home on a tree-lined street in Charlotte's Dilworth, steps from East Boulevard and a short walk to South End. You rent a private room and share a renovated house with a few other working adults, with a deck, a flat backyard, and Uptown five minutes away.",
+      "listingContent": {
+        "hook": "A tree-lined Dilworth street, and the whole city on foot.",
+        "whoFor": "Hospital staff, relocating professionals, and anyone who wants to live in Charlotte's most walkable neighborhood without signing a year-long lease.",
+        "essentials": [
+          { "icon": "furnished", "label": "Fully furnished" },
+          { "icon": "wifi", "label": "High-speed Wi-Fi" },
+          { "icon": "kitchen", "label": "Renovated kitchen" },
+          { "icon": "laundry", "label": "Laundry on site" },
+          { "icon": "housekeeping", "label": "Weekly housekeeping" },
+          { "icon": "yard", "label": "Deck & backyard" }
+        ],
+        "gettingAround": [
+          { "time": "5 min", "place": "Uptown Charlotte" },
+          { "time": "5 min", "place": "Atrium Health Carolinas Medical Center" },
+          { "time": "Walkable", "place": "East Blvd & South End" },
+          { "time": "Walkable", "place": "LYNX Blue Line" }
+        ]
+      },
+      "photoFiles": ["charlotte-1.jpg", "charlotte-2.jpg", "charlotte-3.jpg", "charlotte-4.jpg", "charlotte-5.jpg"],
+      "rooms": [
+        {
+          "roomNumber": "1",
+          "name": "Primary Suite with Private Bath",
+          "description": "The primary suite at Dilworth House: a large upstairs bedroom with an updated private bathroom, a walk-in closet, and the garage parking space. The room to take when you want a proper retreat at the end of a long shift.",
+          "listingContent": {
+            "hook": "The one with the door you can close and the bath that's only yours.",
+            "whoFor": "Anyone who wants real privacy and space for a longer or more focused stay.",
+            "essentials": [
+              { "icon": "bed", "label": "Large private bedroom" },
+              { "icon": "private-bath", "label": "Private bathroom" },
+              { "icon": "parking", "label": "Garage parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["charlotte-3.jpg", "charlotte-4.jpg"],
+          "pricing": { "sizeBand": "Over 200 sqft", "roomFeatures": { "privateBath": true, "window": true, "parking": true }, "modelMonthly": 1607, "base": 1082, "roomPremium": 275, "propertyPremium": 250 },
+          "weeklyRent": "400.00", "monthlyRate": "1600.00", "dailyRate": "57.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "2",
+          "name": "Upstairs Room with Parking",
+          "description": "A furnished upstairs bedroom at Dilworth House with a driveway parking space. It shares the upstairs hall bathroom with one other room and sits next to the laundry.",
+          "listingContent": {
+            "hook": "Upstairs, quiet, and a parking space with your name on it.",
+            "whoFor": "Professionals bringing a car who want a calm upstairs room.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "parking", "label": "Driveway parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "furnished", "label": "Furnished" }
+            ]
+          },
+          "photoFiles": ["charlotte-4.jpg", "charlotte-5.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1442, "base": 1082, "roomPremium": 110, "propertyPremium": 250 },
+          "weeklyRent": "360.00", "monthlyRate": "1440.00", "dailyRate": "51.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "3",
+          "name": "Upstairs Room Near the Light Rail",
+          "description": "A furnished upstairs bedroom at Dilworth House sharing the hall bathroom with one other room. No parking space attached, which suits someone commuting on the LYNX Blue Line, a short walk away.",
+          "listingContent": {
+            "hook": "Walk to the train, walk to dinner, come home to a quiet room.",
+            "whoFor": "Someone arriving without a car who wants the most walkable address in Charlotte.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "transit", "label": "LYNX Blue Line walkable" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["charlotte-5.jpg", "charlotte-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true }, "modelMonthly": 1402, "base": 1082, "roomPremium": 70, "propertyPremium": 250 },
+          "weeklyRent": "350.00", "monthlyRate": "1400.00", "dailyRate": "50.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "4",
+          "name": "Main-Level Room off the Den",
+          "description": "A furnished main-level bedroom at Dilworth House, close to the kitchen and the den with built-ins. Shares the main-level full bathroom with one other room. No stairs, which some guests prefer.",
+          "listingContent": {
+            "hook": "No stairs, close to the kitchen, and the porch right outside.",
+            "whoFor": "Guests who want a ground-floor room and easy access to the shared spaces.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" },
+              { "icon": "furnished", "label": "Furnished" }
+            ]
+          },
+          "photoFiles": ["charlotte-2.jpg", "charlotte-3.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true }, "modelMonthly": 1402, "base": 1082, "roomPremium": 70, "propertyPremium": 250 },
+          "weeklyRent": "350.00", "monthlyRate": "1400.00", "dailyRate": "50.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "5",
+          "name": "Main-Level Room by the Porch",
+          "description": "A furnished main-level bedroom at Dilworth House with direct access to the porch and backyard. Shares the main-level full bathroom with one other room.",
+          "listingContent": {
+            "hook": "Coffee on the porch is a ten-second commute.",
+            "whoFor": "Anyone who wants a ground-floor room and outdoor space a step away.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "yard", "label": "Porch & backyard access" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["charlotte-5.jpg", "charlotte-4.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true }, "modelMonthly": 1402, "base": 1082, "roomPremium": 70, "propertyPremium": 250 },
+          "weeklyRent": "350.00", "monthlyRate": "1400.00", "dailyRate": "50.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        }
+      ]
+    },
+    {
+      "name": "Montibello House",
+      "location": "Charlotte",
+      "address": "5400 McAlpine Farm Rd, Charlotte, NC 28226",
+      "ownerTags": ["market-test-2026-09", "src:zillow:6297403"],
+      "source": {
+        "url": "https://www.zillow.com/homedetails/5400-McAlpine-Farm-Rd-Charlotte-NC-28226/6297403_zpid/",
+        "listPrice": 1550000, "beds": 5, "baths": 4, "sqft": 4040, "yearBuilt": 1976,
+        "neighborhood": "Montibello (South Charlotte)",
+        "fmv1Bed": 1520, "fmvSource": "Zumper, McAlpine 1-bed median, Jul 2026",
+        "walk": 9, "transit": 11, "bike": 18,
+        "propertyFeatures": { "laundry": true, "stockedKitchen": true, "workspace": true, "backyard": true },
+        "propertyPremium": 200
+      },
+      "description": "Montibello House is a furnished five-bedroom co-living home on a corner lot in South Charlotte, with a backyard pool, a circular drive with room for everyone's car, and a finished basement with its own entrance. You rent a private room and share a big, quiet house with a few other working adults, ten minutes from SouthPark.",
+      "listingContent": {
+        "hook": "A pool out back, parking for everyone, and SouthPark ten minutes away.",
+        "whoFor": "Traveling professionals with a car who want space, quiet, and a real backyard rather than a downtown address.",
+        "essentials": [
+          { "icon": "furnished", "label": "Fully furnished" },
+          { "icon": "wifi", "label": "High-speed Wi-Fi" },
+          { "icon": "kitchen", "label": "Full kitchen" },
+          { "icon": "laundry", "label": "Laundry on site" },
+          { "icon": "parking", "label": "Parking for every room" },
+          { "icon": "yard", "label": "Backyard pool" }
+        ],
+        "gettingAround": [
+          { "time": "10 min", "place": "SouthPark" },
+          { "time": "12 min", "place": "Atrium Health Pineville" },
+          { "time": "20 min", "place": "Uptown Charlotte" },
+          { "time": "25 min", "place": "Charlotte Douglas (CLT)" }
+        ]
+      },
+      "photoFiles": ["mcalpine-1.jpg", "mcalpine-2.jpg", "mcalpine-3.jpg", "mcalpine-4.jpg", "mcalpine-5.jpg"],
+      "rooms": [
+        {
+          "roomNumber": "1",
+          "name": "Primary Suite with Private Bath",
+          "description": "The main-level primary suite at Montibello House: a large furnished bedroom with its own full bathroom, hardwood floors, and a space in the circular drive. The most private room on the main floor.",
+          "listingContent": {
+            "hook": "A big main-floor suite with a bath that's only yours.",
+            "whoFor": "Anyone who wants privacy and space for a longer stay.",
+            "essentials": [
+              { "icon": "bed", "label": "Large private bedroom" },
+              { "icon": "private-bath", "label": "Private bathroom" },
+              { "icon": "parking", "label": "Dedicated parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["mcalpine-3.jpg", "mcalpine-2.jpg"],
+          "pricing": { "sizeBand": "Over 200 sqft", "roomFeatures": { "privateBath": true, "window": true, "parking": true }, "modelMonthly": 1463, "base": 988, "roomPremium": 275, "propertyPremium": 200 },
+          "weeklyRent": "365.00", "monthlyRate": "1460.00", "dailyRate": "52.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "2",
+          "name": "Main-Level Room with Parking",
+          "description": "A furnished main-level bedroom at Montibello House with hardwood floors and a dedicated parking space. Shares a main-level full bathroom with the two other main-floor rooms.",
+          "listingContent": {
+            "hook": "A sunny main-floor room and a spot in the drive.",
+            "whoFor": "Professionals bringing a car who want a quiet, established neighborhood.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom" },
+              { "icon": "parking", "label": "Dedicated parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "furnished", "label": "Furnished" }
+            ]
+          },
+          "photoFiles": ["mcalpine-4.jpg", "mcalpine-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1298, "base": 988, "roomPremium": 110, "propertyPremium": 200 },
+          "weeklyRent": "325.00", "monthlyRate": "1300.00", "dailyRate": "46.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "3",
+          "name": "Main-Level Room by the Pool",
+          "description": "A furnished main-level bedroom at Montibello House looking out toward the backyard and pool, with a dedicated parking space. Shares a main-level full bathroom.",
+          "listingContent": {
+            "hook": "Wake up to the pool, park in the drive, work from the basement office.",
+            "whoFor": "Remote workers and travelers who want outdoor space and a calm house.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom" },
+              { "icon": "parking", "label": "Dedicated parking" },
+              { "icon": "yard", "label": "Pool & backyard" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" }
+            ]
+          },
+          "photoFiles": ["mcalpine-5.jpg", "mcalpine-4.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1298, "base": 988, "roomPremium": 110, "propertyPremium": 200 },
+          "weeklyRent": "325.00", "monthlyRate": "1300.00", "dailyRate": "46.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "4",
+          "name": "Quiet Main-Level Room",
+          "description": "A furnished main-level bedroom at Montibello House at the quiet end of the hall, with a dedicated parking space. Shares a main-level full bathroom.",
+          "listingContent": {
+            "hook": "The quiet end of the hall in a very quiet neighborhood.",
+            "whoFor": "Night-shift workers and anyone who values silence.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom" },
+              { "icon": "parking", "label": "Dedicated parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["mcalpine-2.jpg", "mcalpine-5.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1298, "base": 988, "roomPremium": 110, "propertyPremium": 200 },
+          "weeklyRent": "325.00", "monthlyRate": "1300.00", "dailyRate": "46.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "5",
+          "name": "Basement Suite with Private Entrance",
+          "description": "The basement suite at Montibello House: a large furnished bedroom with its own full bathroom, its own exterior entrance, a living room with a fireplace right outside the door, and a dedicated parking space. The closest thing to your own apartment in a shared house.",
+          "listingContent": {
+            "hook": "Your own door, your own bath, and a fireplace living room to yourself most nights.",
+            "whoFor": "Anyone who wants apartment-level independence with co-living pricing.",
+            "essentials": [
+              { "icon": "bed", "label": "Large private bedroom" },
+              { "icon": "private-bath", "label": "Private bathroom" },
+              { "icon": "key", "label": "Private entrance" },
+              { "icon": "parking", "label": "Dedicated parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" }
+            ]
+          },
+          "photoFiles": ["mcalpine-4.jpg", "mcalpine-3.jpg"],
+          "pricing": { "sizeBand": "Over 200 sqft", "roomFeatures": { "privateBath": true, "ownExit": true, "window": true, "parking": true }, "modelMonthly": 1493, "base": 988, "roomPremium": 305, "propertyPremium": 200 },
+          "weeklyRent": "375.00", "monthlyRate": "1500.00", "dailyRate": "54.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        }
+      ]
+    },
+    {
+      "name": "Ponderosa House",
+      "location": "Charleston",
+      "address": "766 Ponderosa Dr, Charleston, SC 29414",
+      "ownerTags": ["market-test-2026-09", "src:zillow:68397046"],
+      "source": {
+        "url": "https://www.zillow.com/homedetails/766-Ponderosa-Dr-Charleston-SC-29414/68397046_zpid/",
+        "listPrice": 435000, "beds": 3, "baths": 2, "sqft": 1502, "yearBuilt": 2004,
+        "neighborhood": "West Ashley",
+        "fmv1Bed": 1645, "fmvSource": "RentCafe, West Ashley (Carolina Bay) 1-bed average, Aug 2026",
+        "walk": 3, "transit": 1, "bike": 25,
+        "propertyFeatures": { "upgraded": true, "laundry": true, "stockedKitchen": true, "backyard": true },
+        "propertyPremium": 220
+      },
+      "description": "Ponderosa House is a furnished co-living home on a quiet cul-de-sac in Charleston's West Ashley, with an updated kitchen, a back deck, and a two-car garage. You rent a private room and share a well-kept three-bedroom house with a few other working adults, twenty minutes from downtown.",
+      "listingContent": {
+        "hook": "A cul-de-sac in West Ashley, and downtown Charleston twenty minutes out.",
+        "whoFor": "Travel nurses, Boeing and airport crews, and anyone new to Charleston who wants a calm house with parking.",
+        "essentials": [
+          { "icon": "furnished", "label": "Fully furnished" },
+          { "icon": "wifi", "label": "High-speed Wi-Fi" },
+          { "icon": "kitchen", "label": "Updated kitchen" },
+          { "icon": "laundry", "label": "Laundry on site" },
+          { "icon": "parking", "label": "Garage & driveway parking" },
+          { "icon": "yard", "label": "Back deck & yard" }
+        ],
+        "gettingAround": [
+          { "time": "20 min", "place": "Downtown Charleston & MUSC" },
+          { "time": "10 min", "place": "Roper St. Francis West Ashley" },
+          { "time": "20 min", "place": "Charleston Intl (CHS) & Boeing" },
+          { "time": "Nearby", "place": "West Ashley Greenway" }
+        ]
+      },
+      "photoFiles": ["ponderosa-1.jpg", "ponderosa-2.jpg", "ponderosa-3.jpg", "ponderosa-4.jpg", "ponderosa-5.jpg"],
+      "rooms": [
+        {
+          "roomNumber": "1",
+          "name": "Primary Suite with Private Bath",
+          "description": "The main-level primary suite at Ponderosa House: a furnished bedroom with a walk-in closet, its own full bathroom, and a garage parking space. No stairs, and the deck is right out back.",
+          "listingContent": {
+            "hook": "Main floor, walk-in closet, and a bathroom nobody else uses.",
+            "whoFor": "Anyone who wants privacy and a ground-floor room for a longer stay.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "private-bath", "label": "Private bathroom" },
+              { "icon": "parking", "label": "Garage parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["ponderosa-3.jpg", "ponderosa-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "privateBath": true, "window": true, "parking": true }, "modelMonthly": 1549, "base": 1069, "roomPremium": 260, "propertyPremium": 220 },
+          "weeklyRent": "385.00", "monthlyRate": "1540.00", "dailyRate": "55.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "2",
+          "name": "Upstairs Room with Parking",
+          "description": "A furnished upstairs bedroom at Ponderosa House with a dedicated parking space. Shares the upstairs full bathroom with one other room.",
+          "listingContent": {
+            "hook": "A quiet upstairs room and a spot in the drive.",
+            "whoFor": "Professionals bringing a car who want a calm base near the Greenway.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "parking", "label": "Driveway parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "furnished", "label": "Furnished" }
+            ]
+          },
+          "photoFiles": ["ponderosa-4.jpg", "ponderosa-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1399, "base": 1069, "roomPremium": 110, "propertyPremium": 220 },
+          "weeklyRent": "350.00", "monthlyRate": "1400.00", "dailyRate": "50.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "3",
+          "name": "Upstairs Room over the Deck",
+          "description": "A furnished upstairs bedroom at Ponderosa House with a dedicated parking space and a view over the back deck. Shares the upstairs full bathroom with one other room.",
+          "listingContent": {
+            "hook": "Upstairs, over the deck, with parking and a short drive to everything.",
+            "whoFor": "Anyone who wants a simple, comfortable room in a quiet neighborhood.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "parking", "label": "Driveway parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["ponderosa-5.jpg", "ponderosa-3.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1399, "base": 1069, "roomPremium": 110, "propertyPremium": 220 },
+          "weeklyRent": "350.00", "monthlyRate": "1400.00", "dailyRate": "50.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        }
+      ]
+    },
+    {
+      "name": "Meeting Street Cottage",
+      "location": "Charleston",
+      "address": "700 Meeting St, Charleston, SC 29403",
+      "ownerTags": ["market-test-2026-09", "src:zillow:10908697"],
+      "source": {
+        "url": "https://www.zillow.com/homedetails/700-Meeting-St-Charleston-SC-29403/10908697_zpid/",
+        "listPrice": 799900, "beds": 3, "baths": 2, "sqft": 1104, "yearBuilt": 1920,
+        "neighborhood": "East Central (downtown peninsula)",
+        "fmv1Bed": 2110, "fmvSource": "Zumper, East Central 1-bed median, Jul 2026",
+        "walk": 75, "transit": 39, "bike": 66,
+        "propertyFeatures": { "upgraded": true, "laundry": true, "stockedKitchen": true },
+        "propertyPremium": 235
+      },
+      "description": "Meeting Street Cottage is a fully renovated 1920s bungalow on the downtown Charleston peninsula, set up as a furnished co-living home with off-street parking, a new kitchen, and a stacked washer and dryer. You rent a private room and share a small, bright house with two other working adults, a short walk from Upper King Street.",
+      "listingContent": {
+        "hook": "Downtown Charleston on foot, and a parking space when you need it.",
+        "whoFor": "MUSC and hospitality staff, graduate students, and anyone who wants the peninsula without a peninsula lease.",
+        "essentials": [
+          { "icon": "furnished", "label": "Fully furnished" },
+          { "icon": "wifi", "label": "High-speed Wi-Fi" },
+          { "icon": "kitchen", "label": "New kitchen" },
+          { "icon": "laundry", "label": "In-home laundry" },
+          { "icon": "housekeeping", "label": "Weekly housekeeping" },
+          { "icon": "parking", "label": "Off-street parking" }
+        ],
+        "gettingAround": [
+          { "time": "Walkable", "place": "Upper King Street" },
+          { "time": "10 min", "place": "MUSC & Roper Hospital" },
+          { "time": "10 min", "place": "College of Charleston" },
+          { "time": "2 min", "place": "I-26 on-ramp" }
+        ]
+      },
+      "photoFiles": ["meeting-1.jpg", "meeting-2.jpg", "meeting-3.jpg", "meeting-4.jpg", "meeting-5.jpg"],
+      "rooms": [
+        {
+          "roomNumber": "1",
+          "name": "Primary Room with Private Bath",
+          "description": "The primary bedroom at Meeting Street Cottage: a furnished room with its own newly tiled bathroom and one of the off-street parking spaces. The most private room in a small downtown house.",
+          "listingContent": {
+            "hook": "A private bath on the peninsula, and a place to park.",
+            "whoFor": "Anyone who wants privacy downtown for a few weeks or a few months.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "private-bath", "label": "Private bathroom" },
+              { "icon": "parking", "label": "Off-street parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "In-home laundry" }
+            ]
+          },
+          "photoFiles": ["meeting-3.jpg", "meeting-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "privateBath": true, "window": true, "parking": true }, "modelMonthly": 1867, "base": 1372, "roomPremium": 260, "propertyPremium": 235 },
+          "weeklyRent": "465.00", "monthlyRate": "1860.00", "dailyRate": "66.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "2",
+          "name": "Cozy Room with Parking",
+          "description": "A compact furnished bedroom at Meeting Street Cottage with an off-street parking space. Shares the second bathroom with one other room. Small, bright, and a few blocks from King Street.",
+          "listingContent": {
+            "hook": "Small room, big neighborhood, and your car off the street.",
+            "whoFor": "Someone who'll spend their days downtown and wants a clean place to land.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "parking", "label": "Off-street parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "furnished", "label": "Furnished" }
+            ]
+          },
+          "photoFiles": ["meeting-4.jpg", "meeting-2.jpg"],
+          "pricing": { "sizeBand": "Under 120 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1707, "base": 1372, "roomPremium": 100, "propertyPremium": 235 },
+          "weeklyRent": "425.00", "monthlyRate": "1700.00", "dailyRate": "61.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "3",
+          "name": "Cozy Room, Walk Everywhere",
+          "description": "A compact furnished bedroom at Meeting Street Cottage for someone living car-free downtown. Shares the second bathroom with one other room; no parking space attached.",
+          "listingContent": {
+            "hook": "No car, no problem: King Street, MUSC, and the college are all on foot.",
+            "whoFor": "Students, hospitality staff, and anyone arriving without a car.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "location", "label": "Walk to Upper King" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "In-home laundry" }
+            ]
+          },
+          "photoFiles": ["meeting-5.jpg", "meeting-3.jpg"],
+          "pricing": { "sizeBand": "Under 120 sqft", "roomFeatures": { "window": true }, "modelMonthly": 1667, "base": 1372, "roomPremium": 60, "propertyPremium": 235 },
+          "weeklyRent": "415.00", "monthlyRate": "1660.00", "dailyRate": "59.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        }
+      ]
+    },
+    {
+      "name": "Beauclerc House",
+      "location": "Jacksonville",
+      "address": "9042 Warwickshire Rd, Jacksonville, FL 32257",
+      "ownerTags": ["market-test-2026-09", "src:zillow:44549124"],
+      "source": {
+        "url": "https://www.zillow.com/homedetails/9042-Warwickshire-Rd-Jacksonville-FL-32257/44549124_zpid/",
+        "listPrice": 315000, "beds": 3, "baths": 2, "sqft": 1456, "yearBuilt": 1975,
+        "neighborhood": "Beauclerc / Mandarin",
+        "fmv1Bed": 1289, "fmvSource": "Zumper, Mandarin 1-bed median, Sep 2026",
+        "walk": 36, "transit": 30, "bike": 41,
+        "propertyFeatures": { "upgraded": true, "laundry": true, "stockedKitchen": true, "backyard": true },
+        "propertyPremium": 220
+      },
+      "description": "Beauclerc House is a furnished single-story co-living home in Jacksonville's Mandarin area, an all-brick house with a remodeled kitchen, floor-to-ceiling windows, a big fenced backyard, and an oversized garage. You rent a private room and share a refreshed three-bedroom house with a few other working adults.",
+      "listingContent": {
+        "hook": "One story, a fenced backyard, and parking for everyone in quiet Mandarin.",
+        "whoFor": "Hospital staff, relocating professionals, and anyone who wants a calm Jacksonville base with room to park.",
+        "essentials": [
+          { "icon": "furnished", "label": "Fully furnished" },
+          { "icon": "wifi", "label": "High-speed Wi-Fi" },
+          { "icon": "kitchen", "label": "Remodeled kitchen" },
+          { "icon": "laundry", "label": "Laundry on site" },
+          { "icon": "parking", "label": "Parking for every room" },
+          { "icon": "yard", "label": "Fenced backyard & patio" }
+        ],
+        "gettingAround": [
+          { "time": "12 min", "place": "Baptist Medical Center South" },
+          { "time": "15 min", "place": "St. Johns Town Center" },
+          { "time": "20 min", "place": "Downtown Jacksonville" },
+          { "time": "5 min", "place": "I-295" }
+        ]
+      },
+      "photoFiles": ["warwickshire-1.jpg", "warwickshire-2.jpg", "warwickshire-3.jpg", "warwickshire-4.jpg", "warwickshire-5.jpg"],
+      "rooms": [
+        {
+          "roomNumber": "1",
+          "name": "Primary Suite with Private Bath",
+          "description": "The primary suite at Beauclerc House: a furnished bedroom with its own full bathroom and a garage parking space, all on one level. The room to take when you want a door you can close and a bath nobody else uses.",
+          "listingContent": {
+            "hook": "Your own bath, your own garage spot, no stairs anywhere.",
+            "whoFor": "Anyone who wants privacy for a longer Jacksonville stay.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "private-bath", "label": "Private bathroom" },
+              { "icon": "parking", "label": "Garage parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "laundry", "label": "Laundry on site" }
+            ]
+          },
+          "photoFiles": ["warwickshire-3.jpg", "warwickshire-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "privateBath": true, "window": true, "parking": true }, "modelMonthly": 1318, "base": 838, "roomPremium": 260, "propertyPremium": 220 },
+          "weeklyRent": "330.00", "monthlyRate": "1320.00", "dailyRate": "47.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "2",
+          "name": "Sunny Room with Parking",
+          "description": "A furnished bedroom at Beauclerc House with a driveway parking space, down the hall from the flex room. Shares the hall bathroom with one other room.",
+          "listingContent": {
+            "hook": "A bright room, a spot in the drive, and a backyard to spread out in.",
+            "whoFor": "Professionals bringing a car who want a simple, quiet room.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "parking", "label": "Driveway parking" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" },
+              { "icon": "furnished", "label": "Furnished" }
+            ]
+          },
+          "photoFiles": ["warwickshire-4.jpg", "warwickshire-2.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1168, "base": 838, "roomPremium": 110, "propertyPremium": 220 },
+          "weeklyRent": "290.00", "monthlyRate": "1160.00", "dailyRate": "41.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        },
+        {
+          "roomNumber": "3",
+          "name": "Quiet Room by the Backyard",
+          "description": "A furnished bedroom at Beauclerc House at the back of the house, with a driveway parking space and the patio a few steps away. Shares the hall bathroom with one other room.",
+          "listingContent": {
+            "hook": "The quiet room at the back, with the patio right outside.",
+            "whoFor": "Anyone who wants an affordable room with outdoor space and easy parking.",
+            "essentials": [
+              { "icon": "bed", "label": "Private bedroom" },
+              { "icon": "bath", "label": "Shared bathroom (2 rooms)" },
+              { "icon": "parking", "label": "Driveway parking" },
+              { "icon": "yard", "label": "Patio & backyard" },
+              { "icon": "wifi", "label": "High-speed Wi-Fi" },
+              { "icon": "kitchen", "label": "Full kitchen access" }
+            ]
+          },
+          "photoFiles": ["warwickshire-5.jpg", "warwickshire-3.jpg"],
+          "pricing": { "sizeBand": "120 to 200 sqft", "roomFeatures": { "window": true, "parking": true }, "modelMonthly": 1168, "base": 838, "roomPremium": 110, "propertyPremium": 220 },
+          "weeklyRent": "290.00", "monthlyRate": "1160.00", "dailyRate": "41.00", "depositAmount": "200.00", "cleaningFee": "0.00"
+        }
+      ]
+    }
+  ]
+}

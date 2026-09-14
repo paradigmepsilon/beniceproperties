@@ -3980,3 +3980,53 @@ an empty string) and the `env rm` overwrote it.
 production URL is correct, so nothing depends on it today. Local dev servers (:3000, :3008) must be
 restarted to pick up the new `.env`. The `.env.bak-*` files in both repos hold the pre-rotation
 secrets and are gitignored — delete them once the rotation is settled.
+
+## 2026-09-14 — Market-test inventory: six co-living listings, priced by the BNHG worksheet model (PREPARED, NOT APPLIED)
+
+**Ask:** create six co-living listings on the BNP site modeled on public for-sale listings in
+Charlotte (Plaza Midwood, Dilworth, Montibello), Charleston (West Ashley, East Central), and
+Jacksonville (Mandarin), price the rooms with the BNHG co-living pricing calculator, and make the
+rows easy for the owners to identify while carrying every feature the existing listings have.
+
+**Built (data only — zero schema change, EXPANSION RULE holds):**
+- `scripts/data/market_experiment_2026_09.json` — 6 properties / **22 rooms** with the same
+  fields Hutchens and OBC carry: `description`, `listing_content` (hook, essentials with known
+  icons, gettingAround, whoFor), `address`, photos, and per-room `weekly_rent` / `monthly_rate` /
+  `daily_rate` / `deposit_amount` / `cleaning_fee` on the live convention (monthly = weekly x 4,
+  daily = round(weekly / 7), deposit $200, cleaning $0). Every row's `pricing` block records the
+  model's base, room premium, property premium, and monthly output for provenance.
+- Pricing came from the BNHG worksheet model itself, imported unchanged from
+  `benicehospitality/src/lib/resources/breakeven-analysis-worksheet/pricing.ts` and run once per
+  property (`computePricing`) with a comparable 1-bed rent (Zumper / RentCafe neighborhood reports,
+  Jul–Sep 2026) and Walk / Transit / Bike scores from the listing pages. Model monthly ranges
+  $1,168 (Beauclerc shared-bath rooms) to $1,867 (Meeting St ensuite); weekly $290–$465.
+- `scripts/seed-market-experiment.mjs` — `expansion-test.mjs` idiom: raw SQL INSERTs, idempotent
+  by property name, **dry run by default with no DB connection**, `--apply` to write, `--inactive`
+  to seed hidden, `--photos` to upload the listing photos to R2 under the production key shape
+  (`bnp/properties/<uuid>.jpg`, `bnp/rooms/<uuid>.jpg`; needs the four `R2_*` vars +
+  `R2_PUBLIC_BASE_URL`), `--list` to print every tagged row, `--remove` to delete only tagged
+  rows (refuses if any booking or lease references them). Never prints a secret.
+- **Owner identification:** every property and room carries `prior_names =
+  ["market-test-2026-09", "src:zillow:<zpid>"]`. No code reads `prior_names`, so the tag is
+  invisible on the site and visible in admin / UO / SQL; `--list` and one `WHERE prior_names ?
+  'market-test-2026-09'` find them all. `address` is the real listing address. Manifest with
+  sources, prices, modeling decisions, and the runbook: `docs/market-experiment-2026-09.md`.
+- `client/src/content/neighborhoods.ts` — Charlotte, Charleston, Jacksonville entries so the
+  detail pages render the neighborhood block the Atlanta listings get (keyed by `cityOf`).
+- `scripts/seed-market-experiment.test.ts` — 14 tests: the data passes the script's validation,
+  every property / room row passes the REAL `insertPropertySchema` / `insertRoomSchema`, tier
+  math matches production, tag present on every row, icons are ones `listing-story.tsx` renders,
+  CLI defaults to dry run and refuses `--apply --remove`.
+- `.gitignore` — `scripts/data/market-experiment-photos/` (30 third-party MLS photos, local only).
+
+**Tests run:** `tsc` 0 errors · `vitest run` **1110/1110** (74 files) · seed dry run with
+`--photos` file check: 6 properties, 22 rooms, 30/30 photos present, no DB connection.
+
+**Not done / owner decisions (see the manifest's "Things to decide"):** nothing written to the
+database — the classifier blocks prod DB access from this session, so the `--apply` run is the
+owner's, per the runbook. Photos are the listing brokers' MLS images (copyright / Zillow + Redfin
+terms exposure if published); real addresses of homes other people are selling will show on the
+detail pages; rooms seed `AVAILABLE` so inquiries will be real; advertising housing BNP does not
+control is a misrepresentation / fair-housing question in NC, SC, FL — flagged, not judged.
+The ask said "6 more listings" and later "13 new listings"; delivered 6 properties + 22 rooms
+(rooms are the bookable listings here). 13 happens to be the Charlotte room count (3 + 5 + 5).
