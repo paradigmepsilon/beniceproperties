@@ -226,6 +226,7 @@ export interface IStorage {
 
   // --- Listing interest (placeholder-listing demand capture; append-only) ---
   createListingInterest(data: InsertListingInterest): Promise<ListingInterest>;
+  getListingInterest(opts?: { limit?: number }): Promise<ListingInterest[]>;
 
   // --- Partner inquiries (B2B /partner lead capture; append-only) ---
   createPartnerInquiry(data: InsertPartnerInquiry): Promise<PartnerInquiry>;
@@ -667,6 +668,15 @@ class Storage implements IStorage {
   async createListingInterest(data: InsertListingInterest): Promise<ListingInterest> {
     const [row] = await db.insert(listingInterest).values(data).returning();
     return row;
+  }
+
+  // Newest first — the list is read as "who asked recently", not browsed.
+  async getListingInterest(opts?: { limit?: number }): Promise<ListingInterest[]> {
+    return db
+      .select()
+      .from(listingInterest)
+      .orderBy(desc(listingInterest.createdAt))
+      .limit(Math.min(Math.max(opts?.limit ?? 200, 1), 500));
   }
 
   // Append-only B2B lead capture for the /partner page — like LTR inquiries, a

@@ -22,6 +22,7 @@ import { amountMatches, refundEligibility } from "@/lib/adminRefund";
 import MessagesTab from "./messages-tab";
 import StayApprovalsTab, { useStayApprovalCount } from "./stay-approvals-tab";
 import BlocksPanel from "./blocks-panel";
+import ListingInterestPanel from "./listing-interest-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
 
 interface Dashboard {
@@ -291,6 +292,7 @@ export default function AdminDashboard() {
         {/* Inventory */}
         <TabsContent value="inventory" className="mt-6">
           <CalendarSyncPanel />
+          <ListingInterestPanel />
           <BlocksPanel properties={properties.data ?? []} />
           <InventoryManager properties={properties.data ?? []} />
         </TabsContent>

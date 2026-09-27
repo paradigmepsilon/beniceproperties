@@ -4186,3 +4186,55 @@ fair-housing surface than today's state. The manifest records the owner chose to
 class of risk; the form's honest "isn't available to book yet" copy is the mitigation taken. Steps
 1-3 fix the data problem and do not depend on step 4. Historical `kpi_snapshots` rows keep their
 contaminated occupancy figures — recomputing them is a production data write, not done here.
+
+### Addendum — 2026-09-27, historical KPI correction + a way to read the leads
+
+Two follow-ups from the placeholder rollout.
+
+**1. Correcting the contaminated snapshots.** `scripts/recompute-kpi-snapshots.mjs`. Room statuses
+have no history, so a snapshot can't be genuinely recomputed — but each row stores
+`rooms_occupied` and `occupancy_pct`, which together imply the total it divided by. Back the 22
+placeholder rooms out of both sides and the row becomes what it should have said. Only those two
+columns were ever wrong; `booking_count` and `revenue_total` were always right, because placeholder
+properties have never had a booking or a payment.
+
+Dry run against production (read-only, writes need `--apply`): **67 snapshot rows** in the
+2026-09-14 → 2026-09-26 window, 57 correctable, 10 skipped. The skips are the right ones — they
+predate the market-test rooms, already carry a 6-room denominator, and backing 22 out would give a
+negative total, which the guard catches. Mean reported occupancy over the window **95.80% → 80.41%**.
+
+The method self-validates: the pre-placeholder rows store a 6-room denominator directly, and
+backing 22 out of the later rows lands on exactly 6. The true trajectory it recovers:
+
+| | occupied | |
+|---|---|---|
+| Sep 14–20 | 5 / 6 | 83.3% |
+| Sep 21–22 | 4 / 6 | 66.7% |
+| Sep 23–26 | 3 / 6 | 50.0% |
+
+So two rooms emptied during the window — a real occupancy trend that the 89–96% headline had hidden
+completely. The arithmetic lives in an exported pure `correctSnapshot()` with 9 unit tests, rather
+than only inside a script that needs a database to exercise; the script uses the `isDirectRun`
+guard from `seed-market-experiment.mjs` so importing it never touches a DB.
+
+**NOT APPLIED** — the classifier denies production writes from this session (`--apply` refused,
+`[Modify Shared Resources]`). Owner command: `node scripts/recompute-kpi-snapshots.mjs --apply`.
+It exports `kpi_snapshots` to `/docs/migration-backups/` before writing. Rows already pushed to
+Unified Ops were pushed with the old numbers; this fixes BNP's copy only.
+
+**Also found:** `kpi_snapshots` has duplicate rows per date — 18 on Sep 14, 23 on Sep 15, 16 on
+Sep 16, then 1/day from Sep 17. The rollup inserts per run with no per-day upsert, so an hour-ticking
+local scheduler multiplies rows. Harmless to the numbers (each row is self-consistent) but it makes
+the table misleading to read by hand. Not fixed here.
+
+**2. Reading the interest leads.** A demand experiment nobody can read the results of is a hole in
+the site, and `listing_interest` had no reader — matching `ltr_inquiries`, which has none either.
+Added `storage.getListingInterest()`, one handler dual-mounted as
+`GET /api/admin/listing-interest` and `GET /api/uo/listing-interest` (same shape as
+`reconciliationHandler`), joining each row to its property and room name so the reader isn't
+resolving uuids. `client/src/pages/admin/listing-interest-panel.tsx` renders it at the top of the
+Inventory tab — beside the Placeholder/Real toggles that create the demand, so flagging and
+reading live in one place. Read-only: the rows are append-only and follow-up happens off-platform.
+
+**Tests run:** `npm test` **1158/1158** (77 files, +9) · `npm run check` 0 errors · `npm run build`
+and `build:api` clean.

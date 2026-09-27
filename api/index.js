@@ -1920,6 +1920,10 @@ var init_storage = __esm({
         const [row] = await db.insert(listingInterest).values(data).returning();
         return row;
       }
+      // Newest first — the list is read as "who asked recently", not browsed.
+      async getListingInterest(opts) {
+        return db.select().from(listingInterest).orderBy(desc(listingInterest.createdAt)).limit(Math.min(Math.max(opts?.limit ?? 200, 1), 500));
+      }
       // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
       // person may inquire more than once, so this is a plain insert (no dedupe).
       async createPartnerInquiry(data) {
@@ -8702,6 +8706,32 @@ async function registerRoutes(app) {
       next(err);
     }
   });
+  const listingInterestHandler = async (req, res, next) => {
+    try {
+      const limit = Number(req.query.limit) || 200;
+      const [rows, properties2] = await Promise.all([
+        storage.getListingInterest({ limit }),
+        storage.getProperties()
+      ]);
+      const byProperty = new Map(properties2.map((p) => [p.id, p]));
+      const propertyIds = Array.from(
+        new Set(rows.map((r) => r.propertyId).filter((id) => Boolean(id)))
+      );
+      const roomLists = await Promise.all(propertyIds.map((id) => storage.getRoomsByProperty(id)));
+      const byRoom = new Map(roomLists.flat().map((r) => [r.id, r]));
+      res.json(
+        rows.map((r) => ({
+          ...r,
+          propertyName: r.propertyId ? byProperty.get(r.propertyId)?.name ?? null : null,
+          roomName: r.roomId ? byRoom.get(r.roomId)?.name ?? null : null
+        }))
+      );
+    } catch (err) {
+      next(err);
+    }
+  };
+  app.get("/api/admin/listing-interest", requireAdmin, listingInterestHandler);
+  app.get("/api/uo/listing-interest", requireServiceToken, listingInterestHandler);
   app.post("/api/partner-inquiries", async (req, res, next) => {
     try {
       const parsed = insertPartnerInquirySchema.safeParse(req.body);

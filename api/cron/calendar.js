@@ -1711,6 +1711,10 @@ var init_storage = __esm({
         const [row] = await db.insert(listingInterest).values(data).returning();
         return row;
       }
+      // Newest first — the list is read as "who asked recently", not browsed.
+      async getListingInterest(opts) {
+        return db.select().from(listingInterest).orderBy(desc(listingInterest.createdAt)).limit(Math.min(Math.max(opts?.limit ?? 200, 1), 500));
+      }
       // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
       // person may inquire more than once, so this is a plain insert (no dedupe).
       async createPartnerInquiry(data) {

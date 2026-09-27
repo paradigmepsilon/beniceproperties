@@ -327,6 +327,39 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Listing-interest READ, mounted for both consumers off one handler (same
+  // shape as reconciliationHandler below). Placeholder listings are a demand
+  // experiment, and a demand experiment nobody can read the results of is just
+  // a hole in the site — this is where the answer comes out. Each row is joined
+  // to its property/room name so the reader doesn't have to resolve uuids.
+  const listingInterestHandler: RequestHandler = async (req, res, next) => {
+    try {
+      const limit = Number(req.query.limit) || 200;
+      const [rows, properties] = await Promise.all([
+        storage.getListingInterest({ limit }),
+        storage.getProperties(),
+      ]);
+      const byProperty = new Map(properties.map((p) => [p.id, p]));
+      // One room lookup per distinct property that actually appears.
+      const propertyIds = Array.from(
+        new Set(rows.map((r) => r.propertyId).filter((id): id is string => Boolean(id))),
+      );
+      const roomLists = await Promise.all(propertyIds.map((id) => storage.getRoomsByProperty(id)));
+      const byRoom = new Map(roomLists.flat().map((r) => [r.id, r]));
+      res.json(
+        rows.map((r) => ({
+          ...r,
+          propertyName: r.propertyId ? (byProperty.get(r.propertyId)?.name ?? null) : null,
+          roomName: r.roomId ? (byRoom.get(r.roomId)?.name ?? null) : null,
+        })),
+      );
+    } catch (err) {
+      next(err);
+    }
+  };
+  app.get("/api/admin/listing-interest", requireAdmin, listingInterestHandler);
+  app.get("/api/uo/listing-interest", requireServiceToken, listingInterestHandler);
+
   // Partner inquiry capture. Public, append-only B2B lead (a person may inquire
   // more than once). Valid → store → 200; invalid name/email → 400. Feeds the
   // /partner page's contact form (invest / manage / design / events / community).
