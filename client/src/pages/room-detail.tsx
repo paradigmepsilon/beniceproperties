@@ -315,12 +315,24 @@ export default function RoomDetail() {
 
           <aside id="reserve" className="scroll-mt-24">
             {inquiryOnly ? (
-              <ListingInterestForm
-                propertyId={room.propertyId}
-                roomId={room.id}
-                listingName={room.name}
-                className="bnp-card sticky top-24 p-6"
-              />
+              // Placeholder: no booking panel, but the RATE still leads. The
+              // price is the thing the market test is measuring — a guest who
+              // clicked a "from $310 / week" card must not land on a page with
+              // no number on it. Mirrors the real panel's accent bar and rate
+              // treatment so the two read as the same component family.
+              <div className="bnp-card sticky top-24 overflow-hidden p-6">
+                <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
+                <p className="text-sm" data-testid="text-placeholder-rate">
+                  <span className="font-display text-2xl font-semibold">{money(room.weeklyRent)}</span>
+                  <span className="text-muted-foreground"> / week</span>
+                </p>
+                <Separator className="my-4" />
+                <ListingInterestForm
+                  propertyId={room.propertyId}
+                  roomId={room.id}
+                  listingName={room.name}
+                />
+              </div>
             ) : (
               <div className="bnp-card sticky top-24 overflow-hidden p-6">
                 <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
