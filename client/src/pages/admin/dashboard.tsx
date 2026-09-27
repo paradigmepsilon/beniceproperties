@@ -78,6 +78,11 @@ export default function AdminDashboard() {
   const properties = useQuery<Property[]>({ queryKey: ["/api/admin/properties"], enabled: !!me.data });
   const paymentsView = useQuery<PaymentRow[]>({ queryKey: ["/api/admin/payments"], enabled: !!me.data });
 
+  // Placeholder listings are deliberately absent from every figure on this tab
+  // (server/storage.ts getKpiAggregates). Say so, rather than leaving an
+  // unexplained gap between the property list and the numbers.
+  const placeholderCount = (properties.data ?? []).filter((p) => p.isPlaceholder).length;
+
   const markPaid = useMutation({
     mutationFn: async (paymentId: string) => {
       await apiRequest("POST", `/api/admin/payments/${paymentId}/mark-paid`);
@@ -198,6 +203,12 @@ export default function AdminDashboard() {
             <Stat label="Rooms occupied" value={a?.roomsOccupied ?? "—"} />
             <Stat label="Check-ins (7d)" value={a?.upcomingCheckIns ?? "—"} />
           </div>
+          {placeholderCount > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground" data-testid="text-placeholder-note">
+              Excludes {placeholderCount} placeholder listing{placeholderCount === 1 ? "" : "s"} —
+              shown on the site, not counted here.
+            </p>
+          )}
           <Card className="mt-6">
             <CardHeader>
               <CardTitle className="text-base">Recent bookings</CardTitle>
@@ -458,6 +469,24 @@ function InventoryManager({ properties }: { properties: Property[] }) {
     },
   });
 
+  // The second, orthogonal switch. Active/Hidden decides whether the world SEES
+  // a listing; Placeholder/Real decides whether the business COUNTS it. A
+  // placeholder still renders publicly, but it can't be booked and it stays out
+  // of occupancy, revenue, reconciliation, and the Unified Ops rollup.
+  const togglePlaceholder = useMutation({
+    mutationFn: async (p: Property) => {
+      await apiRequest("PATCH", `/api/admin/properties/${p.id}`, {
+        isPlaceholder: !p.isPlaceholder,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/properties"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/properties"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+    },
+    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
   return (
     <div className="grid gap-6 md:grid-cols-2">
       <Card>
@@ -510,16 +539,35 @@ function InventoryManager({ properties }: { properties: Property[] }) {
                     onClick={() => setExpanded(expanded === p.id ? null : p.id)}
                     data-testid={`button-expand-${p.id}`}
                   >
-                    <div className="font-medium">
-                      {expanded === p.id ? "▾" : "▸"} {p.name}
+                    <div className="flex items-center gap-2 font-medium">
+                      <span>
+                        {expanded === p.id ? "▾" : "▸"} {p.name}
+                      </span>
+                      {p.isPlaceholder && (
+                        <Badge variant="secondary" data-testid={`badge-placeholder-${p.id}`}>
+                          PLACEHOLDER
+                        </Badge>
+                      )}
                     </div>
                     <div className="text-muted-foreground">
                       {p.location} · {p.type === "STR" ? "Whole property" : "By the room"}
+                      {p.isPlaceholder && " · front-end only, not counted"}
                     </div>
                   </button>
-                  <Button size="sm" variant="outline" onClick={() => toggleActive.mutate(p)} data-testid={`button-toggle-${p.id}`}>
-                    {p.active ? "Active" : "Hidden"}
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={() => toggleActive.mutate(p)} data-testid={`button-toggle-${p.id}`}>
+                      {p.active ? "Active" : "Hidden"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={p.isPlaceholder ? "secondary" : "ghost"}
+                      onClick={() => togglePlaceholder.mutate(p)}
+                      data-testid={`button-toggle-placeholder-${p.id}`}
+                      title="Placeholder listings show on the site but are excluded from every number."
+                    >
+                      {p.isPlaceholder ? "Placeholder" : "Real"}
+                    </Button>
+                  </div>
                 </div>
                 {expanded === p.id && (
                   <div className="mt-3 rounded-md border bg-muted/30 p-3">

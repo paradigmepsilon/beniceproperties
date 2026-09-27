@@ -39,6 +39,7 @@ import {
   externalBookings,
   newsletterSubscribers,
   ltrInquiries,
+  listingInterest,
   partnerInquiries,
   manualBlocks,
   messageLog,
@@ -87,6 +88,8 @@ import {
   type InsertNewsletterSubscriber,
   type LtrInquiry,
   type InsertLtrInquiry,
+  type ListingInterest,
+  type InsertListingInterest,
   type PartnerInquiry,
   type InsertPartnerInquiry,
   type ManualBlock,
@@ -168,6 +171,16 @@ function roomHoldingLeaseCondition(now: Date = new Date()) {
   );
 }
 
+/**
+ * SQL form of countsTowardBusiness() in shared/placeholder.ts. A PLACEHOLDER
+ * property renders on the public site but is not real inventory, so it is
+ * excluded from every aggregate, report, and rollup. The `properties` table
+ * must be in the query — join it when the base table is something else.
+ */
+function realPropertyCondition() {
+  return eq(properties.isPlaceholder, false);
+}
+
 export class StorageError extends Error {
   status: number;
   constructor(message: string, status = 400) {
@@ -210,6 +223,9 @@ export interface IStorage {
 
   // --- LTR inquiries (long-term-rental lead capture; append-only) ---
   createLtrInquiry(data: InsertLtrInquiry): Promise<LtrInquiry>;
+
+  // --- Listing interest (placeholder-listing demand capture; append-only) ---
+  createListingInterest(data: InsertListingInterest): Promise<ListingInterest>;
 
   // --- Partner inquiries (B2B /partner lead capture; append-only) ---
   createPartnerInquiry(data: InsertPartnerInquiry): Promise<PartnerInquiry>;
@@ -642,6 +658,14 @@ class Storage implements IStorage {
   // plain insert (no dedupe/upsert, unlike the newsletter list above).
   async createLtrInquiry(data: InsertLtrInquiry): Promise<LtrInquiry> {
     const [row] = await db.insert(ltrInquiries).values(data).returning();
+    return row;
+  }
+
+  // The conversion path for a placeholder listing, which can never be booked.
+  // Append-only like the other lead tables; kept separate from ltr_inquiries on
+  // purpose so speculative demand never lands in a real pipeline.
+  async createListingInterest(data: InsertListingInterest): Promise<ListingInterest> {
+    const [row] = await db.insert(listingInterest).values(data).returning();
     return row;
   }
 
@@ -1799,11 +1823,23 @@ class Storage implements IStorage {
     { kind: "property" | "room"; propertyId: string; roomId: string | null; url: string; label: string }[]
   > {
     // Active STR/co-living properties with a feed URL (whole-property listings).
+    // Placeholders are excluded: they are not real inventory, so there is no
+    // calendar of ours to sync.
     const propRows = await db
       .select({ id: properties.id, name: properties.name, url: properties.airbnbIcalUrl })
       .from(properties)
-      .where(and(eq(properties.active, true), sql`${properties.airbnbIcalUrl} IS NOT NULL`));
+      .where(
+        and(
+          eq(properties.active, true),
+          realPropertyCondition(),
+          sql`${properties.airbnbIcalUrl} IS NOT NULL`,
+        ),
+      );
     // Rooms with a feed URL (private-room listings), joined to their property.
+    // The join is load-bearing and was missing: without it a room on an
+    // INACTIVE (or placeholder) property still had its tokenized feed fetched
+    // every hour. The room branch now honours the same two property gates the
+    // whole-property branch does.
     const roomRows = await db
       .select({
         id: rooms.id,
@@ -1812,7 +1848,14 @@ class Storage implements IStorage {
         url: rooms.airbnbIcalUrl,
       })
       .from(rooms)
-      .where(sql`${rooms.airbnbIcalUrl} IS NOT NULL`);
+      .innerJoin(properties, eq(rooms.propertyId, properties.id))
+      .where(
+        and(
+          eq(properties.active, true),
+          realPropertyCondition(),
+          sql`${rooms.airbnbIcalUrl} IS NOT NULL`,
+        ),
+      );
 
     const listings: {
       kind: "property" | "room";
@@ -1923,10 +1966,31 @@ class Storage implements IStorage {
   }
 
   // --- Aggregates ---
+  // Every source is inner-joined to `properties` and gated on
+  // realPropertyCondition(), because placeholder listings are front-end only
+  // and must never reach occupancy, revenue, kpi_snapshots, or the Unified Ops
+  // push. The rooms query in particular had no join at all, so every
+  // placeholder room sat permanently in the occupancy DENOMINATOR and quietly
+  // deflated the reported number.
   async getKpiAggregates() {
-    const allBookings = await db.select().from(bookings);
-    const allRooms = await db.select().from(rooms);
-    const paidPayments = await db.select().from(payments).where(eq(payments.status, "PAID"));
+    const [allBookings, allRooms, paidPayments] = await Promise.all([
+      db
+        .select({ status: bookings.status, checkIn: bookings.checkIn })
+        .from(bookings)
+        .innerJoin(properties, eq(bookings.propertyId, properties.id))
+        .where(realPropertyCondition()),
+      db
+        .select({ status: rooms.status })
+        .from(rooms)
+        .innerJoin(properties, eq(rooms.propertyId, properties.id))
+        .where(realPropertyCondition()),
+      db
+        .select({ amount: payments.amount, surcharge: payments.surcharge })
+        .from(payments)
+        .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+        .innerJoin(properties, eq(bookings.propertyId, properties.id))
+        .where(and(eq(payments.status, "PAID"), realPropertyCondition())),
+    ]);
 
     const liveStatuses = new Set(["CONFIRMED", "ACTIVE"]);
     const bookingCount = allBookings.filter((b) => b.status !== "CANCELLED").length;

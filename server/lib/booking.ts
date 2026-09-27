@@ -19,6 +19,7 @@ import {
   type WeekdayRates,
 } from "@shared/rateSelection";
 import type { QuoteResponse } from "@shared/api-types";
+import { isPlaceholder } from "@shared/placeholder";
 import { storage } from "../storage";
 import {
   COLIVING_MIN_DAYS,
@@ -208,6 +209,15 @@ export async function resolveBooking(input: {
   const property = await storage.getProperty(input.propertyId);
   if (!property) throw new BookingError("Property not found", 404);
   if (!property.active) throw new BookingError("Property is not available", 409);
+  // A PLACEHOLDER listing is shown to measure demand for inventory we don't
+  // operate yet; it is not real and must never produce a quote, a
+  // PaymentIntent, or a booking. This is the chokepoint for the entire
+  // nightly/short-stay path: /api/quote, /api/booking-intent, and the Stripe
+  // webhook materializer's race re-check all re-enter resolveBooking(), so one
+  // guard here closes every route to a charge. See shared/placeholder.ts.
+  if (isPlaceholder(property)) {
+    throw new BookingError("This listing isn't taking bookings online", 409);
+  }
 
   // ---- Co-living (by-the-room) ----
   // A short co-living stay (7–28 nights) is a lease-LESS direct booking priced

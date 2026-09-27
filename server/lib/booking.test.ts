@@ -352,3 +352,50 @@ describe("buildQuote — co-living short stay (weeks + daily remainder, no recur
     expect(q.dueNow.surcharge).toBeGreaterThan(0);
   });
 });
+
+describe("resolveBooking — placeholder listings never reach a charge", () => {
+  // A placeholder renders publicly to measure demand but is not real
+  // inventory. resolveBooking is the chokepoint for /api/quote,
+  // /api/booking-intent, and the Stripe webhook's race re-check, so refusing
+  // here closes every path to a PaymentIntent.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+  });
+
+  it("refuses a co-living placeholder with 409 before any room lookup", async () => {
+    mockStorage.getProperty.mockResolvedValue({
+      id: "p9", name: "Midwood Bungalow", type: "COLIVING", active: true, isPlaceholder: true,
+    } as never);
+
+    await expect(
+      resolveBooking({ propertyId: "p9", roomId: "r9", checkIn: "2026-07-01", checkOut: "2026-07-11" }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(mockStorage.getRoom).not.toHaveBeenCalled();
+  });
+
+  it("refuses an STR placeholder too", async () => {
+    mockStorage.getProperty.mockResolvedValue({
+      id: "p8", name: "Test Villa", type: "STR", active: true, isPlaceholder: true, dailyRate: "200",
+    } as never);
+
+    await expect(
+      resolveBooking({ propertyId: "p8", checkIn: "2026-07-01", checkOut: "2026-07-03" }),
+    ).rejects.toBeInstanceOf(BookingError);
+  });
+
+  it("still books an identical property that is not flagged", async () => {
+    mockStorage.getProperty.mockResolvedValue({
+      id: "p2", name: "Old Bill Cook", type: "COLIVING", active: true, isPlaceholder: false,
+    } as never);
+    mockStorage.getRoom.mockResolvedValue({
+      id: "r1", propertyId: "p2", name: "Room 2", roomNumber: "2",
+      status: "AVAILABLE", weeklyRent: "700", depositAmount: "500", dailyRate: null,
+    } as never);
+
+    const r = await resolveBooking({
+      propertyId: "p2", roomId: "r1", checkIn: "2026-07-01", checkOut: "2026-07-11",
+    });
+    expect(r.model).toBe("COLIVING");
+  });
+});

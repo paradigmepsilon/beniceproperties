@@ -19,6 +19,7 @@ import { activateVerifiedLease } from "./leasePayments";
 import { sendStaffMessage } from "./adminMessages";
 import { log } from "../server-log";
 import { LeaseError } from "./lease";
+import { countsTowardBusiness } from "@shared/placeholder";
 import { insertPropertySchema, insertRoomSchema } from "@shared/schema";
 import type { Lease, Property, Room, LeaseRoom } from "@shared/schema";
 
@@ -32,6 +33,12 @@ import type { Lease, Property, Room, LeaseRoom } from "@shared/schema";
  * exposing it here is what lets UO stop reading BNP's DB for edits. Rooms only
  * for COLIVING; other types get [] without a query. Authenticated operator
  * surface — the iCal URL is secret-ish but UO already manages it.
+ *
+ * Placeholder listings are INCLUDED here on purpose, carrying isPlaceholder on
+ * the row: UO is the primary inventory editor, so hiding them would make them
+ * unmanageable from the place they're managed. UO is expected to label them and
+ * keep them out of its own rollups. They are excluded from the money views
+ * (listPaymentsWithMetadata, the reconciliation report, the KPI snapshot).
  */
 export async function listPropertiesWithRooms(): Promise<Array<Property & { rooms: Room[] }>> {
   const properties = await storage.getProperties();
@@ -108,6 +115,9 @@ export async function listPaymentsWithMetadata(opts?: { leaseId?: string }) {
   for (const lease of leases as Lease[]) {
     const property = await storage.getProperty(lease.propertyId);
     if (!property) continue;
+    // Money view — placeholders never appear. UO's per-entity/property/room
+    // economics must not show a dollar against inventory we don't operate.
+    if (!countsTowardBusiness(property)) continue;
     const rooms = await storage.getLeaseRooms(lease.id);
     const schedule = await storage.getScheduleByLease(lease.id);
     const lateFees = await storage.getLateFeesByLease(lease.id);

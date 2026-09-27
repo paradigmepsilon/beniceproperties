@@ -8,17 +8,33 @@ remove them.
 Status: **applied to production 2026-09-14** by the owner (six properties, 22 rooms, photos on
 R2). Closing the rooms to bookings is step 3b of the runbook.
 
+Since 2026-09-27 these rows are first-class placeholders: flagged `is_placeholder`, refused by the
+booking and lease guards, excluded from occupancy / revenue / reconciliation / the UO rollup, and
+carrying an interest form instead of a checkout. The `--close` manual block is therefore no longer
+the thing keeping them safe — it only controls whether they read "Fully booked".
+
 ## How owners recognize these rows
 
-- Every property and room carries the tag list `["market-test-2026-09", "src:zillow:<zpid>"]`
-  in its `prior_names` column. Nothing on the public site reads `prior_names`, so the tag is
-  invisible to guests and visible in the admin, Unified Ops, and any SQL.
+- **`properties.is_placeholder = true`** (added 2026-09-27) is now the real marker. It is what
+  every aggregate, report, and rollup checks, and what the booking guards refuse. Set it from the
+  admin Inventory tab (the Placeholder/Real toggle beside Active/Hidden), from
+  `PATCH /api/uo/properties/:id`, or in bulk with
+  `node scripts/push-placeholder-flag.mjs --backfill`. See `shared/placeholder.ts` for the rule:
+  `active` decides whether the world SEES a listing, `is_placeholder` decides whether the business
+  COUNTS it.
+- Every property and room also carries the tag list `["market-test-2026-09", "src:zillow:<zpid>"]`
+  in its `prior_names` column. That tag is now only a CAMPAIGN label — it identifies *this*
+  experiment, not placeholder-ness in general, and the seed script still keys off it. As of
+  2026-09-27 `prior_names` is no longer returned by the public API (it used to be; see
+  `shared/publicProjection.ts`).
 - `properties.address` is the real listing address (guests see the city only; the full
   address renders on the property detail page the same way Hutchens and OBC do).
 - `node scripts/seed-market-experiment.mjs --list` prints every tagged property and room with
   its id, status, rates, and photo count.
 - To hide them all without deleting: `UPDATE properties SET active = false WHERE prior_names ? 'market-test-2026-09';`
-  (or `--apply --inactive` at seed time and flip `active` from the admin when ready).
+  (or `--apply --inactive` at seed time and flip `active` from the admin when ready). Note this is
+  a different lever from `is_placeholder`: hiding removes them from the site entirely, whereas
+  flagging keeps them visible and merely stops them counting.
 
 ## The six properties and 22 rooms
 

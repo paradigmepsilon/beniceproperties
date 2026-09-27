@@ -25,6 +25,7 @@ import {
   insertRoomSchema,
   insertNewsletterSubscriberSchema,
   insertLtrInquirySchema,
+  insertListingInterestSchema,
   insertPartnerInquirySchema,
   insertManualBlockSchema,
   US_STATE_CODES,
@@ -98,6 +99,7 @@ import {
 import { requireServiceToken } from "./lib/serviceAuth";
 import { rateLimit } from "./lib/rateLimit";
 import { roomPubliclyVisible } from "./lib/publicInventory";
+import { toPublicProperty, toPublicRoom } from "@shared/publicProjection";
 import { isOpenShortStayIntent } from "./lib/bookingIntentGuard";
 import { bookingIntentStatus } from "./lib/bookingIntents";
 import { settleManualBookingPayment } from "./lib/manualSettle";
@@ -299,6 +301,26 @@ export async function registerRoutes(app: Express): Promise<void> {
           .json({ message: parsed.error.errors[0]?.message ?? "Invalid inquiry" });
       }
       await storage.createLtrInquiry(parsed.data);
+      res.status(200).json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // Listing-interest capture — the conversion path for a PLACEHOLDER listing.
+  // Placeholders render publicly but can never be booked (the guards in
+  // lib/booking.ts and lib/lease.ts refuse them), so this is what they produce
+  // instead of a checkout: the demand signal the listing exists to collect.
+  // Public, append-only, same shape as the LTR inquiry route above.
+  app.post("/api/listing-interest", async (req, res, next) => {
+    try {
+      const parsed = insertListingInterestSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res
+          .status(400)
+          .json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      await storage.createListingInterest(parsed.data);
       res.status(200).json({ ok: true });
     } catch (err) {
       next(err);
@@ -624,7 +646,8 @@ export async function registerRoutes(app: Express): Promise<void> {
             // searched range — same overlap rule the checkout flow enforces.
             availableForDates = !(await strHasConflict(p.id, dated.checkIn, dated.checkOut));
           }
-          return { ...p, fromWeeklyRent, availableForDates };
+          // toPublicProperty strips the internal columns and adds inquiryOnly.
+          return { ...toPublicProperty(p), fromWeeklyRent, availableForDates };
         }),
       );
 
@@ -691,9 +714,12 @@ export async function registerRoutes(app: Express): Promise<void> {
       // Airbnb ∪ manual ∪ direct bookings). OCCUPIED does NOT disqualify a room —
       // only a real date overlap does.
       const rooms: RoomWithAvailability[] = await Promise.all(
-        baseRooms.map(async (r) => ({ ...r, availableForDates: await roomAvailableForDates(r, dated) })),
+        baseRooms.map(async (r) => ({
+          ...toPublicRoom(r),
+          availableForDates: await roomAvailableForDates(r, dated),
+        })),
       );
-      res.json({ property, rooms });
+      res.json({ property: toPublicProperty(property), rooms });
     } catch (err) {
       next(err);
     }
@@ -705,10 +731,10 @@ export async function registerRoutes(app: Express): Promise<void> {
     try {
       const room = await storage.getRoom(req.params.id);
       const property = room ? await storage.getProperty(room.propertyId) : undefined;
-      if (!room || !roomPubliclyVisible(room, property)) {
+      if (!room || !property || !roomPubliclyVisible(room, property)) {
         return res.status(404).json({ message: "Room not found" });
       }
-      res.json({ room, property });
+      res.json({ room: toPublicRoom(room), property: toPublicProperty(property) });
     } catch (err) {
       next(err);
     }

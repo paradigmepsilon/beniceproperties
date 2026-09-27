@@ -9,7 +9,8 @@ import { visibleRooms } from "@/lib/visibility";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
 import { todayIso } from "@shared/dates";
-import { ROOM_UNBOOKABLE_STATUSES, type Property, type RoomWithAvailability } from "@shared/schema";
+import { ROOM_UNBOOKABLE_STATUSES, type RoomWithAvailability } from "@shared/schema";
+import type { PublicProperty } from "@shared/publicProjection";
 import type { QuoteResponse } from "@shared/api-types";
 import { apiRequest } from "@/lib/queryClient";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
@@ -20,6 +21,7 @@ import { InclusionsGrid } from "@/components/inclusions-grid";
 import { NeighborhoodBlock } from "@/components/neighborhood-block";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { LtrInquiryForm } from "@/components/ltr-inquiry-form";
+import { ListingInterestForm } from "@/components/listing-interest-form";
 import { Button } from "@/components/ui/button";
 import { cityOf, fromNightly, money } from "@/lib/format";
 import { usePropertyAvailability } from "@/hooks/use-availability";
@@ -28,7 +30,7 @@ import { useSeo, SITE_URL, DEFAULT_OG_IMAGE } from "@/lib/seo";
 import { track } from "@/lib/analytics";
 
 interface DetailResponse {
-  property: Property;
+  property: PublicProperty;
   rooms: RoomWithAvailability[];
 }
 
@@ -195,7 +197,7 @@ export default function PropertyDetail() {
         {/* STR and LTR reserve a right column for the sticky booking/contact card;
             co-living has no sidebar, so details — and the room-card row — get the
             full width. */}
-        <div className={`mt-6 grid gap-10 ${property.type === "STR" || property.type === "LTR" ? "lg:grid-cols-[1fr_360px]" : ""}`}>
+        <div className={`mt-6 grid gap-10 ${property.type === "STR" || property.type === "LTR" || property.inquiryOnly ? "lg:grid-cols-[1fr_360px]" : ""}`}>
           {/* Left: details */}
           <div>
             <span
@@ -304,7 +306,15 @@ export default function PropertyDetail() {
                           <span className="font-semibold">{money(room.weeklyRent)}</span>
                           <span className="text-muted-foreground"> / week · {money(room.depositAmount)} deposit</span>
                         </p>
-                        {!unavailable ? (
+                        {property.inquiryOnly ? (
+                          // Placeholder house: the room page carries an interest
+                          // form, not a checkout, so say what the click does.
+                          <Link href={`/room/${room.id}${datesQuery}`}>
+                            <Button className="mt-3 min-h-11 w-full" variant="secondary" data-testid={`button-room-${room.id}`}>
+                              Register interest
+                            </Button>
+                          </Link>
+                        ) : !unavailable ? (
                           <Link href={`/room/${room.id}${datesQuery}`}>
                             <Button className="mt-3 min-h-11 w-full" data-testid={`button-room-${room.id}`}>
                               Reserve this room
@@ -406,6 +416,19 @@ export default function PropertyDetail() {
                 )}
                 <p className="mt-3 text-center text-xs text-muted-foreground">You won't be charged yet.</p>
               </div>
+            </aside>
+          )}
+
+          {/* Right: sticky interest card — a placeholder listing can't be
+              booked, so it gets a lead form instead of a booking widget. LTR
+              has its own form below; this covers the placeholder case. */}
+          {property.inquiryOnly && property.type !== "LTR" && (
+            <aside>
+              <ListingInterestForm
+                propertyId={property.id}
+                listingName={property.name}
+                className="bnp-card sticky top-24 p-6"
+              />
             </aside>
           )}
 

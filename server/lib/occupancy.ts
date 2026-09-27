@@ -10,6 +10,7 @@
 // state, and must survive independent of whether the room happens to overlap
 // a block on `today`.
 import { ROOM_UNBOOKABLE_STATUSES } from "@shared/schema";
+import { excludePlaceholders } from "@shared/placeholder";
 import { todayIso } from "@shared/dates";
 import { storage } from "../storage";
 
@@ -25,13 +26,20 @@ export interface OccupancySyncResult {
  * else AVAILABLE — only calling storage.updateRoom when the status actually
  * changes. Rooms are enumerated the same way the inventory routes do:
  * getProperties() + getRoomsByProperty(p.id) per property (STR properties
- * have zero rooms, so they contribute nothing here).
+ * have zero rooms, so they contribute nothing here) — minus placeholder
+ * properties, whose rooms are not real inventory.
  */
 export async function syncRoomOccupancyStatus(today: string = todayIso()): Promise<OccupancySyncResult> {
-  const [properties, occupiedRoomIds] = await Promise.all([
+  const [allProperties, occupiedRoomIds] = await Promise.all([
     storage.getProperties(),
     storage.getOccupiedRoomIdsOn(today),
   ]);
+  // Placeholder listings are front-end only (shared/placeholder.ts). Their
+  // rooms are not real inventory, so this job must neither count them nor
+  // write a computed status onto them — otherwise the nightly sweep keeps
+  // stamping AVAILABLE on rooms nobody can book and feeding them into the
+  // occupancy denominator in storage.getKpiAggregates().
+  const properties = excludePlaceholders(allProperties);
 
   const roomLists = await Promise.all(properties.map((p) => storage.getRoomsByProperty(p.id)));
   const rooms = roomLists.flat();

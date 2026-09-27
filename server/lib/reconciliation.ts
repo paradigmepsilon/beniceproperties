@@ -11,6 +11,7 @@
 // every PaymentIntent, so the report ties out to Stripe by metadata.
 // =============================================================================
 
+import { countsTowardBusiness } from "@shared/placeholder";
 import { storage } from "../storage";
 
 export interface ReconRoomTotals {
@@ -96,6 +97,12 @@ export async function buildReconciliationReport(
   for (const lease of leases) {
     const property = await storage.getProperty(lease.propertyId);
     if (!property) continue;
+    // Placeholder listings never reach this report. The booking guards in
+    // lib/booking.ts and lib/lease.ts mean no lease should exist on one in the
+    // first place; this is the belt to that pair of braces, so a lease created
+    // before the guards shipped (or by a direct DB write) can't invent revenue
+    // for a property we don't operate.
+    if (!countsTowardBusiness(property)) continue;
     const rooms = await storage.getLeaseRooms(lease.id);
     const schedule = await storage.getScheduleByLease(lease.id);
     const lateFees = await storage.getLateFeesByLease(lease.id);

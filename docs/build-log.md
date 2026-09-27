@@ -4107,3 +4107,82 @@ same, so `COLIVING_OPENING_HORIZON_DAYS` is now `2 * MAX_LEASE_DAYS` = 180 (two 
 max-term leases; imported from `shared/schema.ts`, not a magic number). A room turning over from
 one full lease into another always opens inside that window; a hold years out still does not.
 Tests updated (chain of two 90-day leases counts; day 181 does not). Re-verified live after deploy.
+
+## 2026-09-27 — Placeholder listings: front-end only, excluded from every number
+
+**Ask:** the market-test properties are placeholders, not inventory. They should keep showing on the
+site, be activatable/deactivatable from the backend, be clearly marked there, and stop skewing
+availability and revenue.
+
+**The rule, now in code** (`shared/placeholder.ts`): `properties.active` decides whether the world
+SEES a listing; `properties.is_placeholder` decides whether the business COUNTS it. Orthogonal, and
+no call site open-codes the negation — they all import `countsTowardBusiness()`.
+
+Before this, the only marker was a tag smuggled into `prior_names` (`prior_names ?
+'market-test-2026-09'`) that no server, client, admin, or UO code read. Three consequences, all
+fixed here:
+
+1. **Occupancy was wrong.** `storage.getKpiAggregates()` did `db.select().from(rooms)` with no join
+   and used `allRooms.length` as the occupancy denominator, so 22 fictional rooms sat in it
+   permanently — and got cached nightly into `kpi_snapshots` and pushed to UO. All three sources
+   (bookings, rooms, payments) are now inner-joined to `properties` and gated on a new
+   `realPropertyCondition()`.
+2. **Nothing stopped a charge.** The only protection was a manual block running to 2028; lift it and
+   `resolveBooking()` / `buildLeaseQuote()` would have quoted and charged a real card for a house we
+   don't own. Both now refuse a placeholder with 409 immediately after the `active` check. That is
+   total coverage: `resolveBooking` is re-entered by `/api/quote`, `/api/booking-intent` and the
+   webhook materializer's race re-check; `buildLeaseQuote` is re-run inside `previewLease()` and
+   `createDraftLease()`.
+3. **The tag leaked.** `GET /api/properties`, `/api/properties/:id` and `/api/rooms/:id` returned the
+   raw DB row, so `prior_names` (carrying `market-test-2026-09` and `src:zillow:<zpid>`) *and* the
+   tokenized `airbnb_ical_url` — which schema.ts calls secret — were publicly readable. Fixed by
+   `shared/publicProjection.ts`: a whitelist, with a compile-time ledger that fails the build if a
+   new column on `properties`/`rooms` isn't classified public or withheld.
+
+**Other exclusions:** `syncRoomOccupancyStatus()` (no longer stamps AVAILABLE on fake rooms every
+sweep) · `buildReconciliationReport()` · `uoApi.listPaymentsWithMetadata()` ·
+`storage.getListingsWithIcalUrl()` — whose rooms branch had **no property gate at all**, a
+pre-existing bug that fetched the tokenized feed of rooms on inactive properties hourly; it now
+honours `active` + not-placeholder like the property branch. `uoApi.listPropertiesWithRooms()`
+deliberately still returns them, carrying `isPlaceholder`, because UO is the inventory editor.
+
+**Conversion path instead of a dead end:** placeholders can't be booked, so they now capture demand.
+New `listing_interest` table (standalone, append-only, modeled on `ltr_inquiries` but separate so
+speculative demand never pollutes a real pipeline), `POST /api/listing-interest`, and
+`client/src/components/listing-interest-form.tsx`, which is plain about status: "This home isn't
+available to book yet." The public contract is a neutral `inquiryOnly` flag — true for LTR and for
+placeholders, and the browser is never told which. That also collapsed three scattered LTR
+special-cases (`visibility.ts`, `property-card.tsx` ×2) onto one flag.
+
+**Admin:** Inventory tab gains a `PLACEHOLDER` badge and a second toggle beside Active/Hidden —
+Active/Hidden = on the site or not, Placeholder/Real = counted or not. Overview tiles carry
+"Excludes N placeholder listings".
+
+**Files:** `shared/placeholder.ts` (new) · `shared/publicProjection.ts` (new) · `shared/schema.ts` ·
+`server/storage.ts` · `server/lib/booking.ts` · `server/lib/lease.ts` · `server/lib/occupancy.ts` ·
+`server/lib/reconciliation.ts` · `server/lib/uoApi.ts` · `server/routes.ts` ·
+`client/src/components/listing-interest-form.tsx` (new) · `client/src/components/property-card.tsx` ·
+`client/src/lib/visibility.ts` · `client/src/pages/property-detail.tsx` ·
+`client/src/pages/room-detail.tsx` · `client/src/pages/admin/dashboard.tsx` ·
+`scripts/push-placeholder-flag.mjs` (new) · `scripts/push-listing-interest.mjs` (new).
+
+**Tests run:** `npm test` **1149/1149** (76 files, +24) · `npm run check` (tsc) 0 errors ·
+`npm run build` clean (prerender 42/43, unchanged). The four new aggregate/iCal queries were
+compiled with `.toSQL()` against a dummy connection string and their SQL inspected — joins and
+column names are correct. Not executed against a database from this session.
+
+**Deferred / owner-run** (classifier blocks prod DB access here), in this order — the booking guard
+must be deployed BEFORE the rooms are opened:
+1. `node scripts/push-placeholder-flag.mjs --list` (preview), then `--backfill`. Additive,
+   idempotent, mark-only; defaults every existing property to real.
+2. `node scripts/push-listing-interest.mjs`. New empty table, idempotent.
+3. Merge + deploy; confirm occupancy moves and UO's BNP numbers change.
+4. Only then `node scripts/seed-market-experiment.mjs --open` to lift the 2028 blocks, if the
+   demand test is wanted live.
+
+**Flagged, unresolved:** step 4 turns six fictional listings at the real addresses of homes owned by
+other people from "Fully booked" into an active interest CTA. That is a larger misrepresentation /
+fair-housing surface than today's state. The manifest records the owner chose to proceed past this
+class of risk; the form's honest "isn't available to book yet" copy is the mitigation taken. Steps
+1-3 fix the data problem and do not depend on step 4. Historical `kpi_snapshots` rows keep their
+contaminated occupancy figures — recomputing them is a production data write, not done here.
