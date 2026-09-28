@@ -603,3 +603,54 @@ describe("buildLeaseQuote — deposit + allowed cadences", () => {
     expect(longTerm.allowedCadences).toEqual(["WEEKLY", "BIWEEKLY", "MONTHLY"]);
   });
 });
+
+describe("buildLeaseQuote — placeholder listings never reach a lease", () => {
+  // previewLease() and createDraftLease() both re-run buildLeaseQuote, so this
+  // one guard covers quote, preview, and creation.
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockStorage.isRoomAvailableForRange.mockResolvedValue(true);
+    mockStorage.getExternalBlocksForRoom.mockResolvedValue([]);
+    mockStorage.getManualBlocksForRoom.mockResolvedValue([]);
+  });
+
+  it("refuses with 409 before looking at any room", async () => {
+    mockStorage.getProperty.mockResolvedValue({ ...COLIVING_PROP, isPlaceholder: true });
+
+    await expect(
+      buildLeaseQuote({
+        propertyId: "prop-1",
+        roomIds: ["room-1"],
+        startDate: "2026-07-01",
+        endDate: "2026-08-01",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(mockStorage.getRoom).not.toHaveBeenCalled();
+  });
+
+  it("throws a LeaseError, so the route maps it to a clean 4xx", async () => {
+    mockStorage.getProperty.mockResolvedValue({ ...COLIVING_PROP, isPlaceholder: true });
+
+    await expect(
+      buildLeaseQuote({
+        propertyId: "prop-1",
+        roomIds: ["room-1"],
+        startDate: "2026-07-01",
+        endDate: "2026-08-01",
+      }),
+    ).rejects.toBeInstanceOf(LeaseError);
+  });
+
+  it("still quotes the same property when the flag is off", async () => {
+    mockStorage.getProperty.mockResolvedValue({ ...COLIVING_PROP, isPlaceholder: false });
+    mockStorage.getRoom.mockResolvedValue(room("room-1", "Room 1", "350"));
+
+    const q = await buildLeaseQuote({
+      propertyId: "prop-1",
+      roomIds: ["room-1"],
+      startDate: "2026-07-01",
+      endDate: "2026-08-01",
+    });
+    expect(q.schedule.length).toBeGreaterThan(0);
+  });
+});

@@ -17,10 +17,11 @@ import { cn } from "@/lib/utils";
 const RATING_PLACEHOLDER = "4.9";
 
 /** Bookable right now? COLIVING: any AVAILABLE room. STR: no stay covers today.
- *  LTR is inquiry-only (no availability concept) — never "booked", so it's never
- *  demoted or greyed in the grid. */
+ *  Inquiry-only listings (LTR, and placeholders) have no availability concept —
+ *  never "booked", so they're never demoted or greyed in the grid. A placeholder
+ *  keeps its price on the card: the price IS the thing we're testing. */
 export function isBookedNow(p: PropertyListItem): boolean {
-  if (p.type === "LTR") return false;
+  if (p.inquiryOnly) return false;
   return p.type === "COLIVING" ? !p.fromWeeklyRent : p.nextOpening != null;
 }
 
@@ -107,10 +108,18 @@ export function PropertyCard({ property: p, checkIn, checkOut }: Props) {
             />
             {isLtr ? "Long-term" : isRoom ? "By the room" : "Whole property"}
           </span>
-          {/* Status pill — LTR has no availability concept, so it shows a neutral
-              "Enquire" cue instead of Available/Fully-booked. */}
-          {isLtr ? (
-            <span className="absolute right-3.5 top-3.5 rounded-full bg-segment-ltr-tint px-2.5 py-1 text-xs font-bold text-[#8a5a1f]">
+          {/* Status pill — an inquiry-only listing (LTR, or a placeholder) has no
+              availability to report, so it shows a neutral "Enquire" cue instead
+              of Available/Fully-booked. LTR keeps its amber segment tint; a
+              placeholder co-living house stays neutral so the pill doesn't fight
+              the teal accent. */}
+          {p.inquiryOnly ? (
+            <span
+              className={cn(
+                "absolute right-3.5 top-3.5 rounded-full px-2.5 py-1 text-xs font-bold",
+                isLtr ? "bg-segment-ltr-tint text-[#8a5a1f]" : "bg-secondary text-muted-foreground",
+              )}
+            >
               Enquire
             </span>
           ) : (

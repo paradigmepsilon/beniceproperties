@@ -17,6 +17,7 @@ import {
 } from "@shared/leaseSchedule";
 import { combineLeaseRates, cascadeStayPrice, RateError } from "@shared/rateSelection";
 import type { LeaseQuoteResponse, LeaseScheduleLine } from "@shared/api-types";
+import { isPlaceholder } from "@shared/placeholder";
 import { CADENCE_DAYS, MAX_LEASE_DAYS, ROOM_UNBOOKABLE_STATUSES, allowedCadencesForTerm } from "@shared/schema";
 import { isMoveInAllowed, moveInTooEarlyMessage } from "@shared/dates";
 import { storage } from "../storage";
@@ -65,7 +66,7 @@ export interface LeaseQuoteInput {
 
 /**
  * Validate the selection and build the full schedule preview. Checks:
- *  - property exists, is active, and is COLIVING,
+ *  - property exists, is active, is not a placeholder, and is COLIVING,
  *  - every roomId belongs to that property and is not MAINTENANCE/INACTIVE
  *    (ROOM_UNBOOKABLE_STATUSES) — OCCUPIED does not block a future range,
  *  - no room is blocked by an external (Airbnb/OTA) reservation or a manual
@@ -78,6 +79,12 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
   const property = await storage.getProperty(input.propertyId);
   if (!property) throw new LeaseError("Property not found", 404);
   if (!property.active) throw new LeaseError("Property is not available", 409);
+  // Placeholder listings are visible but never transactable. previewLease() and
+  // createDraftLease() both re-run buildLeaseQuote(), so this single guard
+  // closes the whole lease path: quote, preview, and creation.
+  if (isPlaceholder(property)) {
+    throw new LeaseError("This listing isn't taking bookings online", 409);
+  }
   if (property.type !== "COLIVING") {
     throw new LeaseError("Leases are for co-living properties; use the nightly flow for this stay", 400);
   }

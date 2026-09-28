@@ -4108,8 +4108,6 @@ max-term leases; imported from `shared/schema.ts`, not a magic number). A room t
 one full lease into another always opens inside that window; a hold years out still does not.
 Tests updated (chain of two 90-day leases counts; day 181 does not). Re-verified live after deploy.
 
----
-
 ## 2026-09-27 — Advance-booking rule (Stage 0 of the reservation-change plan)
 
 **Why:** a guest booked one week when they wanted a month or more. Planning that gap surfaced a
@@ -4191,3 +4189,328 @@ UO management, week→month+ conversion). Stages 5, 6 and 9 move money and need 
 Also outstanding: UO's calendar and iCal export omit `PENDING_VERIFICATION` from their lease-hold
 list and treat two 30-minute checkout holds as permanent — a live double-booking risk, fixed
 separately in the Unified-Ops repo.
+
+---
+
+## 2026-09-27 — Placeholder listings: front-end only, excluded from every number
+
+**Ask:** the market-test properties are placeholders, not inventory. They should keep showing on the
+site, be activatable/deactivatable from the backend, be clearly marked there, and stop skewing
+availability and revenue.
+
+**The rule, now in code** (`shared/placeholder.ts`): `properties.active` decides whether the world
+SEES a listing; `properties.is_placeholder` decides whether the business COUNTS it. Orthogonal, and
+no call site open-codes the negation — they all import `countsTowardBusiness()`.
+
+Before this, the only marker was a tag smuggled into `prior_names` (`prior_names ?
+'market-test-2026-09'`) that no server, client, admin, or UO code read. Three consequences, all
+fixed here:
+
+1. **Occupancy was wrong.** `storage.getKpiAggregates()` did `db.select().from(rooms)` with no join
+   and used `allRooms.length` as the occupancy denominator, so 22 fictional rooms sat in it
+   permanently — and got cached nightly into `kpi_snapshots` and pushed to UO. All three sources
+   (bookings, rooms, payments) are now inner-joined to `properties` and gated on a new
+   `realPropertyCondition()`.
+2. **Nothing stopped a charge.** The only protection was a manual block running to 2028; lift it and
+   `resolveBooking()` / `buildLeaseQuote()` would have quoted and charged a real card for a house we
+   don't own. Both now refuse a placeholder with 409 immediately after the `active` check. That is
+   total coverage: `resolveBooking` is re-entered by `/api/quote`, `/api/booking-intent` and the
+   webhook materializer's race re-check; `buildLeaseQuote` is re-run inside `previewLease()` and
+   `createDraftLease()`.
+3. **The tag leaked.** `GET /api/properties`, `/api/properties/:id` and `/api/rooms/:id` returned the
+   raw DB row, so `prior_names` (carrying `market-test-2026-09` and `src:zillow:<zpid>`) *and* the
+   tokenized `airbnb_ical_url` — which schema.ts calls secret — were publicly readable. Fixed by
+   `shared/publicProjection.ts`: a whitelist, with a compile-time ledger that fails the build if a
+   new column on `properties`/`rooms` isn't classified public or withheld.
+
+**Other exclusions:** `syncRoomOccupancyStatus()` (no longer stamps AVAILABLE on fake rooms every
+sweep) · `buildReconciliationReport()` · `uoApi.listPaymentsWithMetadata()` ·
+`storage.getListingsWithIcalUrl()` — whose rooms branch had **no property gate at all**, a
+pre-existing bug that fetched the tokenized feed of rooms on inactive properties hourly; it now
+honours `active` + not-placeholder like the property branch. `uoApi.listPropertiesWithRooms()`
+deliberately still returns them, carrying `isPlaceholder`, because UO is the inventory editor.
+
+**Conversion path instead of a dead end:** placeholders can't be booked, so they now capture demand.
+New `listing_interest` table (standalone, append-only, modeled on `ltr_inquiries` but separate so
+speculative demand never pollutes a real pipeline), `POST /api/listing-interest`, and
+`client/src/components/listing-interest-form.tsx`, which is plain about status: "This home isn't
+available to book yet." The public contract is a neutral `inquiryOnly` flag — true for LTR and for
+placeholders, and the browser is never told which. That also collapsed three scattered LTR
+special-cases (`visibility.ts`, `property-card.tsx` ×2) onto one flag.
+
+**Admin:** Inventory tab gains a `PLACEHOLDER` badge and a second toggle beside Active/Hidden —
+Active/Hidden = on the site or not, Placeholder/Real = counted or not. Overview tiles carry
+"Excludes N placeholder listings".
+
+**Files:** `shared/placeholder.ts` (new) · `shared/publicProjection.ts` (new) · `shared/schema.ts` ·
+`server/storage.ts` · `server/lib/booking.ts` · `server/lib/lease.ts` · `server/lib/occupancy.ts` ·
+`server/lib/reconciliation.ts` · `server/lib/uoApi.ts` · `server/routes.ts` ·
+`client/src/components/listing-interest-form.tsx` (new) · `client/src/components/property-card.tsx` ·
+`client/src/lib/visibility.ts` · `client/src/pages/property-detail.tsx` ·
+`client/src/pages/room-detail.tsx` · `client/src/pages/admin/dashboard.tsx` ·
+`scripts/push-placeholder-flag.mjs` (new) · `scripts/push-listing-interest.mjs` (new).
+
+**Tests run:** `npm test` **1149/1149** (76 files, +24) · `npm run check` (tsc) 0 errors ·
+`npm run build` clean (prerender 42/43, unchanged). The four new aggregate/iCal queries were
+compiled with `.toSQL()` against a dummy connection string and their SQL inspected — joins and
+column names are correct. Not executed against a database from this session.
+
+**Deferred / owner-run** (classifier blocks prod DB access here), in this order — the booking guard
+must be deployed BEFORE the rooms are opened:
+1. `node scripts/push-placeholder-flag.mjs --list` (preview), then `--backfill`. Additive,
+   idempotent, mark-only; defaults every existing property to real.
+2. `node scripts/push-listing-interest.mjs`. New empty table, idempotent.
+3. Merge + deploy; confirm occupancy moves and UO's BNP numbers change.
+4. Only then `node scripts/seed-market-experiment.mjs --open` to lift the 2028 blocks, if the
+   demand test is wanted live.
+
+**Flagged, unresolved:** step 4 turns six fictional listings at the real addresses of homes owned by
+other people from "Fully booked" into an active interest CTA. That is a larger misrepresentation /
+fair-housing surface than today's state. The manifest records the owner chose to proceed past this
+class of risk; the form's honest "isn't available to book yet" copy is the mitigation taken. Steps
+1-3 fix the data problem and do not depend on step 4. Historical `kpi_snapshots` rows keep their
+contaminated occupancy figures — recomputing them is a production data write, not done here.
+
+### Addendum — 2026-09-27, historical KPI correction + a way to read the leads
+
+Two follow-ups from the placeholder rollout.
+
+**1. Correcting the contaminated snapshots.** `scripts/recompute-kpi-snapshots.mjs`. Room statuses
+have no history, so a snapshot can't be genuinely recomputed — but each row stores
+`rooms_occupied` and `occupancy_pct`, which together imply the total it divided by. Back the 22
+placeholder rooms out of both sides and the row becomes what it should have said. Only those two
+columns were ever wrong; `booking_count` and `revenue_total` were always right, because placeholder
+properties have never had a booking or a payment.
+
+Dry run against production (read-only, writes need `--apply`): **67 snapshot rows** in the
+2026-09-14 → 2026-09-26 window, 57 correctable, 10 skipped. The skips are the right ones — they
+predate the market-test rooms, already carry a 6-room denominator, and backing 22 out would give a
+negative total, which the guard catches. Mean reported occupancy over the window **95.80% → 80.41%**.
+
+The method self-validates: the pre-placeholder rows store a 6-room denominator directly, and
+backing 22 out of the later rows lands on exactly 6. The true trajectory it recovers:
+
+| | occupied | |
+|---|---|---|
+| Sep 14–20 | 5 / 6 | 83.3% |
+| Sep 21–22 | 4 / 6 | 66.7% |
+| Sep 23–26 | 3 / 6 | 50.0% |
+
+So two rooms emptied during the window — a real occupancy trend that the 89–96% headline had hidden
+completely. The arithmetic lives in an exported pure `correctSnapshot()` with 9 unit tests, rather
+than only inside a script that needs a database to exercise; the script uses the `isDirectRun`
+guard from `seed-market-experiment.mjs` so importing it never touches a DB.
+
+**NOT APPLIED** — the classifier denies production writes from this session (`--apply` refused,
+`[Modify Shared Resources]`). Owner command: `node scripts/recompute-kpi-snapshots.mjs --apply`.
+It exports `kpi_snapshots` to `/docs/migration-backups/` before writing. Rows already pushed to
+Unified Ops were pushed with the old numbers; this fixes BNP's copy only.
+
+**Also found:** `kpi_snapshots` has duplicate rows per date — 18 on Sep 14, 23 on Sep 15, 16 on
+Sep 16, then 1/day from Sep 17. The rollup inserts per run with no per-day upsert, so an hour-ticking
+local scheduler multiplies rows. Harmless to the numbers (each row is self-consistent) but it makes
+the table misleading to read by hand. Not fixed here.
+
+**2. Reading the interest leads.** A demand experiment nobody can read the results of is a hole in
+the site, and `listing_interest` had no reader — matching `ltr_inquiries`, which has none either.
+Added `storage.getListingInterest()`, one handler dual-mounted as
+`GET /api/admin/listing-interest` and `GET /api/uo/listing-interest` (same shape as
+`reconciliationHandler`), joining each row to its property and room name so the reader isn't
+resolving uuids. `client/src/pages/admin/listing-interest-panel.tsx` renders it at the top of the
+Inventory tab — beside the Placeholder/Real toggles that create the demand, so flagging and
+reading live in one place. Read-only: the rows are append-only and follow-up happens off-platform.
+
+**Tests run:** `npm test` **1158/1158** (77 files, +9) · `npm run check` 0 errors · `npm run build`
+and `build:api` clean.
+
+### Addendum — 2026-09-28, kpi_snapshots duplicate rows
+
+The historical correction ran (owner): 57 rows corrected, 652 backed up. That row count exposed the
+next problem — `kpi_snapshots` held **652 rows across 98 dates**, up to 25 for a single day.
+
+**Cause:** `storage.createSnapshot()` inserted unconditionally, and `buildAndPushSnapshot()` runs on
+every scheduler sweep — hourly from the local scheduler, daily from the Vercel cron. Any day with a
+dev server up collected a row per tick. No reported number was ever wrong (each row is
+self-consistent); the table was simply unreadable as history, and no unique index could exist over
+it. Nothing in the app reads the table back, which is why it went unnoticed.
+
+**Code fix (deployed):** `createSnapshot` now upserts on `snapshot_date` — one row per day, updated
+in place. Deliberately an application-level upsert rather than `ON CONFLICT`, so it is safe to
+deploy BEFORE the unique index exists and carries no ordering hazard.
+
+**Cleanup (owner-run, NOT applied — production writes are blocked from this session):**
+`scripts/dedupe-kpi-snapshots.mjs`. Dry-run verified against production: **652 → 98 rows**, 554
+duplicates across 32 dates deleted, then a unique index on `snapshot_date`. The survivor for each
+date is the newest `created_at` — the last figure computed that day — and if ANY row for that date
+had been pushed to UO, the survivor inherits `pushed_to_uo` plus the EARLIEST `pushed_at`, so the
+cleanup cannot erase the record that UO saw a date. Destructive, so it exports the whole table
+first and is a dry run until `--apply`.
+
+    node scripts/dedupe-kpi-snapshots.mjs            # dry run
+    node scripts/dedupe-kpi-snapshots.mjs --apply    # collapse + index
+
+**A real bug the tests caught before it shipped:** both scripts derived their date key with
+`String(row.snapshot_date).slice(0, 10)`. The driver returns a Date for a `date` column, so that
+yields `"Mon Sep 14"`, not an ISO date. Harmless in the recompute (display only — the filtering was
+SQL and the updates were by id, so the applied correction was right), but in the dedupe that string
+is the GROUPING KEY: two dates sharing a weekday and month-day — which recur every few years —
+would have merged into one group and deleted live rows. Both now use a shared `isoDate()`. The test
+that caught it is `planDedupe` "handles a Date object for snapshot_date".
+
+**Tests run:** `npm test` **1168/1168** (78 files, +10) · `npm run check` 0 errors · `npm run build`
+and `build:api` clean.
+
+**Also noted:** today's snapshot reads 4/6 = 66.67% — a fourth room became occupied since Sep 26.
+The owner's recollection of four was right; the Sep 26 backup data was simply two days stale.
+
+## 2026-09-28 — Admin reservations list, detail modal, and the reconciliation count
+
+**Ask:** Recent bookings should show property, guest and dates and paginate 10 at a time; each
+reservation should open its details; the Reconciliation tab shows 10 against a single test entry,
+which should be fixed and the test entry removed.
+
+### The reconciliation count
+
+The badge and the list were two different queries. `dashboard.pendingCount` counted
+`storage.getPendingManualPayments()` raw; the list rendered that same call with
+`.filter((p) => p.method !== "STRIPE")` applied **in the route**. The storage method's own comment
+says "Manual = CashApp/Zelle awaiting admin confirmation" but it only ever filtered
+`status = 'PENDING'`. So the badge counted 9 abandoned July Stripe checkouts the list would never
+show. `docs/migration-backups/2026-09-09-payments.json` confirms the split exactly: 9
+(PENDING, STRIPE), 4 (PAID, STRIPE), 1 (PENDING, CASHAPP).
+
+Fixed at the query, not the route: `getPendingManualPayments()` now filters `method <> 'STRIPE'`
+**and** joins bookings to exclude CANCELLED ones — money can never arrive for a cancelled booking,
+so a PENDING row against one is dead and must not ask an admin to action it. The route's duplicate
+filter is gone so the rule lives in one place, and the badge now counts the rendered array
+(`recon.data.length`) the way the Verifications tab already did, so the two cannot drift again.
+This also corrects the scheduler's "N payment(s) awaiting reconciliation" log and the cron sweep's
+pending count, both wrong for the same reason.
+
+**A hazard found in passing, now fixed.** `settleManualBookingPayment` guards STRIPE and
+already-PAID and re-checks availability, but not booking status. Mark Paid on that test row would
+have recorded $435 as collected, flipped the cancelled booking back to a live status via
+`postPaymentStatusFor()`, set the room OCCUPIED, and fired `onBookingConfirmed` — emailing and
+texting a guest about a stay called off in July. Now throws 409. Two tests pin it.
+
+### Reservations list
+
+`GET /api/admin/bookings` becomes a paginated envelope `{rows,total,page,pageSize}` backed by a new
+`storage.getBookingsPage()`. It copies the guest/property/room join from `getBookingsWithGuest`
+with two differences: LEFT joins stay nullable (an admin list of every booking must not silently
+drop one with a missing guest), and the count runs over the same joins and where-clause as the rows
+— a total from a different query is how a pager starts lying. Sort takes `id` as a tiebreaker so
+rows sharing a checkIn or total can't swap between pages and be seen twice or not at all. Search
+escapes LIKE wildcards, so a literal "100%" doesn't match everything.
+
+The old `recentBookings` field leaves `/api/admin/dashboard`, and with it a fetch of the entire
+bookings table to slice 20 off the front.
+
+Client: `reservations-panel.tsx` — status/property/search filters, sort with direction toggle,
+prev/next pager. The filter-state logic is a pure module (`client/src/lib/reservationsQuery.ts`,
+12 tests) because an off-by-one page or a silently dropped filter reads as a data bug, not a URL
+bug; it also enforces that any change to WHICH rows match resets to page 0, so narrowing a long
+list while deep in it can't show an empty card that looks like "no bookings".
+
+`GET /api/admin/bookings/:id` composes existing storage calls for the detail modal. Only the row
+header is the clickable button — `ConflictBookingActions` renders its own buttons below it, and a
+button inside a button is invalid markup that makes the inner ones unclickable.
+
+### The test entry
+
+`scripts/delete-test-payment.mjs` — dry run verified against production: $435 CashApp,
+`BNP-2548-YP52`, booking CANCELLED, no refund rows. Owner-run; production writes are blocked from
+this session. The safety check is a pure tested function (10 tests) refusing on PAID, FAILED,
+STRIPE, any `paid_at` or `stripe_ref`, a live booking, or any `payment_refunds` row (a NOT NULL FK
+that would fail the delete anyway).
+
+Worth recording: this is the first row ever deleted from a money table here — every other cleanup
+script updates a status. The owner chose deletion over marking it FAILED, knowing the record of the
+test charge goes with it. The queue fix already excludes the row regardless, so the delete is
+tidying, not the fix.
+
+**Tests run:** `npm test` **1192/1192** (80 files, +24) · `npm run check` 0 errors ·
+`npm run build` and `build:api` clean. The admin UI is typechecked and built but not visually
+verified — the page needs a login.
+
+---
+
+## 2026-09-28 — Airbnb calendar export (BNP → Airbnb) + Airbnb import link in admin
+
+**Problem:** a direct booking never showed on Airbnb, so the same dates could be sold twice. BNP
+already imported Airbnb's calendar (`icalSync.ts` → `external_bookings`) but published nothing back.
+
+**Built**
+- `server/lib/icalExport.ts` — per-listing `.ics` feed from BNP-owned sources only (STR bookings +
+  property manual blocks; room leases + co-living bookings + room manual blocks). Never reads
+  `external_bookings` (no echo of Airbnb's own data). Lease `endDate` is inclusive so DTEND is +1
+  day; bookings/blocks are already half-open. Every event is the literal `Reserved` with a
+  synthetic UID; no guest data. Hand-rolled (fixed-shape all-day VEVENTs, no user text) so no new
+  dependency; 75-octet folding tested.
+- `GET /api/calendar/export/<token>.ics` — public, token is the only gate, `no-store`, one generic
+  404 for unknown token / inactive / placeholder / wrong product type.
+- `properties.export_token` / `rooms.export_token` — DB default `gen_random_uuid()::text`, unique
+  index, omitted from the insert schemas (PATCH can't overwrite it), withheld from public
+  projections. `scripts/push-calendar-export.mjs` (additive, idempotent).
+- Admin: `GET /api/admin/calendar/listings`, `POST /api/admin/calendar/export-urls/:kind/:id/regenerate`,
+  and a per-listing links section in `calendar-sync-panel.tsx` (copy export URL, regenerate, paste /
+  replace / remove the Airbnb import link, masked to last 4). Saving an import link fires the
+  existing sync so a bad link fails immediately.
+- `normalizeAirbnbIcalUrl` validates the import link at save time (https only, and rejects BNP's
+  own export link pasted into the wrong field). The stale "no feed CRUD surface here" comment is
+  replaced.
+
+**Decisions:** opaque token instead of the listing UUID (rotatable; matches Airbnb's own export
+URLs). Open-ended co-living bookings (null checkout) are not exported, matching `availability.ts`.
+LTR properties never publish.
+
+**Deploy order (load-bearing):** run `node scripts/push-calendar-export.mjs` BEFORE deploying.
+Drizzle selects every column, so code that knows `export_token` against a DB without it breaks all
+property/room reads. Not run from this session (production writes are blocked here).
+
+**Tests run:** `npm test` **1217/1217** (81 files, +25) · `npm run check` 0 errors · client vite
+build and server esbuild bundle clean (prerender step not run — it may read the DB). The feed
+route and the admin panel are NOT exercised against a live DB or in a browser: that needs the
+migration applied and an admin login.
+
+**Deferred:** none.
+
+---
+
+## 2026-09-28 — "Fully synced" indicator per listing (Airbnb ↔ BNP)
+
+**Problem:** the calendar-export feature (previous entry) gave BNP export/import links per listing,
+but no visibility into whether either side was actually working — a saved link only means "typed
+in," not "connected."
+
+**Built**
+- `properties.export_last_fetched_at` / `rooms.export_last_fetched_at` — stamped by
+  `icalExport.ts`'s `getExportFeed()` on every successful, publishable render (never on an
+  unknown token or a gated listing, so a stale/guessed token can't fake "connected"). A failed
+  stamp write never breaks the feed response. `scripts/push-export-fetch-tracking.mjs` (additive,
+  idempotent; null is the correct steady-state for "never fetched," no sanity-check block needed).
+- `server/lib/calendarSyncStatus.ts` — pure `computeCalendarSyncStatus()`: inbound
+  (not_connected/pending/ok/error, from whether `airbnb_ical_url` is set + this listing's entry in
+  the existing hourly `ical_last_sync_result`) × outbound (not_connected/ok/stale, from
+  `export_last_fetched_at` windowed at `EXPORT_FETCH_STALE_AFTER_HOURS = 26` — generous because
+  Airbnb's own poll cadence isn't guaranteed, unlike the 3h threshold `icalSync.ts` already uses
+  for BNP's own hourly job). `overall` is `full` only when both sides are `ok`, `none` only when
+  both have never connected, otherwise `partial`.
+- Factored the `ical_last_sync_at`/`ical_last_sync_result` read+parse (previously inline in the
+  `calendarStatus` handler) into `icalSync.ts`'s `getLastSyncStatus()`, reused by both that route
+  and the new one.
+- `GET /api/admin/calendar/listings` now returns `inboundStatus`, `inboundError`,
+  `outboundStatus`, `overall`, `exportLastFetchedAt` per listing.
+- `calendar-sync-panel.tsx`: a badge ("Fully synced" / "Partially synced" / "Not synced") and a
+  one-line explanation of what's missing, added to the existing per-listing card. No panel
+  restructure; explanation copy has no hour number so it can't drift from the server constant.
+
+**Tests run:** `npm test` **1236/1236** (82 files, +1 file / +33 tests) · `npm run check` 0 errors
+· client vite build and server esbuild bundle clean. Not exercised against a live DB or in a
+browser — needs the migration applied and an admin login. The 26h boundary and the full
+inbound×outbound matrix are covered by table-driven unit tests in `calendarSyncStatus.test.ts`.
+
+**Deploy order (load-bearing, same as last time):** run `node scripts/push-export-fetch-tracking.mjs`
+BEFORE deploying — not run from this session (production writes are blocked here).
+
+**Deferred:** none.

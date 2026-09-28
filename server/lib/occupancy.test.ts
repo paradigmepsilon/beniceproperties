@@ -92,3 +92,41 @@ describe("syncRoomOccupancyStatus", () => {
     expect(storage.getOccupiedRoomIdsOn).toHaveBeenCalledWith(expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/));
   });
 });
+
+describe("syncRoomOccupancyStatus — placeholder properties", () => {
+  it("never enumerates, counts, or writes to a placeholder's rooms", async () => {
+    store.properties = [
+      { id: "p1" },
+      { id: "p-fake", isPlaceholder: true },
+    ];
+    store.roomsByProperty = {
+      p1: [{ id: "r1", propertyId: "p1", status: "AVAILABLE" }],
+      // Stale status on purpose: if the sweep touched these it would write.
+      "p-fake": [
+        { id: "f1", propertyId: "p-fake", status: "OCCUPIED" },
+        { id: "f2", propertyId: "p-fake", status: "OCCUPIED" },
+      ],
+    };
+    store.occupiedIds = new Set();
+
+    const result = await syncRoomOccupancyStatus("2026-09-02");
+
+    // Only the real room is accounted for — the placeholder rooms would
+    // otherwise inflate `available` and, downstream, the occupancy denominator.
+    expect(result).toEqual({ occupied: 0, available: 1, changed: 0 });
+    expect(store.updates).toEqual([]);
+    expect(storage.getRoomsByProperty).toHaveBeenCalledWith("p1");
+    expect(storage.getRoomsByProperty).not.toHaveBeenCalledWith("p-fake");
+  });
+
+  it("still sweeps a property with the flag explicitly false", async () => {
+    store.properties = [{ id: "p1", isPlaceholder: false }];
+    store.roomsByProperty = { p1: [{ id: "r1", propertyId: "p1", status: "AVAILABLE" }] };
+    store.occupiedIds = new Set(["r1"]);
+
+    const result = await syncRoomOccupancyStatus("2026-09-02");
+
+    expect(result).toEqual({ occupied: 1, available: 0, changed: 1 });
+    expect(store.updates).toEqual([{ id: "r1", updates: { status: "OCCUPIED" } }]);
+  });
+});

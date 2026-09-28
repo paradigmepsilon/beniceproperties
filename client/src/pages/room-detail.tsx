@@ -10,8 +10,8 @@ import { useQuery } from "@tanstack/react-query";
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { ArrowLeft } from "lucide-react";
 import { earliestMoveInIso } from "@shared/dates";
-import type { Property, Room } from "@shared/schema";
 import { COLIVING_MIN_DAYS, requiresLease, isDirectCoLivingStay, ROOM_UNBOOKABLE_STATUSES } from "@shared/schema";
+import type { PublicProperty, PublicRoom } from "@shared/publicProjection";
 import type { QuoteResponse, LeaseQuoteResponse } from "@shared/api-types";
 import { apiRequest } from "@/lib/queryClient";
 import { SiteHeader, SiteFooter } from "@/components/site-header";
@@ -19,6 +19,7 @@ import { ListingGallery } from "@/components/listing-gallery";
 import { ListingStory } from "@/components/listing-story";
 import { InclusionsGrid } from "@/components/inclusions-grid";
 import { NeighborhoodBlock } from "@/components/neighborhood-block";
+import { ListingInterestForm } from "@/components/listing-interest-form";
 import { DateRangePicker } from "@/components/date-range-picker";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
@@ -29,8 +30,8 @@ import { useSeo, SITE_URL, DEFAULT_OG_IMAGE } from "@/lib/seo";
 import { track } from "@/lib/analytics";
 
 interface RoomResponse {
-  room: Room;
-  property: Property | undefined;
+  room: PublicRoom;
+  property: PublicProperty | undefined;
 }
 
 // apiRequest throws `${status}: ${body}` on a non-2xx; the body is usually JSON
@@ -239,6 +240,10 @@ export default function RoomDetail() {
   // be reservable; the calendar (busy/disabledDays) is what actually blocks a
   // taken date, this only gates rooms pulled off the market entirely.
   const notAvailable = (ROOM_UNBOOKABLE_STATUSES as readonly string[]).includes(room.status);
+  // A placeholder listing renders in full — photos, rate, the lot — but the
+  // server refuses to quote or charge it, so the booking panel is replaced by
+  // the interest form rather than left to fail on click.
+  const inquiryOnly = Boolean(property?.inquiryOnly);
   const quoteReady = isShortStay ? !!shortQuote : isLeaseTerm ? !!leaseQuote : false;
   const ctaDisabled = notAvailable || !datesValid || isBelowMin || !quoteReady;
   const ctaLabel = notAvailable
@@ -310,146 +315,167 @@ export default function RoomDetail() {
           </div>
 
           <aside id="reserve" className="scroll-mt-24">
-            <div className="bnp-card sticky top-24 overflow-hidden p-6">
-              <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
-              <h2 className="font-display text-lg font-semibold">Reserve this room</h2>
-
-              {/* Pick the term here. The picker greys already-booked days (same
-                  busy set the read-only calendar used to show) and enforces the
-                  7-night co-living minimum. */}
-              <div className="mt-4">
-                <DateRangePicker
-                  checkIn={startDate}
-                  checkOut={endDate}
-                  onChange={({ checkIn, checkOut }) => {
-                    setStartDate(checkIn);
-                    setEndDate(checkOut);
-                  }}
-                  disabled={disabledDays}
-                  minNights={COLIVING_MIN_DAYS}
-                  startLabel="Move-in"
-                  endLabel="Move-out"
-                  data-testid="input-room-dates"
+            {inquiryOnly ? (
+              // Placeholder: no booking panel, but the RATE still leads. The
+              // price is the thing the market test is measuring — a guest who
+              // clicked a "from $310 / week" card must not land on a page with
+              // no number on it. Mirrors the real panel's accent bar and rate
+              // treatment so the two read as the same component family.
+              <div className="bnp-card sticky top-24 overflow-hidden p-6">
+                <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
+                <p className="text-sm" data-testid="text-placeholder-rate">
+                  <span className="font-display text-2xl font-semibold">{money(room.weeklyRent)}</span>
+                  <span className="text-muted-foreground"> / week</span>
+                </p>
+                <Separator className="my-4" />
+                <ListingInterestForm
+                  propertyId={room.propertyId}
+                  roomId={room.id}
+                  listingName={room.name}
                 />
-                {spansBooked ? (
-                  <p className="mt-2 text-xs text-destructive">
-                    Those dates include nights this room is already booked. Pick an open range.
-                  </p>
-                ) : !availReady && (startDate || endDate) ? (
-                  <p className="mt-2 text-xs text-muted-foreground">Checking availability…</p>
-                ) : awaitingCheckOut ? (
-                  earliestOut ? (
-                    <p className="mt-2 text-xs text-muted-foreground" data-testid="text-earliest-checkout">
-                      {COLIVING_MIN_DAYS}-night minimum — pick a move-out on or after{" "}
-                      <span className="font-semibold text-foreground">{shortDate(earliestOut)}</span>.
-                    </p>
-                  ) : (
-                    <p className="mt-2 text-xs text-destructive" data-testid="text-no-valid-checkout">
-                      This room is booked again too soon after that date to fit a{" "}
-                      {COLIVING_MIN_DAYS}-night stay. Try an earlier move-in.
-                    </p>
-                  )
-                ) : isBelowMin ? (
-                  <p className="mt-2 text-xs text-destructive" data-testid="text-below-min">
-                    Co-living stays have a {COLIVING_MIN_DAYS}-night minimum. Extend your dates.
-                  </p>
-                ) : isShortStay ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Short stay ({termNights} nights). Pay in full at checkout.
-                  </p>
-                ) : isLeaseTerm ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Stays over a month are set up as a lease you sign on the next step.
-                  </p>
-                ) : null}
               </div>
+            ) : (
+              <div className="bnp-card sticky top-24 overflow-hidden p-6">
+                <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
+                <h2 className="font-display text-lg font-semibold">Reserve this room</h2>
 
-              {/* Weekly rate is the persistent price anchor. The move-in deposit
-                  applies only to lease-length stays (> 28 nights / a month or more) —
-                  short-stay guests don't pay one — so its line is shown only once the
-                  picked term qualifies as a lease. */}
-              <div className="mt-4 space-y-3 text-sm">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-muted-foreground">Weekly rent</span>
-                  <span className="font-medium">{money(room.weeklyRent)} / wk</span>
-                </div>
-                {isLeaseTerm && (
-                  <>
-                    <Separator />
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-muted-foreground">Move-in deposit (now)</span>
-                      <span className="font-medium">{money(room.depositAmount)}</span>
-                    </div>
-                    <p className="text-xs text-muted-foreground" data-testid="text-deposit-note">
-                      Refundable deposit held for incidentals, returned to you upon checkout.
+                {/* Pick the term here. The picker greys already-booked days (same
+                    busy set the read-only calendar used to show) and enforces the
+                    7-night co-living minimum. */}
+                <div className="mt-4">
+                  <DateRangePicker
+                    checkIn={startDate}
+                    checkOut={endDate}
+                    onChange={({ checkIn, checkOut }) => {
+                      setStartDate(checkIn);
+                      setEndDate(checkOut);
+                    }}
+                    disabled={disabledDays}
+                    minNights={COLIVING_MIN_DAYS}
+                    startLabel="Move-in"
+                    endLabel="Move-out"
+                    data-testid="input-room-dates"
+                  />
+                  {spansBooked ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      Those dates include nights this room is already booked. Pick an open range.
                     </p>
-                  </>
+                  ) : !availReady && (startDate || endDate) ? (
+                    <p className="mt-2 text-xs text-muted-foreground">Checking availability…</p>
+                  ) : awaitingCheckOut ? (
+                    earliestOut ? (
+                      <p className="mt-2 text-xs text-muted-foreground" data-testid="text-earliest-checkout">
+                        {COLIVING_MIN_DAYS}-night minimum — pick a move-out on or after{" "}
+                        <span className="font-semibold text-foreground">{shortDate(earliestOut)}</span>.
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-xs text-destructive" data-testid="text-no-valid-checkout">
+                        This room is booked again too soon after that date to fit a{" "}
+                        {COLIVING_MIN_DAYS}-night stay. Try an earlier move-in.
+                      </p>
+                    )
+                  ) : isBelowMin ? (
+                    <p className="mt-2 text-xs text-destructive" data-testid="text-below-min">
+                      Co-living stays have a {COLIVING_MIN_DAYS}-night minimum. Extend your dates.
+                    </p>
+                  ) : isShortStay ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Short stay ({termNights} nights). Pay in full at checkout.
+                    </p>
+                  ) : isLeaseTerm ? (
+                    <p className="mt-2 text-xs text-muted-foreground">
+                      Stays over a month are set up as a lease you sign on the next step.
+                    </p>
+                  ) : null}
+                </div>
+
+                {/* Weekly rate is the persistent price anchor. The move-in deposit
+                    applies only to lease-length stays (> 28 nights / a month or more) —
+                    short-stay guests don't pay one — so its line is shown only once the
+                    picked term qualifies as a lease. */}
+                <div className="mt-4 space-y-3 text-sm">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-muted-foreground">Weekly rent</span>
+                    <span className="font-medium">{money(room.weeklyRent)} / wk</span>
+                  </div>
+                  {isLeaseTerm && (
+                    <>
+                      <Separator />
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-muted-foreground">Move-in deposit (now)</span>
+                        <span className="font-medium">{money(room.depositAmount)}</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground" data-testid="text-deposit-note">
+                        Refundable deposit held for incidentals, returned to you upon checkout.
+                      </p>
+                    </>
+                  )}
+                </div>
+
+                {/* Stay total once a real, bookable range is picked. Short stays show
+                    the checkout subtotal (matches the STR page); lease-length stays
+                    show the total lease value with the deposit due now called out. */}
+                {datesValid && isShortStay && (
+                  <div className="mt-4 border-t border-border pt-4">
+                    {shortError ? (
+                      <p className="text-sm text-destructive" data-testid="text-quote-error">
+                        {quoteErrorMessage(shortError)}
+                      </p>
+                    ) : shortLoading || !shortQuote ? (
+                      <p className="text-sm text-muted-foreground">Calculating your total…</p>
+                    ) : (
+                      <>
+                        <div className="flex items-baseline justify-between">
+                          <span className="text-sm font-medium">Stay total</span>
+                          <span className="font-display text-2xl font-semibold" data-testid="text-stay-total">
+                            {money(String(shortQuote.dueNow.subtotal))}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Taxes &amp; card fees shown at checkout.
+                        </p>
+                      </>
+                    )}
+                  </div>
                 )}
+                {datesValid && isLeaseTerm && (
+                  <div className="mt-4 border-t border-border pt-4">
+                    {leaseError ? (
+                      <p className="text-sm text-destructive" data-testid="text-lease-error">
+                        {quoteErrorMessage(leaseError)}
+                      </p>
+                    ) : leaseLoading || !leaseQuote ? (
+                      <p className="text-sm text-muted-foreground">Calculating your total…</p>
+                    ) : (
+                      <>
+                        <div className="flex items-baseline justify-between">
+                          <span className="text-sm font-medium">
+                            Total lease value ({CADENCE_LABELS[leaseQuote.cadence]?.toLowerCase() ?? "weekly"} payments)
+                          </span>
+                          <span className="font-display text-2xl font-semibold" data-testid="text-lease-total">
+                            {money(String(leaseQuote.totalLeaseValue))}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          Due now: {money(String(leaseQuote.depositTotal))} deposit
+                          {leaseQuote.cleaningFeeTotal > 0
+                            ? ` + ${money(String(leaseQuote.cleaningFeeTotal))} cleaning fee`
+                            : ""}
+                          . Pick a different payment schedule on the next step to see its rate.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                <Button className="mt-5 w-full" size="lg" disabled={ctaDisabled} onClick={isShortStay ? proceedToCheckout : proceedToLease} data-testid="button-reserve-room">
+                  {ctaLabel}
+                </Button>
+                <p className="mt-3 text-center text-xs text-muted-foreground">
+                  {isShortStay ? "You won't be charged yet." : "Billing starts after move-in."}
+                </p>
               </div>
-
-              {/* Stay total once a real, bookable range is picked. Short stays show
-                  the checkout subtotal (matches the STR page); lease-length stays
-                  show the total lease value with the deposit due now called out. */}
-              {datesValid && isShortStay && (
-                <div className="mt-4 border-t border-border pt-4">
-                  {shortError ? (
-                    <p className="text-sm text-destructive" data-testid="text-quote-error">
-                      {quoteErrorMessage(shortError)}
-                    </p>
-                  ) : shortLoading || !shortQuote ? (
-                    <p className="text-sm text-muted-foreground">Calculating your total…</p>
-                  ) : (
-                    <>
-                      <div className="flex items-baseline justify-between">
-                        <span className="text-sm font-medium">Stay total</span>
-                        <span className="font-display text-2xl font-semibold" data-testid="text-stay-total">
-                          {money(String(shortQuote.dueNow.subtotal))}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Taxes &amp; card fees shown at checkout.
-                      </p>
-                    </>
-                  )}
-                </div>
-              )}
-              {datesValid && isLeaseTerm && (
-                <div className="mt-4 border-t border-border pt-4">
-                  {leaseError ? (
-                    <p className="text-sm text-destructive" data-testid="text-lease-error">
-                      {quoteErrorMessage(leaseError)}
-                    </p>
-                  ) : leaseLoading || !leaseQuote ? (
-                    <p className="text-sm text-muted-foreground">Calculating your total…</p>
-                  ) : (
-                    <>
-                      <div className="flex items-baseline justify-between">
-                        <span className="text-sm font-medium">
-                          Total lease value ({CADENCE_LABELS[leaseQuote.cadence]?.toLowerCase() ?? "weekly"} payments)
-                        </span>
-                        <span className="font-display text-2xl font-semibold" data-testid="text-lease-total">
-                          {money(String(leaseQuote.totalLeaseValue))}
-                        </span>
-                      </div>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        Due now: {money(String(leaseQuote.depositTotal))} deposit
-                        {leaseQuote.cleaningFeeTotal > 0
-                          ? ` + ${money(String(leaseQuote.cleaningFeeTotal))} cleaning fee`
-                          : ""}
-                        . Pick a different payment schedule on the next step to see its rate.
-                      </p>
-                    </>
-                  )}
-                </div>
-              )}
-
-              <Button className="mt-5 w-full" size="lg" disabled={ctaDisabled} onClick={isShortStay ? proceedToCheckout : proceedToLease} data-testid="button-reserve-room">
-                {ctaLabel}
-              </Button>
-              <p className="mt-3 text-center text-xs text-muted-foreground">
-                {isShortStay ? "You won't be charged yet." : "Billing starts after move-in."}
-              </p>
-            </div>
+            )}
           </aside>
         </div>
       </main>
@@ -468,16 +494,20 @@ export default function RoomDetail() {
                 <span className="text-sm font-normal text-muted-foreground"> / wk</span>
               </p>
               <p className="text-xs text-muted-foreground">
-                {notAvailable ? "Not available" : `${COLIVING_MIN_DAYS}-night minimum`}
+                {inquiryOnly
+                  ? "Not bookable yet"
+                  : notAvailable
+                    ? "Not available"
+                    : `${COLIVING_MIN_DAYS}-night minimum`}
               </p>
             </div>
             <Button
               className="shrink-0"
               onClick={() => document.getElementById("reserve")?.scrollIntoView({ behavior: "smooth", block: "start" })}
-              disabled={notAvailable}
+              disabled={!inquiryOnly && notAvailable}
               data-testid="button-reserve-mobile"
             >
-              {notAvailable ? "Not available" : "Reserve"}
+              {inquiryOnly ? "Keep me posted" : notAvailable ? "Not available" : "Reserve"}
             </Button>
           </div>
         </div>

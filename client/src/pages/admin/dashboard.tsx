@@ -14,14 +14,14 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
 import { money } from "@/lib/format";
 import { ROOM_STATUSES } from "@shared/schema";
-import { amountMatches, refundEligibility } from "@/lib/adminRefund";
 import MessagesTab from "./messages-tab";
 import StayApprovalsTab, { useStayApprovalCount } from "./stay-approvals-tab";
 import BlocksPanel from "./blocks-panel";
+import ListingInterestPanel from "./listing-interest-panel";
+import ReservationsPanel from "./reservations-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
 
 interface Dashboard {
@@ -32,7 +32,6 @@ interface Dashboard {
     roomsOccupied: number;
     upcomingCheckIns: number;
   };
-  recentBookings: Booking[];
   pendingCount: number;
 }
 
@@ -77,6 +76,11 @@ export default function AdminDashboard() {
   const recon = useQuery<ReconRow[]>({ queryKey: ["/api/admin/reconciliation"], enabled: !!me.data });
   const properties = useQuery<Property[]>({ queryKey: ["/api/admin/properties"], enabled: !!me.data });
   const paymentsView = useQuery<PaymentRow[]>({ queryKey: ["/api/admin/payments"], enabled: !!me.data });
+
+  // Placeholder listings are deliberately absent from every figure on this tab
+  // (server/storage.ts getKpiAggregates). Say so, rather than leaving an
+  // unexplained gap between the property list and the numbers.
+  const placeholderCount = (properties.data ?? []).filter((p) => p.isPlaceholder).length;
 
   const markPaid = useMutation({
     mutationFn: async (paymentId: string) => {
@@ -175,7 +179,11 @@ export default function AdminDashboard() {
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
           <TabsTrigger value="reconciliation" data-testid="tab-reconciliation">
             Reconciliation
-            {dashboard.data?.pendingCount ? ` (${dashboard.data.pendingCount})` : ""}
+            {/* Counted from the rows this tab actually renders, like Verifications
+                below. It used to read dashboard.pendingCount — a second query
+                with a different filter — so the badge said 10 against a 1-row
+                list. Same array, same number, no way to drift. */}
+            {recon.data?.length ? ` (${recon.data.length})` : ""}
           </TabsTrigger>
           <TabsTrigger value="inventory" data-testid="tab-inventory">Inventory</TabsTrigger>
           <TabsTrigger value="payments" data-testid="tab-payments">Payments</TabsTrigger>
@@ -198,48 +206,13 @@ export default function AdminDashboard() {
             <Stat label="Rooms occupied" value={a?.roomsOccupied ?? "—"} />
             <Stat label="Check-ins (7d)" value={a?.upcomingCheckIns ?? "—"} />
           </div>
-          <Card className="mt-6">
-            <CardHeader>
-              <CardTitle className="text-base">Recent bookings</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="divide-y text-sm">
-                {dashboard.data?.recentBookings.map((b) => {
-                  const paymentRow = paymentsView.data?.find((r) => r.booking.id === b.id);
-                  return (
-                    <div key={b.id} className="py-2">
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono">{b.reference}</span>
-                        <span className="text-muted-foreground">
-                          {b.model} · {b.paymentMethod}
-                        </span>
-                        <Badge
-                          variant={
-                            b.status === "CONFLICT"
-                              ? "destructive"
-                              : b.status === "CONFIRMED" || b.status === "ACTIVE"
-                                ? "default"
-                                : "secondary"
-                          }
-                          data-testid={`badge-status-${b.id}`}
-                        >
-                          {b.status}
-                        </Badge>
-                      </div>
-                      {b.status === "CONFLICT" && (
-                        <div className="mt-2">
-                          <ConflictBookingActions booking={b} payments={paymentRow?.payments ?? []} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-                {!dashboard.data?.recentBookings.length && (
-                  <p className="py-4 text-muted-foreground">No bookings yet.</p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
+          {placeholderCount > 0 && (
+            <p className="mt-2 text-xs text-muted-foreground" data-testid="text-placeholder-note">
+              Excludes {placeholderCount} placeholder listing{placeholderCount === 1 ? "" : "s"} —
+              shown on the site, not counted here.
+            </p>
+          )}
+          <ReservationsPanel properties={properties.data ?? []} />
         </TabsContent>
 
         {/* Reconciliation */}
@@ -280,6 +253,7 @@ export default function AdminDashboard() {
         {/* Inventory */}
         <TabsContent value="inventory" className="mt-6">
           <CalendarSyncPanel />
+          <ListingInterestPanel />
           <BlocksPanel properties={properties.data ?? []} />
           <InventoryManager properties={properties.data ?? []} />
         </TabsContent>
@@ -458,6 +432,24 @@ function InventoryManager({ properties }: { properties: Property[] }) {
     },
   });
 
+  // The second, orthogonal switch. Active/Hidden decides whether the world SEES
+  // a listing; Placeholder/Real decides whether the business COUNTS it. A
+  // placeholder still renders publicly, but it can't be booked and it stays out
+  // of occupancy, revenue, reconciliation, and the Unified Ops rollup.
+  const togglePlaceholder = useMutation({
+    mutationFn: async (p: Property) => {
+      await apiRequest("PATCH", `/api/admin/properties/${p.id}`, {
+        isPlaceholder: !p.isPlaceholder,
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/properties"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/properties"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
+    },
+    onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
   return (
     <div className="grid gap-6 md:grid-cols-2">
       <Card>
@@ -510,16 +502,35 @@ function InventoryManager({ properties }: { properties: Property[] }) {
                     onClick={() => setExpanded(expanded === p.id ? null : p.id)}
                     data-testid={`button-expand-${p.id}`}
                   >
-                    <div className="font-medium">
-                      {expanded === p.id ? "▾" : "▸"} {p.name}
+                    <div className="flex items-center gap-2 font-medium">
+                      <span>
+                        {expanded === p.id ? "▾" : "▸"} {p.name}
+                      </span>
+                      {p.isPlaceholder && (
+                        <Badge variant="secondary" data-testid={`badge-placeholder-${p.id}`}>
+                          PLACEHOLDER
+                        </Badge>
+                      )}
                     </div>
                     <div className="text-muted-foreground">
                       {p.location} · {p.type === "STR" ? "Whole property" : "By the room"}
+                      {p.isPlaceholder && " · front-end only, not counted"}
                     </div>
                   </button>
-                  <Button size="sm" variant="outline" onClick={() => toggleActive.mutate(p)} data-testid={`button-toggle-${p.id}`}>
-                    {p.active ? "Active" : "Hidden"}
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <Button size="sm" variant="outline" onClick={() => toggleActive.mutate(p)} data-testid={`button-toggle-${p.id}`}>
+                      {p.active ? "Active" : "Hidden"}
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant={p.isPlaceholder ? "secondary" : "ghost"}
+                      onClick={() => togglePlaceholder.mutate(p)}
+                      data-testid={`button-toggle-placeholder-${p.id}`}
+                      title="Placeholder listings show on the site but are excluded from every number."
+                    >
+                      {p.isPlaceholder ? "Placeholder" : "Real"}
+                    </Button>
+                  </div>
                 </div>
                 {expanded === p.id && (
                   <div className="mt-3 rounded-md border bg-muted/30 p-3">
@@ -761,108 +772,3 @@ function AddRoomForm({ propertyId }: { propertyId: string }) {
     </div>
   );
 }
-
-// --- Overview: CONFLICT booking resolution (Task 8) ---
-// A CONFLICT booking was paid but its dates were taken by the time payment
-// confirmed. The admin either confirms it (re-checks availability, 409s if
-// still taken) or cancels — plain cancel always available, "Cancel + refund"
-// only for a Stripe booking with a PAID Stripe payment to refund. Refund is
-// real money: the dialog shows the exact PAID-Stripe total and requires the
-// admin to type it back before the button enables (see client/src/lib/adminRefund.ts).
-function ConflictBookingActions({ booking, payments }: { booking: Booking; payments: Payment[] }) {
-  const { toast } = useToast();
-  const [refundDialogOpen, setRefundDialogOpen] = useState(false);
-  const [typedAmount, setTypedAmount] = useState("");
-
-  const eligibility = refundEligibility(booking, payments);
-
-  const confirm = useMutation({
-    mutationFn: async () => apiRequest("POST", `/api/admin/bookings/${booking.id}/confirm`),
-    onSuccess: () => {
-      toast({ title: "Booking confirmed" });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
-    },
-    onError: (e: Error) => toast({ title: "Could not confirm", description: e.message, variant: "destructive" }),
-  });
-
-  const cancel = useMutation({
-    mutationFn: async (refund: boolean) => {
-      const res = await apiRequest("POST", `/api/admin/bookings/${booking.id}/cancel`, { refund });
-      return res.json() as Promise<{ ok: boolean; reference: string; alreadyCancelled: boolean; refunded: boolean; refundIds: string[] }>;
-    },
-    onSuccess: (result) => {
-      toast({
-        title: result.refunded ? "Cancelled and refunded" : "Booking cancelled",
-        description: result.refunded
-          ? `Refund${result.refundIds.length > 1 ? "s" : ""} issued: ${result.refundIds.join(", ")}`
-          : undefined,
-      });
-      setRefundDialogOpen(false);
-      setTypedAmount("");
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/payments"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/admin/reconciliation"] });
-    },
-    onError: (e: Error) => toast({ title: "Could not cancel", description: e.message, variant: "destructive" }),
-  });
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Button size="sm" disabled={confirm.isPending} onClick={() => confirm.mutate()} data-testid={`button-confirm-${booking.id}`}>
-        Confirm
-      </Button>
-      <Button
-        size="sm"
-        variant="destructive"
-        disabled={cancel.isPending}
-        onClick={() => {
-          if (window.confirm(`Cancel booking ${booking.reference}? This cannot be undone.`)) {
-            cancel.mutate(false);
-          }
-        }}
-        data-testid={`button-cancel-${booking.id}`}
-      >
-        Cancel
-      </Button>
-      {eligibility.eligible && (
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => setRefundDialogOpen(true)}
-          data-testid={`button-cancel-refund-${booking.id}`}
-        >
-          Cancel + refund
-        </Button>
-      )}
-
-      <Dialog open={refundDialogOpen} onOpenChange={setRefundDialogOpen}>
-        <DialogContent data-testid={`dialog-refund-${booking.id}`}>
-          <DialogHeader>
-            <DialogTitle>Refund {money(eligibility.amount)} to the guest?</DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-muted-foreground">
-            This cancels booking {booking.reference} and refunds the paid Stripe total. This cannot be undone. Type the
-            exact amount below to confirm.
-          </p>
-          <Input
-            value={typedAmount}
-            onChange={(e) => setTypedAmount(e.target.value)}
-            placeholder={eligibility.amount.toFixed(2)}
-            data-testid={`input-refund-amount-${booking.id}`}
-          />
-          <DialogFooter>
-            <Button
-              variant="destructive"
-              disabled={!amountMatches(typedAmount, eligibility.amount) || cancel.isPending}
-              onClick={() => cancel.mutate(true)}
-              data-testid={`button-confirm-refund-${booking.id}`}
-            >
-              Refund &amp; cancel
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-

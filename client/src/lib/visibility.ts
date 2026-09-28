@@ -6,7 +6,8 @@
 //     are dropped rather than greyed — a guest only sees what they can book.
 //   • With no dates, every listing stays (a full house still shows "Next
 //     opening"), and OCCUPIED rooms stay (bookable for a future free range).
-//   • LTR listings are inquiry-only and have no availability, so they always show.
+//   • Inquiry-only listings (LTR, and placeholders) have no bookable
+//     availability, so they always show.
 
 import { ROOM_UNBOOKABLE_STATUSES } from "@shared/schema";
 
@@ -21,10 +22,11 @@ export function visibleRooms<T extends { status: string; availableForDates?: boo
   });
 }
 
-export function visibleProperties<T extends { type: string; availableForDates?: boolean }>(
-  properties: T[],
-  datedSearch: boolean,
-): T[] {
+export function visibleProperties<
+  T extends { type: string; availableForDates?: boolean; inquiryOnly?: boolean },
+>(properties: T[], datedSearch: boolean): T[] {
   if (!datedSearch) return properties;
-  return properties.filter((p) => p.type === "LTR" || p.availableForDates !== false);
+  // inquiryOnly covers both LTR and placeholder listings: neither has bookable
+  // availability, so a dated search must not filter them out.
+  return properties.filter((p) => p.inquiryOnly || p.availableForDates !== false);
 }

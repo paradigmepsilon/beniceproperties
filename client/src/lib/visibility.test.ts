@@ -25,16 +25,23 @@ describe("visibleRooms", () => {
 });
 
 describe("visibleProperties", () => {
+  // inquiryOnly is set by the server projection (shared/publicProjection.ts):
+  // true for LTR listings and for placeholders, both of which have no bookable
+  // availability and so must survive a dated search. p5 is a placeholder
+  // co-living house — same exemption, different reason.
   const props = [
-    { id: "p1", type: "COLIVING", availableForDates: true },
-    { id: "p2", type: "COLIVING", availableForDates: false },
-    { id: "p3", type: "STR", availableForDates: false },
-    { id: "p4", type: "LTR", availableForDates: false },
+    { id: "p1", type: "COLIVING", availableForDates: true, inquiryOnly: false },
+    { id: "p2", type: "COLIVING", availableForDates: false, inquiryOnly: false },
+    { id: "p3", type: "STR", availableForDates: false, inquiryOnly: false },
+    { id: "p4", type: "LTR", availableForDates: false, inquiryOnly: true },
+    { id: "p5", type: "COLIVING", availableForDates: false, inquiryOnly: true },
   ];
   it("keeps every listing when no dates are searched (next-opening cards stay visible)", () => {
-    expect(visibleProperties(props, false).map((p) => p.id)).toEqual(["p1", "p2", "p3", "p4"]);
+    expect(visibleProperties(props, false).map((p) => p.id)).toEqual([
+      "p1", "p2", "p3", "p4", "p5",
+    ]);
   });
-  it("drops listings unavailable for a dated search, LTR (inquiry-only) excepted", () => {
-    expect(visibleProperties(props, true).map((p) => p.id)).toEqual(["p1", "p4"]);
+  it("drops listings unavailable for a dated search, inquiry-only ones excepted", () => {
+    expect(visibleProperties(props, true).map((p) => p.id)).toEqual(["p1", "p4", "p5"]);
   });
 });

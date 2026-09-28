@@ -408,7 +408,33 @@ export const properties = pgTable("properties", {
   // fetches it into external_bookings). Managed from Unified-Ops. Tokenized;
   // treat as secret-ish (DB only, never logged/committed). Nullable. Additive.
   airbnbIcalUrl: text("airbnb_ical_url"),
+  // Secret path token for THIS listing's outbound calendar feed
+  // (GET /api/calendar/export/<token>.ics) — the URL an operator pastes into
+  // Airbnb's "Import calendar" so direct bookings block Airbnb too. The token IS
+  // the auth (Airbnb polls with no credentials). Set by a DB default; never
+  // client-writable (omitted from the insert schema); rotate via the admin
+  // regenerate action. Secret-ish: withheld from every public projection.
+  exportToken: text("export_token").default(sql`gen_random_uuid()::text`),
+  // Last time THIS listing's outbound export feed (GET /api/calendar/export/
+  // <exportToken>.ics) was actually fetched by something — in practice,
+  // Airbnb's calendar-import poller. Airbnb gives no webhook/confirmation of
+  // import, so this is the only signal that Airbnb is actively pulling BNP's
+  // calendar. Stamped by icalExport.ts's getExportFeed() only on a
+  // successful, publishable render — never on a 404/unknown token — so a
+  // stale or wrong token can't fake a connected status. Nullable: never
+  // fetched yet. Interpreted by server/lib/calendarSyncStatus.ts.
+  exportLastFetchedAt: timestamp("export_last_fetched_at"),
   active: boolean("active").notNull().default(true),
+  // Added 2026-09-27: a PLACEHOLDER listing is real to look at and fake to the
+  // business. It renders on the public site so we can measure demand for
+  // inventory we don't operate yet, but it can never be booked, never takes a
+  // payment, and is excluded from every aggregate, report, and rollup. The two
+  // flags are orthogonal and must never be conflated:
+  //   active        -> does the world SEE it?
+  //   isPlaceholder -> does the business COUNT it?
+  // Property-level only; rooms inherit from their parent property. The single
+  // predicate lives in shared/placeholder.ts - import it, don't open-code it.
+  isPlaceholder: boolean("is_placeholder").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -426,7 +452,11 @@ export const insertPropertySchema = createInsertSchema(properties, {
   photos: z.array(z.string()).optional(),
   amenities: z.array(z.string()).optional(),
   listingContent: listingContentSchema.nullish(),
-}).omit({ id: true, createdAt: true, updatedAt: true });
+}).omit({ id: true, createdAt: true, updatedAt: true, exportToken: true, exportLastFetchedAt: true });
+
+// Type-only (erased at build): the public projections of these rows. See
+// shared/publicProjection.ts, which imports Property/Room back from here.
+import type { PublicProperty, PublicRoom } from "./publicProjection";
 
 export type Property = typeof properties.$inferSelect;
 export type InsertProperty = z.infer<typeof insertPropertySchema>;
@@ -435,7 +465,12 @@ export type InsertProperty = z.infer<typeof insertPropertySchema>;
 // co-living, fromWeeklyRent is the lowest weeklyRent among AVAILABLE rooms so
 // the card can show "from $X / week"; null when no room is bookable. STR
 // properties leave it null (they price from their own nightly tiers).
-export type PropertyListItem = Property & {
+//
+// Built on PublicProperty, NOT Property: the public endpoints ship a whitelist
+// of the row (shared/publicProjection.ts), so the internal columns —
+// airbnbIcalUrl, airbnbListingRoomId, priorNames, isPlaceholder — are absent
+// here by construction and the client cannot read them by accident.
+export type PropertyListItem = PublicProperty & {
   fromWeeklyRent: string | null;
   /** First bookable ISO date for a currently-unavailable property (COLIVING:
    *  soonest occupying-lease end + 1; STR: end of the booking chain covering
@@ -499,6 +534,12 @@ export const rooms = pgTable(
     // Unified-Ops. Tokenized; secret-ish. Nullable. Additive. See
     // properties.airbnbIcalUrl.
     airbnbIcalUrl: text("airbnb_ical_url"),
+    // Secret path token for this room's outbound calendar feed. See
+    // properties.exportToken.
+    exportToken: text("export_token").default(sql`gen_random_uuid()::text`),
+    // Last time this room's outbound export feed was fetched. See
+    // properties.exportLastFetchedAt.
+    exportLastFetchedAt: timestamp("export_last_fetched_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -513,7 +554,7 @@ export const insertRoomSchema = createInsertSchema(rooms, {
   status: z.enum(ROOM_STATUSES),
   photos: z.array(z.string()).optional(),
   listingContent: listingContentSchema.nullish(),
-}).omit({ id: true, createdAt: true, updatedAt: true });
+}).omit({ id: true, createdAt: true, updatedAt: true, exportToken: true, exportLastFetchedAt: true });
 
 export type Room = typeof rooms.$inferSelect;
 export type InsertRoom = z.infer<typeof insertRoomSchema>;
@@ -524,7 +565,7 @@ export type InsertRoom = z.infer<typeof insertRoomSchema>;
  *  lease/Airbnb block for the range. With no dates on the request it is always
  *  true and the UI falls back to `status`. (Distinct from PropertyListItem's
  *  property-level field of the same name.) */
-export type RoomWithAvailability = Room & { availableForDates: boolean };
+export type RoomWithAvailability = PublicRoom & { availableForDates: boolean };
 
 // =============================================================================
 // guests — minimal PII. NEVER pushed to Unified Ops.
@@ -798,6 +839,44 @@ export const insertLtrInquirySchema = createInsertSchema(ltrInquiries, {
 
 export type LtrInquiry = typeof ltrInquiries.$inferSelect;
 export type InsertLtrInquiry = z.infer<typeof insertLtrInquirySchema>;
+
+// =============================================================================
+// listing_interest — the conversion path for a PLACEHOLDER listing. A
+// placeholder is real to look at and fake to the business (shared/placeholder.ts):
+// it renders so we can measure demand for inventory we don't operate yet, and
+// the booking guards in server/lib/booking.ts and server/lib/lease.ts make sure
+// it can never take a payment. This table is what it produces instead of a
+// booking — the signal the whole exercise exists to collect.
+//
+// Deliberately NOT ltr_inquiries: that table is the LTR lead list and mixing
+// speculative demand into it would corrupt a real pipeline. Same conventions
+// though — standalone (no FKs, so a new listing never needs a constraint
+// migration), APPEND-ONLY (a person may ask twice; no unique constraint, no
+// upsert, no updated_at). Created by scripts/push-listing-interest.mjs.
+// =============================================================================
+
+export const listingInterest = pgTable("listing_interest", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  // Plain text references, matching the ltr_inquiries low-coupling convention.
+  // Both nullable: a whole-house enquiry carries no roomId.
+  propertyId: text("property_id"),
+  roomId: text("room_id"),
+  name: text("name").notNull(),
+  email: text("email").notNull(),
+  phone: text("phone"),
+  // Desired move-in, free text ("Sept 1" / "flexible") — not parsed or validated.
+  moveIn: text("move_in"),
+  message: text("message"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const insertListingInterestSchema = createInsertSchema(listingInterest, {
+  email: z.string().email(),
+  name: z.string().min(1),
+}).omit({ id: true, createdAt: true });
+
+export type ListingInterest = typeof listingInterest.$inferSelect;
+export type InsertListingInterest = z.infer<typeof insertListingInterestSchema>;
 
 // =============================================================================
 // partner_inquiries — B2B lead capture for the /partner page. Someone who wants

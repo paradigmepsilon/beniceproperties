@@ -84,6 +84,7 @@ __export(schema_exports, {
   insertLeaseRoomSchema: () => insertLeaseRoomSchema,
   insertLeaseSchema: () => insertLeaseSchema,
   insertLifecycleEventSchema: () => insertLifecycleEventSchema,
+  insertListingInterestSchema: () => insertListingInterestSchema,
   insertLtrInquirySchema: () => insertLtrInquirySchema,
   insertManualBlockSchema: () => insertManualBlockSchema,
   insertMessageLogSchema: () => insertMessageLogSchema,
@@ -106,6 +107,7 @@ __export(schema_exports, {
   leases: () => leases,
   lifecycleEvents: () => lifecycleEvents,
   listingContentSchema: () => listingContentSchema,
+  listingInterest: () => listingInterest,
   ltrInquiries: () => ltrInquiries,
   manualBlocks: () => manualBlocks,
   messageLog: () => messageLog,
@@ -161,7 +163,7 @@ function requiresLease(termDays) {
 function isDirectCoLivingStay(termDays) {
   return termDays >= COLIVING_MIN_DAYS && termDays <= LEASE_REQUIRED_ABOVE_DAYS;
 }
-var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, DEFAULT_LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, bookingGate, REFUND_KINDS, paymentRefunds, SENSITIVE_ACCESS_FIELDS, propertyAccessInfoSchema, roomAccessInfoSchema, propertyAccessInfo, roomAccessInfo, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, LATE_FEE_PER_DAY_SETTING, CARD_SURCHARGE_RATE_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
+var PROPERTY_TYPES, ROOM_STATUSES, ROOM_UNBOOKABLE_STATUSES, BOOKING_MODELS, BOOKING_STATUSES, NON_BLOCKING_BOOKING_STATUSES, PAYMENT_METHODS, PAYMENT_TYPES, PAYMENT_STATUSES, PROPERTY_ENTITIES, PAYMENT_CADENCES, LEASE_STATUSES, VERIFICATION_STATUSES, US_STATE_CODES, SCHEDULE_STATUSES, SCHEDULE_PAYMENT_METHODS, LATE_FEE_STATUSES, DEPOSIT_STATUSES, CADENCE_WEEKS, CADENCE_DAYS, MAX_LEASE_DAYS, DEPOSIT_HELD_LEASE_STATUSES, CHECKOUT_HOLD_LEASE_STATUSES, CHECKOUT_HOLD_MINUTES, COLIVING_MIN_DAYS, LEASE_REQUIRED_ABOVE_DAYS, DEFAULT_LATE_FEE_PER_DAY, NOTIFICATION_KINDS, ESCALATION_KINDS, ESCALATION_STATUSES, ESCALATION_SEVERITIES, DEFAULT_DEFAULTED_THRESHOLD_DAYS, OVERDUE_MESSAGE_DAYS, properties, listingContentSchema, insertPropertySchema, rooms, insertRoomSchema, guests, insertGuestSchema, bookings, insertBookingSchema, payments, insertPaymentSchema, subscriptions, insertSubscriptionSchema, kpiSnapshots, insertKpiSnapshotSchema, adminUsers, insertAdminUserSchema, newsletterSubscribers, insertNewsletterSubscriberSchema, ltrInquiries, insertLtrInquirySchema, listingInterest, insertListingInterestSchema, partnerInquiries, insertPartnerInquirySchema, leases, insertLeaseSchema, leaseRooms, insertLeaseRoomSchema, vehicles, insertVehicleSchema, bookingGate, REFUND_KINDS, paymentRefunds, SENSITIVE_ACCESS_FIELDS, propertyAccessInfoSchema, roomAccessInfoSchema, propertyAccessInfo, roomAccessInfo, paymentSchedule, insertPaymentScheduleSchema, lateFees, insertLateFeeSchema, notificationLog, insertNotificationLogSchema, appSettings, insertAppSettingSchema, GUEST_AUTO_NOTIFICATIONS_SETTING, LATE_FEE_PER_DAY_SETTING, CARD_SURCHARGE_RATE_SETTING, uoEscalations, insertUoEscalationSchema, MESSAGE_AUTHOR_ROLES, MESSAGE_STATUSES, MESSAGE_CATEGORIES, guestMessages, insertGuestMessageSchema, LIFECYCLE_EVENT_TYPES, LIFECYCLE_SEND_STATUSES, LEASE_ENDING_NOTICE_DAYS, lifecycleEvents, insertLifecycleEventSchema, heroImages, insertHeroImageSchema, journalPosts, externalBookings, insertExternalBookingSchema, MANUAL_BLOCK_KINDS, MANUAL_BLOCK_SOURCES, manualBlocks, insertManualBlockSchema, MESSAGE_DIRECTIONS, MESSAGE_AUDIENCES, MESSAGE_CHANNELS, MESSAGE_LOG_STATUSES, messageLog, insertMessageLogSchema, bookingIntents, insertBookingIntentSchema;
 var init_schema = __esm({
   "shared/schema.ts"() {
     "use strict";
@@ -419,6 +421,16 @@ var init_schema = __esm({
       // treat as secret-ish (DB only, never logged/committed). Nullable. Additive.
       airbnbIcalUrl: text("airbnb_ical_url"),
       active: boolean("active").notNull().default(true),
+      // Added 2026-09-27: a PLACEHOLDER listing is real to look at and fake to the
+      // business. It renders on the public site so we can measure demand for
+      // inventory we don't operate yet, but it can never be booked, never takes a
+      // payment, and is excluded from every aggregate, report, and rollup. The two
+      // flags are orthogonal and must never be conflated:
+      //   active        -> does the world SEE it?
+      //   isPlaceholder -> does the business COUNT it?
+      // Property-level only; rooms inherit from their parent property. The single
+      // predicate lives in shared/placeholder.ts - import it, don't open-code it.
+      isPlaceholder: boolean("is_placeholder").notNull().default(false),
       createdAt: timestamp("created_at").defaultNow().notNull(),
       updatedAt: timestamp("updated_at").defaultNow().notNull()
     });
@@ -666,6 +678,24 @@ var init_schema = __esm({
       createdAt: timestamp("created_at").defaultNow().notNull()
     });
     insertLtrInquirySchema = createInsertSchema(ltrInquiries, {
+      email: z.string().email(),
+      name: z.string().min(1)
+    }).omit({ id: true, createdAt: true });
+    listingInterest = pgTable("listing_interest", {
+      id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+      // Plain text references, matching the ltr_inquiries low-coupling convention.
+      // Both nullable: a whole-house enquiry carries no roomId.
+      propertyId: text("property_id"),
+      roomId: text("room_id"),
+      name: text("name").notNull(),
+      email: text("email").notNull(),
+      phone: text("phone"),
+      // Desired move-in, free text ("Sept 1" / "flexible") — not parsed or validated.
+      moveIn: text("move_in"),
+      message: text("message"),
+      createdAt: timestamp("created_at").defaultNow().notNull()
+    });
+    insertListingInterestSchema = createInsertSchema(listingInterest, {
       email: z.string().email(),
       name: z.string().min(1)
     }).omit({ id: true, createdAt: true });
@@ -1530,11 +1560,12 @@ var init_leaseSchedule = __esm({
 // server/storage.ts
 var storage_exports = {};
 __export(storage_exports, {
+  BOOKINGS_PAGE_SORTS: () => BOOKINGS_PAGE_SORTS,
   StorageError: () => StorageError,
   parseSettingNumber: () => parseSettingNumber,
   storage: () => storage
 });
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
 function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
   const windowStart = new Date(now.getTime() - CHECKOUT_HOLD_MINUTES * 6e4);
   return or(
@@ -1550,12 +1581,15 @@ function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
     )
   );
 }
+function realPropertyCondition() {
+  return eq(properties.isPlaceholder, false);
+}
 function parseSettingNumber(value, fallback) {
   if (value == null || value.trim() === "") return fallback;
   const n = parseFloat(value);
   return Number.isFinite(n) ? n : fallback;
 }
-var NON_TERMINAL_LEASE_STATUSES, StorageError, Storage, storage;
+var NON_TERMINAL_LEASE_STATUSES, BOOKINGS_PAGE_SORTS, StorageError, Storage, storage;
 var init_storage = __esm({
   "server/storage.ts"() {
     "use strict";
@@ -1573,6 +1607,7 @@ var init_storage = __esm({
       "PENDING_VERIFICATION",
       "ACTIVE"
     ];
+    BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"];
     StorageError = class extends Error {
       status;
       constructor(message, status = 400) {
@@ -1671,6 +1706,17 @@ var init_storage = __esm({
         const [row] = await db.insert(ltrInquiries).values(data).returning();
         return row;
       }
+      // The conversion path for a placeholder listing, which can never be booked.
+      // Append-only like the other lead tables; kept separate from ltr_inquiries on
+      // purpose so speculative demand never lands in a real pipeline.
+      async createListingInterest(data) {
+        const [row] = await db.insert(listingInterest).values(data).returning();
+        return row;
+      }
+      // Newest first — the list is read as "who asked recently", not browsed.
+      async getListingInterest(opts) {
+        return db.select().from(listingInterest).orderBy(desc(listingInterest.createdAt)).limit(Math.min(Math.max(opts?.limit ?? 200, 1), 500));
+      }
       // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
       // person may inquire more than once, so this is a plain insert (no dedupe).
       async createPartnerInquiry(data) {
@@ -1734,6 +1780,37 @@ var init_storage = __esm({
           room: r.rooms
         }));
       }
+      async getBookingsPage(opts) {
+        const pageSize = Math.min(Math.max(Math.trunc(opts.pageSize) || 10, 1), 100);
+        const page = Math.max(Math.trunc(opts.page) || 0, 0);
+        const filters = [];
+        if (opts.status) filters.push(eq(bookings.status, opts.status));
+        if (opts.propertyId) filters.push(eq(bookings.propertyId, opts.propertyId));
+        if (opts.q?.trim()) {
+          const term = `%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+          filters.push(
+            or(ilike(bookings.reference, term), ilike(guests.name, term), ilike(guests.email, term))
+          );
+        }
+        const where = filters.length ? and(...filters) : void 0;
+        const sortColumn = opts.sort === "checkIn" ? bookings.checkIn : opts.sort === "total" ? bookings.quotedTotal : bookings.createdAt;
+        const direction = opts.dir === "asc" ? asc : desc;
+        const [rows, totalRows] = await Promise.all([
+          db.select().from(bookings).leftJoin(guests, eq(bookings.guestId, guests.id)).leftJoin(properties, eq(bookings.propertyId, properties.id)).leftJoin(rooms, eq(bookings.roomId, rooms.id)).where(where).orderBy(direction(sortColumn), direction(bookings.id)).limit(pageSize).offset(page * pageSize),
+          db.select({ n: count() }).from(bookings).leftJoin(guests, eq(bookings.guestId, guests.id)).where(where)
+        ]);
+        return {
+          rows: rows.map((r) => ({
+            ...r.bookings,
+            guest: r.guests,
+            property: r.properties,
+            room: r.rooms
+          })),
+          total: totalRows[0]?.n ?? 0,
+          page,
+          pageSize
+        };
+      }
       // --- Payments ---
       async getPayment(id) {
         const [row] = await db.select().from(payments).where(eq(payments.id, id));
@@ -1746,8 +1823,29 @@ var init_storage = __esm({
         const [row] = await db.select().from(payments).where(eq(payments.stripeRef, stripeRef));
         return row;
       }
+      /**
+       * The manual-payment reconcile queue: CashApp/Zelle rows awaiting admin
+       * confirmation, on bookings that are still live.
+       *
+       * Both filters are load-bearing and neither used to be here — the method
+       * filter lived in the /api/admin/reconciliation route while the Overview
+       * badge counted this method's raw output, so the badge said 10 (9 abandoned
+       * Stripe checkouts) against a 1-row list. The booking-status filter is new:
+       * money can never arrive for a CANCELLED booking, so a PENDING row against
+       * one is dead and must not sit in a queue asking an admin to action it.
+       *
+       * The scheduler's "N payment(s) awaiting reconciliation" log and the cron
+       * sweep's pending count read this too, and were wrong for the same reason.
+       */
       async getPendingManualPayments() {
-        return db.select().from(payments).where(eq(payments.status, "PENDING")).orderBy(desc(payments.createdAt));
+        const rows = await db.select({ payment: payments }).from(payments).innerJoin(bookings, eq(payments.bookingId, bookings.id)).where(
+          and(
+            eq(payments.status, "PENDING"),
+            ne(payments.method, "STRIPE"),
+            ne(bookings.status, "CANCELLED")
+          )
+        ).orderBy(desc(payments.createdAt));
+        return rows.map((r) => r.payment);
       }
       async createPayment(data) {
         const [row] = await db.insert(payments).values(data).returning();
@@ -1778,7 +1876,26 @@ var init_storage = __esm({
       async getUnpushedSnapshots() {
         return db.select().from(kpiSnapshots).where(eq(kpiSnapshots.pushedToUo, false));
       }
+      // ONE row per snapshot_date. This used to insert unconditionally, and the
+      // rollup runs on every scheduler sweep — hourly from the local scheduler,
+      // daily from the Vercel cron — so any day with a dev server up collected a
+      // row per tick: 652 rows by 2026-09-28, 23 of them for a single date. Every
+      // row was self-consistent, so no reported number was ever wrong, but the
+      // table was useless to read as history and the duplicates made a unique
+      // index impossible.
+      //
+      // Upserted in application code rather than with ON CONFLICT, deliberately:
+      // that keeps this safe to deploy BEFORE the unique index exists.
+      // scripts/dedupe-kpi-snapshots.mjs collapses the existing duplicates and
+      // adds the index, and once it has, the index also closes the race this
+      // version leaves open (two rollups for the same date both finding no row).
+      // The cron is single-instance, so that race is theoretical today.
       async createSnapshot(data) {
+        const [existing] = await db.select({ id: kpiSnapshots.id }).from(kpiSnapshots).where(eq(kpiSnapshots.snapshotDate, data.snapshotDate)).orderBy(desc(kpiSnapshots.createdAt)).limit(1);
+        if (existing) {
+          const [row2] = await db.update(kpiSnapshots).set(data).where(eq(kpiSnapshots.id, existing.id)).returning();
+          return row2;
+        }
         const [row] = await db.insert(kpiSnapshots).values(data).returning();
         return row;
       }
@@ -2349,13 +2466,25 @@ var init_storage = __esm({
       // Airbnb iCal listings (URL on properties/rooms) + synced date blocks
       // ---------------------------------------------------------------------------
       async getListingsWithIcalUrl() {
-        const propRows = await db.select({ id: properties.id, name: properties.name, url: properties.airbnbIcalUrl }).from(properties).where(and(eq(properties.active, true), sql3`${properties.airbnbIcalUrl} IS NOT NULL`));
+        const propRows = await db.select({ id: properties.id, name: properties.name, url: properties.airbnbIcalUrl }).from(properties).where(
+          and(
+            eq(properties.active, true),
+            realPropertyCondition(),
+            sql3`${properties.airbnbIcalUrl} IS NOT NULL`
+          )
+        );
         const roomRows = await db.select({
           id: rooms.id,
           propertyId: rooms.propertyId,
           name: rooms.name,
           url: rooms.airbnbIcalUrl
-        }).from(rooms).where(sql3`${rooms.airbnbIcalUrl} IS NOT NULL`);
+        }).from(rooms).innerJoin(properties, eq(rooms.propertyId, properties.id)).where(
+          and(
+            eq(properties.active, true),
+            realPropertyCondition(),
+            sql3`${rooms.airbnbIcalUrl} IS NOT NULL`
+          )
+        );
         const listings = [];
         for (const p of propRows) {
           if (!p.url) continue;
@@ -2422,10 +2551,18 @@ var init_storage = __esm({
         );
       }
       // --- Aggregates ---
+      // Every source is inner-joined to `properties` and gated on
+      // realPropertyCondition(), because placeholder listings are front-end only
+      // and must never reach occupancy, revenue, kpi_snapshots, or the Unified Ops
+      // push. The rooms query in particular had no join at all, so every
+      // placeholder room sat permanently in the occupancy DENOMINATOR and quietly
+      // deflated the reported number.
       async getKpiAggregates() {
-        const allBookings = await db.select().from(bookings);
-        const allRooms = await db.select().from(rooms);
-        const paidPayments = await db.select().from(payments).where(eq(payments.status, "PAID"));
+        const [allBookings, allRooms, paidPayments] = await Promise.all([
+          db.select({ status: bookings.status, checkIn: bookings.checkIn }).from(bookings).innerJoin(properties, eq(bookings.propertyId, properties.id)).where(realPropertyCondition()),
+          db.select({ status: rooms.status }).from(rooms).innerJoin(properties, eq(rooms.propertyId, properties.id)).where(realPropertyCondition()),
+          db.select({ amount: payments.amount, surcharge: payments.surcharge }).from(payments).innerJoin(bookings, eq(payments.bookingId, bookings.id)).innerJoin(properties, eq(bookings.propertyId, properties.id)).where(and(eq(payments.status, "PAID"), realPropertyCondition()))
+        ]);
         const liveStatuses = /* @__PURE__ */ new Set(["CONFIRMED", "ACTIVE"]);
         const bookingCount = allBookings.filter((b) => b.status !== "CANCELLED").length;
         const roomsOccupied = allRooms.filter((r) => r.status === "OCCUPIED").length;
@@ -2854,7 +2991,6 @@ async function isDirectDuplicate(event, listing) {
   if (listing.roomId) return isColivingDirectDuplicate(event, listing.roomId);
   return isStrDirectDuplicate(event, listing.propertyId);
 }
-var HONOR_HOST_BLOCKS_SETTING = "ical_honor_host_blocks";
 var LAST_SYNC_AT_SETTING = "ical_last_sync_at";
 var LAST_SYNC_RESULT_SETTING = "ical_last_sync_result";
 async function syncListing(listing, dryRun = false, honorHostBlocks = false) {
@@ -2921,17 +3057,10 @@ async function syncListing(listing, dryRun = false, honorHostBlocks = false) {
   return base;
 }
 async function syncAllListings(dryRun = false) {
-  let honorHostBlocks = true;
-  try {
-    const setting = await storage.getSetting(HONOR_HOST_BLOCKS_SETTING);
-    honorHostBlocks = setting?.value !== "false";
-  } catch {
-    honorHostBlocks = true;
-  }
   const listings = await storage.getListingsWithIcalUrl();
   const results = [];
   for (const l of listings) {
-    results.push(await syncListing(l, dryRun, honorHostBlocks));
+    results.push(await syncListing(l, dryRun));
   }
   const ok = results.filter((r) => r.ok).length;
   const failed = results.length - ok;
@@ -3171,13 +3300,27 @@ If you believe this is a mistake \u2014 or you already paid \u2014 reply to this
 
 // server/lib/occupancy.ts
 init_schema();
+
+// shared/placeholder.ts
+function isPlaceholder(property) {
+  return Boolean(property?.isPlaceholder);
+}
+function countsTowardBusiness(property) {
+  return !isPlaceholder(property);
+}
+function excludePlaceholders(properties2) {
+  return properties2.filter(countsTowardBusiness);
+}
+
+// server/lib/occupancy.ts
 init_dates();
 init_storage();
 async function syncRoomOccupancyStatus(today = todayIso()) {
-  const [properties2, occupiedRoomIds] = await Promise.all([
+  const [allProperties, occupiedRoomIds] = await Promise.all([
     storage.getProperties(),
     storage.getOccupiedRoomIdsOn(today)
   ]);
+  const properties2 = excludePlaceholders(allProperties);
   const roomLists = await Promise.all(properties2.map((p) => storage.getRoomsByProperty(p.id)));
   const rooms2 = roomLists.flat();
   let occupied = 0;
