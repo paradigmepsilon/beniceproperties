@@ -14,13 +14,14 @@ import multer from "multer";
 import { z } from "zod";
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { setupAuth, requireAdmin } from "./auth";
-import { storage } from "./storage";
+import { storage, BOOKINGS_PAGE_SORTS, type BookingsPageSort } from "./storage";
 import {
   quoteRequestSchema,
   bookingIntentSchema,
   leaseQuoteRequestSchema,
 } from "@shared/api-types";
 import {
+  BOOKING_STATUSES,
   insertPropertySchema,
   insertRoomSchema,
   insertNewsletterSubscriberSchema,
@@ -2070,19 +2071,73 @@ export async function registerRoutes(app: Express): Promise<void> {
   // =========================================================================
   app.get("/api/admin/dashboard", requireAdmin, async (_req, res, next) => {
     try {
+      // recentBookings used to ride along here as the newest 20 raw rows, which
+      // meant fetching the whole bookings table to slice it. The reservations
+      // panel now owns that list and pages it server-side.
       const agg = await storage.getKpiAggregates();
-      const bookings = await storage.getBookings();
       const pending = await storage.getPendingManualPayments();
-      res.json({ aggregates: agg, recentBookings: bookings.slice(0, 20), pendingCount: pending.length });
+      res.json({ aggregates: agg, pendingCount: pending.length });
     } catch (err) {
       next(err);
     }
   });
 
+  // Paginated, filterable reservations list for the admin Overview tab.
+  // Returns an envelope rather than a bare array so the pager knows the total
+  // under the current filters. Nothing consumed the previous Booking[] shape.
   app.get("/api/admin/bookings", requireAdmin, async (req, res, next) => {
     try {
-      const status = typeof req.query.status === "string" ? req.query.status : undefined;
-      res.json(await storage.getBookings(status ? { status } : undefined));
+      const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : undefined);
+      const status = str(req.query.status);
+      if (status && !(BOOKING_STATUSES as readonly string[]).includes(status)) {
+        return res.status(400).json({ message: "Unknown status" });
+      }
+      const sort = str(req.query.sort);
+      if (sort && !(BOOKINGS_PAGE_SORTS as readonly string[]).includes(sort)) {
+        return res.status(400).json({ message: "Unknown sort" });
+      }
+      const dir = req.query.dir === "asc" ? "asc" : "desc";
+      res.json(
+        await storage.getBookingsPage({
+          page: Number(req.query.page) || 0,
+          pageSize: Number(req.query.pageSize) || 10,
+          status,
+          propertyId: str(req.query.propertyId),
+          q: str(req.query.q),
+          sort: sort as BookingsPageSort | undefined,
+          dir,
+        }),
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // One reservation, fully composed, for the detail modal. Admin-auth'd and
+  // unredacted — unlike the public /api/lookup, which is keyed by reference +
+  // email and deliberately withholds stripe refs and the guest record.
+  // Registered after the list route; the bare path and :id can't collide.
+  app.get("/api/admin/bookings/:id", requireAdmin, async (req, res, next) => {
+    try {
+      const booking = await storage.getBooking(req.params.id);
+      if (!booking) return res.status(404).json({ message: "Booking not found" });
+      const [guest, property, room, payments, subscription, gate] = await Promise.all([
+        storage.getGuest(booking.guestId),
+        storage.getProperty(booking.propertyId),
+        booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(undefined),
+        storage.getPaymentsByBooking(booking.id),
+        storage.getSubscriptionByBooking(booking.id),
+        storage.getBookingGate(booking.id),
+      ]);
+      res.json({
+        booking,
+        guest: guest ?? null,
+        property: property ? { id: property.id, name: property.name, location: property.location, entity: property.entity } : null,
+        room: room ? { id: room.id, name: room.name, roomNumber: room.roomNumber } : null,
+        payments,
+        subscription: subscription ?? null,
+        gate: gate ?? null,
+      });
     } catch (err) {
       next(err);
     }
@@ -2492,19 +2547,19 @@ export async function registerRoutes(app: Express): Promise<void> {
   // Reconciliation queue: pending manual payments with booking + guest context.
   app.get("/api/admin/reconciliation", requireAdmin, async (_req, res, next) => {
     try {
+      // No method filter here any more — storage.getPendingManualPayments()
+      // owns that rule, so the badge and this list can't disagree again.
       const pending = await storage.getPendingManualPayments();
       const enriched = await Promise.all(
-        pending
-          .filter((p) => p.method !== "STRIPE")
-          .map(async (p) => {
-            const booking = await storage.getBooking(p.bookingId);
-            const guest = booking ? await storage.getGuest(booking.guestId) : null;
-            return {
-              payment: p,
-              booking,
-              guest: guest ? { name: guest.name, email: guest.email } : null,
-            };
-          }),
+        pending.map(async (p) => {
+          const booking = await storage.getBooking(p.bookingId);
+          const guest = booking ? await storage.getGuest(booking.guestId) : null;
+          return {
+            payment: p,
+            booking,
+            guest: guest ? { name: guest.name, email: guest.email } : null,
+          };
+        }),
       );
       res.json(enriched);
     } catch (err) {

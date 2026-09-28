@@ -9,7 +9,7 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, lte, max, ne, notInArray, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { overlapsRange } from "./lib/ranges";
 import { planMessageLogQuery } from "./lib/messageLogQuery";
@@ -181,6 +181,34 @@ function realPropertyCondition() {
   return eq(properties.isPlaceholder, false);
 }
 
+export const BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"] as const;
+export type BookingsPageSort = (typeof BOOKINGS_PAGE_SORTS)[number];
+
+export interface BookingsPageOpts {
+  page: number;
+  pageSize: number;
+  /** One BOOKING_STATUSES value; omitted means every status. */
+  status?: string;
+  propertyId?: string;
+  /** Matches reference, guest name, or guest email. */
+  q?: string;
+  sort?: BookingsPageSort;
+  dir?: "asc" | "desc";
+}
+
+export type BookingsPageRow = Booking & {
+  guest: Guest | null;
+  property: Property | null;
+  room: Room | null;
+};
+
+export interface BookingsPage {
+  rows: BookingsPageRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export class StorageError extends Error {
   status: number;
   constructor(message: string, status = 400) {
@@ -257,6 +285,17 @@ export interface IStorage {
     statuses?: string[];
     from?: string;
   }): Promise<Array<Booking & { guest: Guest; property: Property; room: Room | null }>>;
+
+  /**
+   * One page of bookings for the admin reservations list, joined to guest,
+   * property and room, with the total matching the same filters so the pager
+   * can be trusted.
+   *
+   * Unlike getBookingsWithGuest this keeps rows whose guest or property is
+   * missing: this list is the admin's view of EVERY booking, and silently
+   * dropping a broken one is how a broken one never gets fixed.
+   */
+  getBookingsPage(opts: BookingsPageOpts): Promise<BookingsPage>;
 
   // --- Payments ---
   getPayment(id: string): Promise<Payment | undefined>;
@@ -782,6 +821,67 @@ class Storage implements IStorage {
       }));
   }
 
+  async getBookingsPage(opts: BookingsPageOpts): Promise<BookingsPage> {
+    // Never trust the query string with a page size.
+    const pageSize = Math.min(Math.max(Math.trunc(opts.pageSize) || 10, 1), 100);
+    const page = Math.max(Math.trunc(opts.page) || 0, 0);
+
+    const filters = [];
+    if (opts.status) filters.push(eq(bookings.status, opts.status));
+    if (opts.propertyId) filters.push(eq(bookings.propertyId, opts.propertyId));
+    if (opts.q?.trim()) {
+      // % and _ are wildcards in LIKE; escape them so a literal search for
+      // "100%" doesn't match everything.
+      const term = `%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      filters.push(
+        or(ilike(bookings.reference, term), ilike(guests.name, term), ilike(guests.email, term)),
+      );
+    }
+    const where = filters.length ? and(...filters) : undefined;
+
+    const sortColumn =
+      opts.sort === "checkIn"
+        ? bookings.checkIn
+        : opts.sort === "total"
+          ? bookings.quotedTotal
+          : bookings.createdAt;
+    const direction = opts.dir === "asc" ? asc : desc;
+
+    // The count runs over the same joins and the same where — a total taken
+    // from a different query is how a pager starts lying.
+    const [rows, totalRows] = await Promise.all([
+      db
+        .select()
+        .from(bookings)
+        .leftJoin(guests, eq(bookings.guestId, guests.id))
+        .leftJoin(properties, eq(bookings.propertyId, properties.id))
+        .leftJoin(rooms, eq(bookings.roomId, rooms.id))
+        .where(where)
+        // id as a tiebreaker: without it, rows sharing a checkIn or total can
+        // swap between pages and a booking is seen twice or not at all.
+        .orderBy(direction(sortColumn), direction(bookings.id))
+        .limit(pageSize)
+        .offset(page * pageSize),
+      db
+        .select({ n: count() })
+        .from(bookings)
+        .leftJoin(guests, eq(bookings.guestId, guests.id))
+        .where(where),
+    ]);
+
+    return {
+      rows: rows.map((r) => ({
+        ...r.bookings,
+        guest: r.guests,
+        property: r.properties,
+        room: r.rooms,
+      })),
+      total: totalRows[0]?.n ?? 0,
+      page,
+      pageSize,
+    };
+  }
+
   // --- Payments ---
   async getPayment(id: string): Promise<Payment | undefined> {
     const [row] = await db.select().from(payments).where(eq(payments.id, id));
@@ -801,13 +901,34 @@ class Storage implements IStorage {
     return row;
   }
 
+  /**
+   * The manual-payment reconcile queue: CashApp/Zelle rows awaiting admin
+   * confirmation, on bookings that are still live.
+   *
+   * Both filters are load-bearing and neither used to be here — the method
+   * filter lived in the /api/admin/reconciliation route while the Overview
+   * badge counted this method's raw output, so the badge said 10 (9 abandoned
+   * Stripe checkouts) against a 1-row list. The booking-status filter is new:
+   * money can never arrive for a CANCELLED booking, so a PENDING row against
+   * one is dead and must not sit in a queue asking an admin to action it.
+   *
+   * The scheduler's "N payment(s) awaiting reconciliation" log and the cron
+   * sweep's pending count read this too, and were wrong for the same reason.
+   */
   async getPendingManualPayments(): Promise<Payment[]> {
-    // Manual = CashApp/Zelle awaiting admin confirmation.
-    return db
-      .select()
+    const rows = await db
+      .select({ payment: payments })
       .from(payments)
-      .where(eq(payments.status, "PENDING"))
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .where(
+        and(
+          eq(payments.status, "PENDING"),
+          ne(payments.method, "STRIPE"),
+          ne(bookings.status, "CANCELLED"),
+        ),
+      )
       .orderBy(desc(payments.createdAt));
+    return rows.map((r) => r.payment);
   }
 
   async createPayment(data: InsertPayment): Promise<Payment> {

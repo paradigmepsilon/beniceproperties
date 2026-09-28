@@ -18,11 +18,14 @@ vi.mock("./lifecycle", () => ({ onBookingConfirmed: vi.fn() }));
 import { settleManualBookingPayment, type ManualSettleDeps } from "./manualSettle";
 import { BookingError } from "./booking";
 
-function makeDeps(over: Partial<{ free: boolean; method: string; roomId: string | null }> = {}) {
+function makeDeps(
+  over: Partial<{ free: boolean; method: string; roomId: string | null; bookingStatus: string }> = {},
+) {
   const payment = { id: "pay1", bookingId: "b1", method: over.method ?? "CASHAPP", status: "PENDING", amount: "300.00" };
   const booking = {
     id: "b1", propertyId: "p1", roomId: over.roomId === undefined ? "r1" : over.roomId, guestId: "g1", model: "COLIVING",
-    checkIn: "2026-10-01", checkOut: "2026-10-10", status: "PENDING_PAYMENT", reference: "BNP-TEST-0001", quotedTotal: "300.00",
+    checkIn: "2026-10-01", checkOut: "2026-10-10", status: over.bookingStatus ?? "PENDING_PAYMENT",
+    reference: "BNP-TEST-0001", quotedTotal: "300.00",
   };
   const calls: string[] = [];
   const deps: ManualSettleDeps = {
@@ -45,6 +48,28 @@ function makeDeps(over: Partial<{ free: boolean; method: string; roomId: string 
 }
 
 describe("settleManualBookingPayment", () => {
+  // A cancelled booking has no live stay to settle. Without this guard the
+  // reconcile queue's only button would, on a dead row, book the money in,
+  // flip the booking back to a live status, occupy the room, and email + SMS
+  // the guest about a stay that was called off. This is exactly the shape of
+  // the July test row (BNP-2548-YP52: CANCELLED booking, PENDING CashApp).
+  it("409s on a cancelled booking and changes nothing", async () => {
+    const { deps, calls } = makeDeps({ bookingStatus: "CANCELLED" });
+    await expect(
+      settleManualBookingPayment({ paymentId: "pay1", adminId: "a1", actor: "admin@x" }, deps),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(calls).toEqual([]);
+  });
+
+  it("does not notify the guest when it refuses a cancelled booking", async () => {
+    const { deps } = makeDeps({ bookingStatus: "CANCELLED" });
+    await expect(
+      settleManualBookingPayment({ paymentId: "pay1", adminId: "a1", actor: "admin@x" }, deps),
+    ).rejects.toBeInstanceOf(BookingError);
+    expect(deps.onBookingConfirmed).not.toHaveBeenCalled();
+    expect(deps.storage.updatePayment).not.toHaveBeenCalled();
+  });
+
   it("refuses a Stripe payment (those are confirmed by webhook only)", async () => {
     const { deps } = makeDeps({ method: "STRIPE" });
     await expect(settleManualBookingPayment({ paymentId: "pay1", adminId: "a1", actor: "admin@x" }, deps)).rejects.toMatchObject({ status: 400 });

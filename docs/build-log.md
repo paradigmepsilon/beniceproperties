@@ -4278,3 +4278,73 @@ and `build:api` clean.
 
 **Also noted:** today's snapshot reads 4/6 = 66.67% — a fourth room became occupied since Sep 26.
 The owner's recollection of four was right; the Sep 26 backup data was simply two days stale.
+
+## 2026-09-28 — Admin reservations list, detail modal, and the reconciliation count
+
+**Ask:** Recent bookings should show property, guest and dates and paginate 10 at a time; each
+reservation should open its details; the Reconciliation tab shows 10 against a single test entry,
+which should be fixed and the test entry removed.
+
+### The reconciliation count
+
+The badge and the list were two different queries. `dashboard.pendingCount` counted
+`storage.getPendingManualPayments()` raw; the list rendered that same call with
+`.filter((p) => p.method !== "STRIPE")` applied **in the route**. The storage method's own comment
+says "Manual = CashApp/Zelle awaiting admin confirmation" but it only ever filtered
+`status = 'PENDING'`. So the badge counted 9 abandoned July Stripe checkouts the list would never
+show. `docs/migration-backups/2026-09-09-payments.json` confirms the split exactly: 9
+(PENDING, STRIPE), 4 (PAID, STRIPE), 1 (PENDING, CASHAPP).
+
+Fixed at the query, not the route: `getPendingManualPayments()` now filters `method <> 'STRIPE'`
+**and** joins bookings to exclude CANCELLED ones — money can never arrive for a cancelled booking,
+so a PENDING row against one is dead and must not ask an admin to action it. The route's duplicate
+filter is gone so the rule lives in one place, and the badge now counts the rendered array
+(`recon.data.length`) the way the Verifications tab already did, so the two cannot drift again.
+This also corrects the scheduler's "N payment(s) awaiting reconciliation" log and the cron sweep's
+pending count, both wrong for the same reason.
+
+**A hazard found in passing, now fixed.** `settleManualBookingPayment` guards STRIPE and
+already-PAID and re-checks availability, but not booking status. Mark Paid on that test row would
+have recorded $435 as collected, flipped the cancelled booking back to a live status via
+`postPaymentStatusFor()`, set the room OCCUPIED, and fired `onBookingConfirmed` — emailing and
+texting a guest about a stay called off in July. Now throws 409. Two tests pin it.
+
+### Reservations list
+
+`GET /api/admin/bookings` becomes a paginated envelope `{rows,total,page,pageSize}` backed by a new
+`storage.getBookingsPage()`. It copies the guest/property/room join from `getBookingsWithGuest`
+with two differences: LEFT joins stay nullable (an admin list of every booking must not silently
+drop one with a missing guest), and the count runs over the same joins and where-clause as the rows
+— a total from a different query is how a pager starts lying. Sort takes `id` as a tiebreaker so
+rows sharing a checkIn or total can't swap between pages and be seen twice or not at all. Search
+escapes LIKE wildcards, so a literal "100%" doesn't match everything.
+
+The old `recentBookings` field leaves `/api/admin/dashboard`, and with it a fetch of the entire
+bookings table to slice 20 off the front.
+
+Client: `reservations-panel.tsx` — status/property/search filters, sort with direction toggle,
+prev/next pager. The filter-state logic is a pure module (`client/src/lib/reservationsQuery.ts`,
+12 tests) because an off-by-one page or a silently dropped filter reads as a data bug, not a URL
+bug; it also enforces that any change to WHICH rows match resets to page 0, so narrowing a long
+list while deep in it can't show an empty card that looks like "no bookings".
+
+`GET /api/admin/bookings/:id` composes existing storage calls for the detail modal. Only the row
+header is the clickable button — `ConflictBookingActions` renders its own buttons below it, and a
+button inside a button is invalid markup that makes the inner ones unclickable.
+
+### The test entry
+
+`scripts/delete-test-payment.mjs` — dry run verified against production: $435 CashApp,
+`BNP-2548-YP52`, booking CANCELLED, no refund rows. Owner-run; production writes are blocked from
+this session. The safety check is a pure tested function (10 tests) refusing on PAID, FAILED,
+STRIPE, any `paid_at` or `stripe_ref`, a live booking, or any `payment_refunds` row (a NOT NULL FK
+that would fail the delete anyway).
+
+Worth recording: this is the first row ever deleted from a money table here — every other cleanup
+script updates a status. The owner chose deletion over marking it FAILED, knowing the record of the
+test charge goes with it. The queue fix already excludes the row regardless, so the delete is
+tidying, not the fix.
+
+**Tests run:** `npm test` **1192/1192** (80 files, +24) · `npm run check` 0 errors ·
+`npm run build` and `build:api` clean. The admin UI is typechecked and built but not visually
+verified — the page needs a login.

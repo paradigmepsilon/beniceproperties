@@ -1769,11 +1769,12 @@ var init_leaseSchedule = __esm({
 // server/storage.ts
 var storage_exports = {};
 __export(storage_exports, {
+  BOOKINGS_PAGE_SORTS: () => BOOKINGS_PAGE_SORTS,
   StorageError: () => StorageError,
   parseSettingNumber: () => parseSettingNumber,
   storage: () => storage
 });
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
 function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
   const windowStart = new Date(now.getTime() - CHECKOUT_HOLD_MINUTES * 6e4);
   return or(
@@ -1797,7 +1798,7 @@ function parseSettingNumber(value, fallback) {
   const n = parseFloat(value);
   return Number.isFinite(n) ? n : fallback;
 }
-var NON_TERMINAL_LEASE_STATUSES, StorageError, Storage, storage;
+var NON_TERMINAL_LEASE_STATUSES, BOOKINGS_PAGE_SORTS, StorageError, Storage, storage;
 var init_storage = __esm({
   "server/storage.ts"() {
     "use strict";
@@ -1815,6 +1816,7 @@ var init_storage = __esm({
       "PENDING_VERIFICATION",
       "ACTIVE"
     ];
+    BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"];
     StorageError = class extends Error {
       status;
       constructor(message, status = 400) {
@@ -1987,6 +1989,37 @@ var init_storage = __esm({
           room: r.rooms
         }));
       }
+      async getBookingsPage(opts) {
+        const pageSize = Math.min(Math.max(Math.trunc(opts.pageSize) || 10, 1), 100);
+        const page = Math.max(Math.trunc(opts.page) || 0, 0);
+        const filters = [];
+        if (opts.status) filters.push(eq(bookings.status, opts.status));
+        if (opts.propertyId) filters.push(eq(bookings.propertyId, opts.propertyId));
+        if (opts.q?.trim()) {
+          const term = `%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+          filters.push(
+            or(ilike(bookings.reference, term), ilike(guests.name, term), ilike(guests.email, term))
+          );
+        }
+        const where = filters.length ? and(...filters) : void 0;
+        const sortColumn = opts.sort === "checkIn" ? bookings.checkIn : opts.sort === "total" ? bookings.quotedTotal : bookings.createdAt;
+        const direction = opts.dir === "asc" ? asc : desc;
+        const [rows, totalRows] = await Promise.all([
+          db.select().from(bookings).leftJoin(guests, eq(bookings.guestId, guests.id)).leftJoin(properties, eq(bookings.propertyId, properties.id)).leftJoin(rooms, eq(bookings.roomId, rooms.id)).where(where).orderBy(direction(sortColumn), direction(bookings.id)).limit(pageSize).offset(page * pageSize),
+          db.select({ n: count() }).from(bookings).leftJoin(guests, eq(bookings.guestId, guests.id)).where(where)
+        ]);
+        return {
+          rows: rows.map((r) => ({
+            ...r.bookings,
+            guest: r.guests,
+            property: r.properties,
+            room: r.rooms
+          })),
+          total: totalRows[0]?.n ?? 0,
+          page,
+          pageSize
+        };
+      }
       // --- Payments ---
       async getPayment(id) {
         const [row] = await db.select().from(payments).where(eq(payments.id, id));
@@ -1999,8 +2032,29 @@ var init_storage = __esm({
         const [row] = await db.select().from(payments).where(eq(payments.stripeRef, stripeRef));
         return row;
       }
+      /**
+       * The manual-payment reconcile queue: CashApp/Zelle rows awaiting admin
+       * confirmation, on bookings that are still live.
+       *
+       * Both filters are load-bearing and neither used to be here — the method
+       * filter lived in the /api/admin/reconciliation route while the Overview
+       * badge counted this method's raw output, so the badge said 10 (9 abandoned
+       * Stripe checkouts) against a 1-row list. The booking-status filter is new:
+       * money can never arrive for a CANCELLED booking, so a PENDING row against
+       * one is dead and must not sit in a queue asking an admin to action it.
+       *
+       * The scheduler's "N payment(s) awaiting reconciliation" log and the cron
+       * sweep's pending count read this too, and were wrong for the same reason.
+       */
       async getPendingManualPayments() {
-        return db.select().from(payments).where(eq(payments.status, "PENDING")).orderBy(desc(payments.createdAt));
+        const rows = await db.select({ payment: payments }).from(payments).innerJoin(bookings, eq(payments.bookingId, bookings.id)).where(
+          and(
+            eq(payments.status, "PENDING"),
+            ne(payments.method, "STRIPE"),
+            ne(bookings.status, "CANCELLED")
+          )
+        ).orderBy(desc(payments.createdAt));
+        return rows.map((r) => r.payment);
       }
       async createPayment(data) {
         const [row] = await db.insert(payments).values(data).returning();
@@ -7652,6 +7706,12 @@ async function settleManualBookingPayment(args, deps = defaultDeps2()) {
   }
   const booking = await storage2.getBooking(payment.bookingId);
   if (payment.status === "PAID") return { payment, booking: booking ?? null };
+  if (booking?.status === "CANCELLED") {
+    throw new BookingError(
+      "That booking is cancelled \u2014 reinstate it before settling the payment",
+      409
+    );
+  }
   if (booking && booking.checkOut) {
     if (booking.model === "COLIVING" && booking.roomId) {
       const free = await storage2.isRoomAvailableForRange({
@@ -10121,17 +10181,60 @@ ${parts.join("\n")}
   app.get("/api/admin/dashboard", requireAdmin, async (_req, res, next) => {
     try {
       const agg = await storage.getKpiAggregates();
-      const bookings2 = await storage.getBookings();
       const pending = await storage.getPendingManualPayments();
-      res.json({ aggregates: agg, recentBookings: bookings2.slice(0, 20), pendingCount: pending.length });
+      res.json({ aggregates: agg, pendingCount: pending.length });
     } catch (err) {
       next(err);
     }
   });
   app.get("/api/admin/bookings", requireAdmin, async (req, res, next) => {
     try {
-      const status = typeof req.query.status === "string" ? req.query.status : void 0;
-      res.json(await storage.getBookings(status ? { status } : void 0));
+      const str2 = (v) => typeof v === "string" && v.trim() ? v.trim() : void 0;
+      const status = str2(req.query.status);
+      if (status && !BOOKING_STATUSES.includes(status)) {
+        return res.status(400).json({ message: "Unknown status" });
+      }
+      const sort = str2(req.query.sort);
+      if (sort && !BOOKINGS_PAGE_SORTS.includes(sort)) {
+        return res.status(400).json({ message: "Unknown sort" });
+      }
+      const dir = req.query.dir === "asc" ? "asc" : "desc";
+      res.json(
+        await storage.getBookingsPage({
+          page: Number(req.query.page) || 0,
+          pageSize: Number(req.query.pageSize) || 10,
+          status,
+          propertyId: str2(req.query.propertyId),
+          q: str2(req.query.q),
+          sort,
+          dir
+        })
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+  app.get("/api/admin/bookings/:id", requireAdmin, async (req, res, next) => {
+    try {
+      const booking = await storage.getBooking(req.params.id);
+      if (!booking) return res.status(404).json({ message: "Booking not found" });
+      const [guest, property, room, payments2, subscription, gate] = await Promise.all([
+        storage.getGuest(booking.guestId),
+        storage.getProperty(booking.propertyId),
+        booking.roomId ? storage.getRoom(booking.roomId) : Promise.resolve(void 0),
+        storage.getPaymentsByBooking(booking.id),
+        storage.getSubscriptionByBooking(booking.id),
+        storage.getBookingGate(booking.id)
+      ]);
+      res.json({
+        booking,
+        guest: guest ?? null,
+        property: property ? { id: property.id, name: property.name, location: property.location, entity: property.entity } : null,
+        room: room ? { id: room.id, name: room.name, roomNumber: room.roomNumber } : null,
+        payments: payments2,
+        subscription: subscription ?? null,
+        gate: gate ?? null
+      });
     } catch (err) {
       next(err);
     }
@@ -10445,7 +10548,7 @@ ${parts.join("\n")}
     try {
       const pending = await storage.getPendingManualPayments();
       const enriched = await Promise.all(
-        pending.filter((p) => p.method !== "STRIPE").map(async (p) => {
+        pending.map(async (p) => {
           const booking = await storage.getBooking(p.bookingId);
           const guest = booking ? await storage.getGuest(booking.guestId) : null;
           return {
