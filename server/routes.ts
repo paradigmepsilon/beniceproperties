@@ -109,7 +109,8 @@ import { getPricingSettings, updatePricingSettings, getCardSurchargeRate } from 
 import * as adminMessages from "./lib/adminMessages";
 import { validateManualBlockInput } from "./lib/manualBlocks";
 import { boundedMessageLogLimit } from "./lib/messageLogQuery";
-import { refreshExternalCalendars } from "./lib/icalSync";
+import { refreshExternalCalendars, normalizeAirbnbIcalUrl } from "./lib/icalSync";
+import { getExportFeed } from "./lib/icalExport";
 import { buildReconciliationReport } from "./lib/reconciliation";
 import {
   createDraftLeaseSchema,
@@ -802,6 +803,24 @@ export async function registerRoutes(app: Express): Promise<void> {
         return res.status(404).json({ message: "Room not found" });
       }
       res.json(await buildRoomAvailability(room.id));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // --- Outbound calendar feed (BNP -> Airbnb "Import calendar") ---
+  // Public and credential-less by necessity (Airbnb polls it), so the secret
+  // token in the path is the only gate. Body carries dates only ("Reserved"),
+  // never guest data. Every miss is the same generic 404.
+  app.get("/api/calendar/export/:file", async (req, res, next) => {
+    try {
+      const file = req.params.file;
+      if (!file.endsWith(".ics")) return res.status(404).json({ message: "Not found" });
+      const ics = await getExportFeed(file.slice(0, -4));
+      if (!ics) return res.status(404).json({ message: "Not found" });
+      res.set("Content-Type", "text/calendar; charset=utf-8");
+      res.set("Cache-Control", "no-store");
+      res.send(ics);
     } catch (err) {
       next(err);
     }
@@ -2634,6 +2653,13 @@ export async function registerRoutes(app: Express): Promise<void> {
     try {
       const parsed = insertPropertySchema.partial().safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      if (parsed.data.airbnbIcalUrl !== undefined) {
+        try {
+          parsed.data.airbnbIcalUrl = normalizeAirbnbIcalUrl(parsed.data.airbnbIcalUrl);
+        } catch (e) {
+          return res.status(400).json({ message: (e as Error).message });
+        }
+      }
       const updated = await storage.updateProperty(req.params.id, parsed.data);
       if (!updated) return res.status(404).json({ message: "Property not found" });
       res.json(updated);
@@ -2672,6 +2698,13 @@ export async function registerRoutes(app: Express): Promise<void> {
     try {
       const parsed = insertRoomSchema.partial().safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      if (parsed.data.airbnbIcalUrl !== undefined) {
+        try {
+          parsed.data.airbnbIcalUrl = normalizeAirbnbIcalUrl(parsed.data.airbnbIcalUrl);
+        } catch (e) {
+          return res.status(400).json({ message: (e as Error).message });
+        }
+      }
       const updated = await storage.updateRoom(req.params.id, parsed.data);
       if (!updated) return res.status(404).json({ message: "Room not found" });
       res.json(updated);
@@ -2689,10 +2722,42 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
-  // NOTE: Airbnb iCal feed URLs are managed from Unified-Ops (the primary BNP
-  // admin), written to properties/rooms.airbnb_ical_url directly. BNP's sync
-  // (server/lib/icalSync.ts, driven by the scheduler + hourly cron) reads those
-  // URLs — there is no feed CRUD surface here.
+  // --- Airbnb calendar links (both directions) ---
+  // INBOUND: properties/rooms.airbnb_ical_url is editable here (PATCH above,
+  // validated by normalizeAirbnbIcalUrl) or from Unified-Ops; icalSync.ts reads it.
+  // OUTBOUND: each STR property / co-living room has a secret export URL to paste
+  // into Airbnb's "Import calendar" (served by GET /api/calendar/export/:file).
+  // The inbound URL is secret-ish, so this list only says whether one is set and
+  // its last 4 characters; it is replace-only from the UI.
+  app.get("/api/admin/calendar/listings", requireAdmin, async (_req, res, next) => {
+    try {
+      const base = publicBaseUrl();
+      const listings = await storage.getExportableListings();
+      res.json(
+        listings.map(({ exportToken, airbnbIcalUrl, ...rest }) => ({
+          ...rest,
+          exportUrl: `${base}/api/calendar/export/${exportToken}.ics`,
+          hasImportUrl: !!airbnbIcalUrl,
+          importUrlHint: airbnbIcalUrl ? airbnbIcalUrl.slice(-4) : null,
+        })),
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post("/api/admin/calendar/export-urls/:kind/:id/regenerate", requireAdmin, async (req, res, next) => {
+    try {
+      const { kind, id } = req.params;
+      if (kind !== "property" && kind !== "room") return res.status(400).json({ message: "Unknown listing kind" });
+      const token = await storage.regenerateExportToken(kind, id);
+      if (!token) return res.status(404).json({ message: "Listing not found" });
+      log(`calendar export url regenerated for ${kind} ${id} by ${adminActor(req)}`, "calendar");
+      res.json({ exportUrl: `${publicBaseUrl()}/api/calendar/export/${token}.ics` });
+    } catch (err) {
+      next(err);
+    }
+  });
 }
 
 // ===========================================================================

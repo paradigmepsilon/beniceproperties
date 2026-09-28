@@ -4348,3 +4348,45 @@ tidying, not the fix.
 **Tests run:** `npm test` **1192/1192** (80 files, +24) · `npm run check` 0 errors ·
 `npm run build` and `build:api` clean. The admin UI is typechecked and built but not visually
 verified — the page needs a login.
+
+---
+
+## 2026-09-28 — Airbnb calendar export (BNP → Airbnb) + Airbnb import link in admin
+
+**Problem:** a direct booking never showed on Airbnb, so the same dates could be sold twice. BNP
+already imported Airbnb's calendar (`icalSync.ts` → `external_bookings`) but published nothing back.
+
+**Built**
+- `server/lib/icalExport.ts` — per-listing `.ics` feed from BNP-owned sources only (STR bookings +
+  property manual blocks; room leases + co-living bookings + room manual blocks). Never reads
+  `external_bookings` (no echo of Airbnb's own data). Lease `endDate` is inclusive so DTEND is +1
+  day; bookings/blocks are already half-open. Every event is the literal `Reserved` with a
+  synthetic UID; no guest data. Hand-rolled (fixed-shape all-day VEVENTs, no user text) so no new
+  dependency; 75-octet folding tested.
+- `GET /api/calendar/export/<token>.ics` — public, token is the only gate, `no-store`, one generic
+  404 for unknown token / inactive / placeholder / wrong product type.
+- `properties.export_token` / `rooms.export_token` — DB default `gen_random_uuid()::text`, unique
+  index, omitted from the insert schemas (PATCH can't overwrite it), withheld from public
+  projections. `scripts/push-calendar-export.mjs` (additive, idempotent).
+- Admin: `GET /api/admin/calendar/listings`, `POST /api/admin/calendar/export-urls/:kind/:id/regenerate`,
+  and a per-listing links section in `calendar-sync-panel.tsx` (copy export URL, regenerate, paste /
+  replace / remove the Airbnb import link, masked to last 4). Saving an import link fires the
+  existing sync so a bad link fails immediately.
+- `normalizeAirbnbIcalUrl` validates the import link at save time (https only, and rejects BNP's
+  own export link pasted into the wrong field). The stale "no feed CRUD surface here" comment is
+  replaced.
+
+**Decisions:** opaque token instead of the listing UUID (rotatable; matches Airbnb's own export
+URLs). Open-ended co-living bookings (null checkout) are not exported, matching `availability.ts`.
+LTR properties never publish.
+
+**Deploy order (load-bearing):** run `node scripts/push-calendar-export.mjs` BEFORE deploying.
+Drizzle selects every column, so code that knows `export_token` against a DB without it breaks all
+property/room reads. Not run from this session (production writes are blocked here).
+
+**Tests run:** `npm test` **1217/1217** (81 files, +25) · `npm run check` 0 errors · client vite
+build and server esbuild bundle clean (prerender step not run — it may read the DB). The feed
+route and the admin panel are NOT exercised against a live DB or in a browser: that needs the
+migration applied and an admin login.
+
+**Deferred:** none.

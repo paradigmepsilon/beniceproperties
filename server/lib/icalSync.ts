@@ -85,6 +85,23 @@ export function validateUrl(urlString: string): URL {
   return url;
 }
 
+/**
+ * Normalize an admin-typed Airbnb import URL for storage: blank -> null,
+ * otherwise a trimmed, HTTPS-only URL. Throws a message safe to show the admin.
+ * The fetch path (secureFetch) re-validates on every sync; this just rejects
+ * garbage at save time and catches the easy mix-up of pasting BNP's own
+ * outbound feed into the inbound field (which would sync a calendar to itself).
+ */
+export function normalizeAirbnbIcalUrl(input: string | null | undefined): string | null {
+  const trimmed = (input ?? "").trim();
+  if (!trimmed) return null;
+  const url = validateUrl(trimmed);
+  if (url.pathname.startsWith("/api/calendar/export/")) {
+    throw new Error("That is a BNP export link. Paste the Airbnb calendar link (from Airbnb's Export calendar) here instead.");
+  }
+  return trimmed;
+}
+
 export async function validateIP(hostname: string): Promise<void> {
   if (net.isIP(hostname)) {
     if (isBlockedIP(hostname)) throw new Error(`IP address not allowed: ${hostname}`);

@@ -181,6 +181,18 @@ function realPropertyCondition() {
   return eq(properties.isPlaceholder, false);
 }
 
+/** A listing that can publish an outbound .ics feed (see getExportableListings). */
+export interface ExportableListing {
+  kind: "property" | "room";
+  propertyId: string;
+  roomId: string | null;
+  /** Human label for the admin panel: property name, or "Property — Room". */
+  label: string;
+  exportToken: string;
+  /** Inbound Airbnb feed URL for this listing (secret-ish), or null. */
+  airbnbIcalUrl: string | null;
+}
+
 export const BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"] as const;
 export type BookingsPageSort = (typeof BOOKINGS_PAGE_SORTS)[number];
 
@@ -529,6 +541,16 @@ export interface IStorage {
   getListingsWithIcalUrl(): Promise<
     { kind: "property" | "room"; propertyId: string; roomId: string | null; url: string; label: string }[]
   >;
+  /**
+   * Every listing that can publish an outbound calendar feed (real, active STR
+   * properties + rooms of real, active co-living properties), with its secret
+   * export token and its inbound Airbnb URL. Feeds the admin calendar panel.
+   */
+  getExportableListings(): Promise<ExportableListing[]>;
+  getPropertyByExportToken(token: string): Promise<Property | undefined>;
+  getRoomByExportToken(token: string): Promise<Room | undefined>;
+  /** Rotate a listing's export token (invalidates the URL Airbnb holds). Returns the new token, or undefined if the row doesn't exist. */
+  regenerateExportToken(kind: "property" | "room", id: string): Promise<string | undefined>;
   /** Busy external ranges for an STR whole-property listing (room_id IS NULL). */
   getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]>;
   /** Busy external ranges for a co-living room listing. */
@@ -2033,6 +2055,86 @@ class Storage implements IStorage {
       listings.push({ kind: "room", propertyId: r.propertyId, roomId: r.id, url: r.url, label: r.name });
     }
     return listings;
+  }
+
+  async getExportableListings(): Promise<ExportableListing[]> {
+    const propRows = await db
+      .select({
+        id: properties.id,
+        name: properties.name,
+        token: properties.exportToken,
+        url: properties.airbnbIcalUrl,
+      })
+      .from(properties)
+      .where(and(eq(properties.active, true), realPropertyCondition(), eq(properties.type, "STR")))
+      .orderBy(asc(properties.name));
+    const roomRows = await db
+      .select({
+        id: rooms.id,
+        propertyId: rooms.propertyId,
+        name: rooms.name,
+        roomNumber: rooms.roomNumber,
+        token: rooms.exportToken,
+        url: rooms.airbnbIcalUrl,
+        propertyName: properties.name,
+      })
+      .from(rooms)
+      .innerJoin(properties, eq(rooms.propertyId, properties.id))
+      .where(and(eq(properties.active, true), realPropertyCondition(), eq(properties.type, "COLIVING")))
+      .orderBy(asc(properties.name), asc(rooms.roomNumber), asc(rooms.name));
+
+    const listings: ExportableListing[] = [];
+    for (const p of propRows) {
+      if (!p.token) continue;
+      listings.push({
+        kind: "property",
+        propertyId: p.id,
+        roomId: null,
+        label: p.name,
+        exportToken: p.token,
+        airbnbIcalUrl: p.url ?? null,
+      });
+    }
+    for (const r of roomRows) {
+      if (!r.token) continue;
+      listings.push({
+        kind: "room",
+        propertyId: r.propertyId,
+        roomId: r.id,
+        label: `${r.propertyName} — ${r.name}`,
+        exportToken: r.token,
+        airbnbIcalUrl: r.url ?? null,
+      });
+    }
+    return listings;
+  }
+
+  async getPropertyByExportToken(token: string): Promise<Property | undefined> {
+    const [row] = await db.select().from(properties).where(eq(properties.exportToken, token)).limit(1);
+    return row;
+  }
+
+  async getRoomByExportToken(token: string): Promise<Room | undefined> {
+    const [row] = await db.select().from(rooms).where(eq(rooms.exportToken, token)).limit(1);
+    return row;
+  }
+
+  async regenerateExportToken(kind: "property" | "room", id: string): Promise<string | undefined> {
+    const fresh = sql`gen_random_uuid()::text`;
+    if (kind === "property") {
+      const [row] = await db
+        .update(properties)
+        .set({ exportToken: fresh, updatedAt: new Date() })
+        .where(eq(properties.id, id))
+        .returning({ token: properties.exportToken });
+      return row?.token ?? undefined;
+    }
+    const [row] = await db
+      .update(rooms)
+      .set({ exportToken: fresh, updatedAt: new Date() })
+      .where(eq(rooms.id, id))
+      .returning({ token: rooms.exportToken });
+    return row?.token ?? undefined;
   }
 
   async getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]> {
