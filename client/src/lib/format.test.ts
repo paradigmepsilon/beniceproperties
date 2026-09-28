@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { cityOf, dateTime, fromNightly, fullDate, shortDate } from "./format";
+import { cityOf, dateTime, fromNightly, fullDate, shortDate, roomLabel } from "./format";
 
 describe("cityOf", () => {
   it("extracts the city from a full street address", () => {
@@ -73,5 +73,36 @@ describe("fromNightly", () => {
     const result = fromNightly({ dailyRate: "210", weeklyRate: "1260", monthlyRate: "4760" });
     // weekly 1260/7 = 180, monthly 4760/28 = 170 → lowest
     expect(result).toEqual({ from: 170, multiTier: true });
+  });
+});
+
+describe("roomLabel", () => {
+  it("leads with the number so a list scans down a fixed position", () => {
+    expect(roomLabel({ name: "Furnished Room Near ATL Airport", roomNumber: "3" })).toBe(
+      "Room 3 · Furnished Room Near ATL Airport",
+    );
+  });
+
+  it("disambiguates the same room name in two properties", () => {
+    // Beauclerc and Dilworth both have a "Primary Suite with Private Bath";
+    // without the number the two reservations read identically.
+    const a = roomLabel({ name: "Primary Suite with Private Bath", roomNumber: "1" });
+    const b = roomLabel({ name: "Primary Suite with Private Bath", roomNumber: "5" });
+    expect(a).not.toBe(b);
+  });
+
+  it("falls back to the bare name when there is no number", () => {
+    expect(roomLabel({ name: "Garden Room", roomNumber: null })).toBe("Garden Room");
+    expect(roomLabel({ name: "Garden Room" })).toBe("Garden Room");
+    expect(roomLabel({ name: "Garden Room", roomNumber: "  " })).toBe("Garden Room");
+  });
+
+  it("returns an empty string for a whole-property (STR) booking with no room", () => {
+    expect(roomLabel(null)).toBe("");
+    expect(roomLabel(undefined)).toBe("");
+  });
+
+  it("keeps a non-numeric room number, since the column is free text", () => {
+    expect(roomLabel({ name: "Loft", roomNumber: "2B" })).toBe("Room 2B · Loft");
   });
 });

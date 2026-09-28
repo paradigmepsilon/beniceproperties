@@ -59,3 +59,20 @@ export function fromNightly(p: {
   if (!cand.length) return null;
   return { from: Math.min(...cand), multiTier: cand.length > 1 };
 }
+
+/**
+ * "Room 3 · Furnished Room Near ATL Airport", or just the name when a room
+ * carries no number.
+ *
+ * The number LEADS because it is the part that disambiguates: room names
+ * repeat across properties (both Beauclerc and Dilworth have a "Primary Suite
+ * with Private Bath"), and a short number in a fixed position scans far better
+ * down a list than one tacked onto the end of a 45-character name.
+ */
+export function roomLabel(
+  room: { name: string; roomNumber?: string | null } | null | undefined,
+): string {
+  if (!room) return "";
+  const n = room.roomNumber?.trim();
+  return n ? `Room ${n} · ${room.name}` : room.name;
+}

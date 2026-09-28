@@ -26,7 +26,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/hooks/use-toast";
-import { money, fullDate, dateTime } from "@/lib/format";
+import { money, fullDate, dateTime, roomLabel } from "@/lib/format";
 import { amountMatches, refundEligibility } from "@/lib/adminRefund";
 import {
   reservationsQueryString,
@@ -220,7 +220,7 @@ export default function ReservationsPanel({ properties }: { properties: Property
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="font-medium">
                       {b.property?.name ?? "Unknown property"}
-                      {b.room ? ` · ${b.room.name}` : ""}
+                      {b.room ? ` · ${roomLabel(b.room)}` : ""}
                     </span>
                     <span className="flex items-center gap-2">
                       <span className="font-medium">{money(b.quotedTotal)}</span>
@@ -304,7 +304,9 @@ function ReservationDetailDialog({ id, onClose }: { id: string | null; onClose: 
       <DialogContent className="max-h-[85vh] overflow-y-auto" data-testid="dialog-reservation">
         <DialogHeader>
           <DialogTitle>
-            {d ? `${d.property?.name ?? "Reservation"}${d.room ? ` · ${d.room.name}` : ""}` : "Reservation"}
+            {d
+              ? `${d.property?.name ?? "Reservation"}${d.room ? ` · ${roomLabel(d.room)}` : ""}`
+              : "Reservation"}
           </DialogTitle>
         </DialogHeader>
 
@@ -355,8 +357,7 @@ function ReservationDetailDialog({ id, onClose }: { id: string | null; onClose: 
                   {d.room && (
                     <span className="text-muted-foreground">
                       {" "}
-                      · {d.room.name}
-                      {d.room.roomNumber ? ` (#${d.room.roomNumber})` : ""}
+                      · {roomLabel(d.room)}
                     </span>
                   )}
                 </Field>
