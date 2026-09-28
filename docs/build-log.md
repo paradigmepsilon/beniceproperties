@@ -4348,3 +4348,88 @@ tidying, not the fix.
 **Tests run:** `npm test` **1192/1192** (80 files, +24) · `npm run check` 0 errors ·
 `npm run build` and `build:api` clean. The admin UI is typechecked and built but not visually
 verified — the page needs a login.
+
+## 2026-09-28 — Booking status describes the stay's phase in time
+
+**Ask:** ACTIVE should mean a stay currently happening, PENDING_APPROVAL a booking awaiting admin
+action, PENDING_PAYMENT only a future booking (everything is paid before check-in), and the test
+bookings should be removed.
+
+### Root cause: status never described time
+
+`postPaymentStatusFor` read `model === "COLIVING" ? "ACTIVE" : "CONFIRMED"` — a **model**
+discriminator. A co-living stay booked for next March was written ACTIVE the moment the card
+cleared and stayed ACTIVE forever. Three findings, all verified against the source:
+
+- **No date-driven status job had ever existed.** All 12 scheduler jobs and both Vercel crons
+  checked; every one of the 8 status write sites fires on a payment, an admin click, or a
+  cancellation. None on a date.
+- **`COMPLETED` was a dead enum value** — nothing in the repo had ever written it.
+- **`PENDING_PAYMENT` rows are orphans of the retired public `POST /api/bookings`, and they still
+  BLOCK dates** — the exact denial-of-inventory hole that endpoint was retired for. The cleanup was
+  knowingly deferred (`build-log.md:1667`).
+
+Room occupancy, meanwhile, was already fully date-driven, so the two halves had been diverging by
+design.
+
+### What changed
+
+`shared/bookingStatus.ts` — one pure `effectiveBookingStatus(booking, today)`, the single
+definition of which status a booking should hold. `postPaymentStatusFor` now defers to it, so a
+payment and a sweep can never reach different conclusions about the same booking.
+`server/lib/bookingLifecycle.ts` runs it daily, modeled on `occupancy.ts`: idempotent, writes only
+on real change, and wired **before** the occupancy sync in both schedulers so rooms recompute
+against corrected statuses in the same pass. Its first run is the backfill.
+
+`PENDING_APPROVAL` is deliberately never touched. Those bookings are **paid**, and the gate's ghost
+sweep already auto-declines **and refunds** them after 72h of silence; expiring one here would
+strand a guest's money and race a refund path. Pinned by tests in two files.
+
+New `EXPIRED` status — never paid, check-in passed — added to `BOOKING_STATUSES` and to
+`NON_BLOCKING_BOOKING_STATUSES`, which stops those rows holding dates.
+
+**The half that would have been missed:** the non-blocking list also exists in SQL, inside two
+`EXCLUDE USING gist` constraints on `bookings` (`status NOT IN ('CANCELLED','CONFLICT')`). Changing
+only the app would have left the site offering dates Postgres then rejects with a 23P01 — a booking
+failing for no visible reason. `scripts/push-expired-status.mjs` rebuilds both. Related:
+`getOccupiedRoomIdsOn` spelled the rule as two literal `ne()` calls rather than the shared constant,
+which is exactly why it would have been missed — now uses `NON_BLOCKING_BOOKING_STATUSES`.
+
+The job writes through a runtime-checked union rather than a cast, so a status it does not
+understand is skipped and counted, never written blind.
+
+### Test bookings
+
+`scripts/delete-test-bookings.mjs` — dry-run verified against production: all 11 launch-week
+bookings found, all pass, 10 carrying one payment each.
+
+**The guard that matters.** `BNP-5F2B-WNJM`, `BNP-BGFK-W3FL`, `BNP-A85H-U2MH` look exactly like
+test data — created seconds apart, identical $362.25 totals — but they are **real guests who were
+in their rooms**; that timestamp belongs to `materialize-lost-bookings.mjs`. A "created together,
+round total" predicate would have deleted paying guests. The script requires a row to be on a
+hardcoded 11-reference list **and** inside the launch-week window **and** not on a protected list,
+and refuses anything ACTIVE or covering today. 17 tests.
+
+Deletes in FK order (`payment_refunds` → `payments` → `subscriptions` → `booking_gate` →
+`bookings`) because those three have NOT NULL FKs with no cascade, and also clears the four tables
+carrying a `booking_id` with **no** FK (`uo_escalations`, `guest_messages`, `lifecycle_events`,
+`message_log`) which would otherwise dangle silently. Reports orphaned guest rows; never deletes
+them — that is stored personal data and a separate decision.
+
+`BNP-9WTA-NNYK` is included per the owner's instruction. It carries a PAID $392.27 Stripe charge and
+**no refund is issued** — nothing here touches Stripe.
+
+**Tests run:** `npm test` **1245/1245** (83 files, +48) · `npm run check` 0 errors · `npm run build`
+and `build:api` clean. Two existing tests changed rather than added: they asserted the literal
+"ACTIVE" as shorthand for "not gated", which no longer follows, so they now assert gatedness
+directly and no longer couple a gate test to today's date.
+
+**NOT applied** — production writes are blocked from this session:
+
+    node scripts/push-expired-status.mjs --apply     # rebuild the two constraints
+    node scripts/delete-test-bookings.mjs --apply    # after a dry run
+
+**Not verified:** the constraint rebuild was not rehearsed on a Neon branch — `market-test-preview.sh`
+needs an interactive `neonctl auth`. The rebuild cannot fail on existing data (the new predicate is
+strictly more permissive, so anything satisfying the old constraint satisfies the new one), but
+there is a brief window between DROP and ADD with no overlap protection.

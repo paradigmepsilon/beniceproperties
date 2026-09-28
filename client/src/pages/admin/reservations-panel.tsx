@@ -74,6 +74,9 @@ const SORT_LABEL: Record<ReservationSort, string> = {
 
 function statusVariant(status: string) {
   if (status === "CONFLICT") return "destructive" as const;
+  // ACTIVE = happening right now, CONFIRMED = paid and upcoming. Everything
+  // else (COMPLETED, CANCELLED, EXPIRED, PENDING_*) is muted: it needs no
+  // attention, or it needs attention somewhere other than this list.
   if (status === "CONFIRMED" || status === "ACTIVE") return "default" as const;
   return "secondary" as const;
 }

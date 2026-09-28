@@ -24,6 +24,7 @@ import {
 } from "./lib/stayReminders";
 import { refreshExternalCalendars, checkCalendarSyncHealth } from "./lib/icalSync";
 import { syncRoomOccupancyStatus } from "./lib/occupancy";
+import { syncBookingStatuses } from "./lib/bookingLifecycle";
 
 interface SchedulerConfig {
   /** How often to run the recurring sweep. Default: 1h. */
@@ -68,6 +69,10 @@ class BackgroundScheduler {
       // Release expired holds BEFORE the occupancy sync so a freed room's
       // status is corrected in the same pass.
       await this.holdExpiryRun();
+      // Advance booking statuses BEFORE the occupancy sync: occupancy reads
+      // booking status, so correcting statuses first means rooms are recomputed
+      // against the truth in the same pass rather than a day behind.
+      await this.bookingStatusRun();
       await this.occupancySyncRun();
       await this.calendarHealthCheckRun();
       await this.weeklyRentRun();
@@ -104,6 +109,25 @@ class BackgroundScheduler {
       }
     } catch (err) {
       log(`calendar refresh failed: ${(err as Error).message}`, "scheduler");
+    }
+  }
+
+  private async bookingStatusRun(): Promise<void> {
+    // Booking status describes the stay's phase in time: CONFIRMED before,
+    // ACTIVE during, COMPLETED after, EXPIRED if never paid. Nothing else moves
+    // it — before this job, status was written once at payment and never
+    // advanced. Idempotent; never throws.
+    try {
+      const r = await syncBookingStatuses();
+      if (r.changed > 0) {
+        log(
+          `booking status sync: ${r.activated} activated, ${r.completed} completed, ` +
+            `${r.expired} expired, ${r.deferred} deferred (${r.changed}/${r.scanned} changed)`,
+          "scheduler",
+        );
+      }
+    } catch (err) {
+      log(`booking status sync failed: ${(err as Error).message}`, "scheduler");
     }
   }
 

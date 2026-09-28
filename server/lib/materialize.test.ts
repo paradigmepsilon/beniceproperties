@@ -158,16 +158,22 @@ describe("materializeShortStayBooking — happy path", () => {
     expect(deps.storage.createBooking.mock.calls[0][0].status).toBe("ACTIVE");
   });
 
+  // Asserts GATEDNESS, which is what this test is about. It used to expect the
+  // literal "ACTIVE" for the ungated cases, but since 2026-09-28 the ungated
+  // status is decided by the calendar (CONFIRMED before a stay, ACTIVE during),
+  // so pinning the exact string here would couple a gate test to today's date.
   it("gates a stay at each end of the 7–28 night window and not outside it", async () => {
-    for (const [checkOut, expected] of [
-      ["2026-07-07", "ACTIVE"],            // 6 nights — below the co-living minimum
-      ["2026-07-08", "PENDING_APPROVAL"],  // 7 — gate opens
-      ["2026-07-29", "PENDING_APPROVAL"],  // 28 — gate closes
-      ["2026-07-30", "ACTIVE"],            // 29 — a lease, never a booking
+    for (const [checkOut, gated] of [
+      ["2026-07-07", false], // 6 nights — below the co-living minimum
+      ["2026-07-08", true],  // 7 — gate opens
+      ["2026-07-29", true],  // 28 — gate closes
+      ["2026-07-30", false], // 29 — a lease, never a booking
     ] as const) {
       const deps = makeDeps();
       await run(pi({ check_out: checkOut }), deps);
-      expect(deps.storage.createBooking.mock.calls[0][0].status, `check_out ${checkOut}`).toBe(expected);
+      const status = deps.storage.createBooking.mock.calls[0][0].status;
+      expect(status === "PENDING_APPROVAL", `check_out ${checkOut}`).toBe(gated);
+      if (!gated) expect(["ACTIVE", "CONFIRMED"], `check_out ${checkOut}`).toContain(status);
     }
   });
 

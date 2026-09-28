@@ -15,6 +15,7 @@ import { runDunningSweep } from "../../server/lib/dunning";
 import { runLeaseEndingNotices } from "../../server/lib/lifecycle";
 import { refreshExternalCalendars, checkCalendarSyncHealth } from "../../server/lib/icalSync";
 import { syncRoomOccupancyStatus } from "../../server/lib/occupancy";
+import { syncBookingStatuses } from "../../server/lib/bookingLifecycle";
 import { log } from "../../server/server-log";
 import { cronAuthFailure } from "../../server/lib/cronAuth";
 import { runLeaseHoldExpiry } from "../../server/lib/leaseHolds";
@@ -41,6 +42,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       await runLeaseHoldExpiry();
     } catch (err) {
       log(`lease hold expiry failed: ${(err as Error).message}`, "cron");
+    }
+
+    // Booking statuses first: occupancy reads booking status, so correcting
+    // statuses before the occupancy sync means rooms are recomputed against the
+    // truth in the same pass rather than a day behind.
+    let bookingStatus: Awaited<ReturnType<typeof syncBookingStatuses>> | undefined;
+    try {
+      bookingStatus = await syncBookingStatuses();
+    } catch (err) {
+      log(`booking status sync failed: ${(err as Error).message}`, "cron");
     }
 
     // Daily room-occupancy status sync + calendar-sync health check. Each
@@ -101,6 +112,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.json({
       ok: true,
       calendar,
+      bookingStatus,
       occupancy,
       rent,
       dunning,

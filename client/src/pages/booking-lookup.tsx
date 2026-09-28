@@ -32,7 +32,10 @@ interface LookupResult {
 // failures stay destructive; everything else is neutral.
 function StatusBadge({ status }: { status: string }) {
   const positive = status === "CONFIRMED" || status === "ACTIVE" || status === "PAID";
-  const negative = status === "CANCELLED" || status === "FAILED";
+  // EXPIRED sits with CANCELLED: the booking is dead either way, and a guest
+  // reading it should not see a neutral chip. (Raw status text matches the
+  // rest of this page — PENDING_PAYMENT renders literally too.)
+  const negative = status === "CANCELLED" || status === "FAILED" || status === "EXPIRED";
   return (
     <Badge
       variant={negative ? "destructive" : "secondary"}

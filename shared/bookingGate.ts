@@ -28,6 +28,8 @@
 
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { isDirectCoLivingStay } from "./schema";
+import { effectiveBookingStatus } from "./bookingStatus";
+import { todayIso } from "./dates";
 
 /** The facts needed to decide whether a paid stay is gated. */
 export interface StayShape {
@@ -76,9 +78,30 @@ export function isGatedStay(stay: StayShape): boolean {
  *
  * A gated stay becomes PENDING_APPROVAL, which is NOT in
  * NON_BLOCKING_BOOKING_STATUSES: the guest paid, so the dates stay held while a
- * human reviews. Everything else keeps exactly the status it gets today.
+ * human reviews.
+ *
+ * Everything else is decided by the CALENDAR, not the product model. This used
+ * to read `model === "COLIVING" ? "ACTIVE" : "CONFIRMED"`, which is why a
+ * co-living stay booked for next March was written ACTIVE the moment the card
+ * cleared and stayed that way forever. It now defers to
+ * effectiveBookingStatus() — the same function the daily lifecycle job uses —
+ * so a payment and a sweep can never reach different conclusions about the
+ * same booking.
+ *
+ * `today` is injectable so this stays testable; production callers pass
+ * nothing and get the real date.
  */
-export function postPaymentStatusFor(stay: StayShape): PostPaymentStatus {
+export function postPaymentStatusFor(
+  stay: StayShape,
+  today: string = todayIso(),
+): PostPaymentStatus {
   if (isGatedStay(stay)) return "PENDING_APPROVAL";
-  return stay.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  // Seed with CONFIRMED (paid, cleared) and let the dates place it in time.
+  // Only ACTIVE or CONFIRMED can come back: a stay cannot be paid for after it
+  // has already ended, and COMPLETED is not a post-payment state.
+  const phase = effectiveBookingStatus(
+    { status: "CONFIRMED", checkIn: stay.checkIn, checkOut: stay.checkOut },
+    today,
+  );
+  return phase === "ACTIVE" ? "ACTIVE" : "CONFIRMED";
 }

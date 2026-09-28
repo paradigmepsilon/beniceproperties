@@ -54,8 +54,21 @@ export const ROOM_STATUSES = ["AVAILABLE", "OCCUPIED", "HOLD", "MAINTENANCE", "I
 // are likewise always unbookable.
 export const ROOM_UNBOOKABLE_STATUSES = ["HOLD", "MAINTENANCE", "INACTIVE"] as const;
 export const BOOKING_MODELS = ["STR", "COLIVING"] as const;
+// Every status a booking can hold. Since 2026-09-28 these describe the stay's
+// PHASE IN TIME, not the product model — see shared/bookingStatus.ts, which is
+// the single definition of which one a booking should currently be in, and
+// server/lib/bookingLifecycle.ts, the daily job that keeps them honest.
+//
+// Before that date ACTIVE simply meant "paid co-living, ungated" and was never
+// advanced again, so a stay booked for next March was ACTIVE the moment the
+// card cleared and stayed ACTIVE forever. COMPLETED was never written at all.
 export const BOOKING_STATUSES = [
+  // Awaiting money, check-in still ahead.
   "PENDING_PAYMENT",
+  // Never paid and the check-in date has passed. Terminal, and NON-BLOCKING:
+  // an unpaid hold with no expiry was a denial-of-inventory hole (it is why
+  // the public POST /api/bookings was retired — see server/routes.ts).
+  "EXPIRED",
   // Paid IN FULL, but held for human approval: a co-living stay of 7–28 nights
   // whose guest must upload a driver's license and sign a rental agreement, and
   // whose admin must check the name and set a door code, before it goes live.
@@ -63,8 +76,11 @@ export const BOOKING_STATUSES = [
   // review happens. Deliberately absent from NON_BLOCKING_BOOKING_STATUSES; see
   // shared/bookingGate.ts and its test for the ratchet on that.
   "PENDING_APPROVAL",
+  // Paid and cleared; the stay is in the FUTURE.
   "CONFIRMED",
+  // The stay is happening RIGHT NOW (check-in <= today < check-out).
   "ACTIVE",
+  // The guest has checked out.
   "COMPLETED",
   "CANCELLED",
   // Paid, but the dates were taken (race / OTA block / constraint). Does NOT block
@@ -74,12 +90,19 @@ export const BOOKING_STATUSES = [
 /**
  * Booking statuses that occupy NO dates and NO room. CANCELLED is self-evident;
  * CONFLICT is paid-but-unresolved and deliberately non-blocking (see
- * server/lib/materialize.ts). Every availability source — the storage queries,
- * `strHasConflict`, `buildStrAvailability`, and the Postgres exclusion
- * constraints in scripts/push-deconfliction-messaging.mjs — must exempt exactly
- * this set, or the calendar and the booking gate disagree.
+ * server/lib/materialize.ts); EXPIRED never had money behind it at all. Every
+ * availability source — the storage queries, `strHasConflict`,
+ * `buildStrAvailability`, and the Postgres exclusion constraints in
+ * scripts/push-deconfliction-messaging.mjs — must exempt exactly this set, or
+ * the calendar and the booking gate disagree.
+ *
+ * THIS LIST EXISTS TWICE. The two `EXCLUDE USING gist` constraints on
+ * `bookings` hardcode it in SQL, so adding a status here WITHOUT rebuilding
+ * them (scripts/push-expired-status.mjs) leaves the app offering dates that
+ * Postgres then rejects with a 23P01 — a booking that fails for no visible
+ * reason. Change both, always.
  */
-export const NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT"] as const;
+export const NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT", "EXPIRED"] as const;
 export const PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"] as const;
 export const PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"] as const;
 // REFUNDED: the money went back to the guest. A value-only change on a plain
@@ -593,7 +616,8 @@ export const bookings = pgTable(
     checkIn: date("check_in").notNull(),
     // Null for open-ended co-living stays.
     checkOut: date("check_out"),
-    // "PENDING_PAYMENT" | "CONFIRMED" | "ACTIVE" | "COMPLETED" | "CANCELLED"
+    // One of BOOKING_STATUSES. Describes the stay's phase in time; the daily
+    // job in server/lib/bookingLifecycle.ts advances it.
     status: text("status").notNull().default("PENDING_PAYMENT"),
     // "STRIPE" | "CASHAPP" | "ZELLE"
     paymentMethod: text("payment_method").notNull(),

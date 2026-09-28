@@ -96,10 +96,25 @@ describe("postPaymentStatusFor — the single post-payment status decision", () 
     expect(postPaymentStatusFor(STR("2026-10-01", "2026-10-03"))).toBe("CONFIRMED");
   });
 
-  it("ungated co-living keeps landing ACTIVE (behaviour preserved)", () => {
-    expect(postPaymentStatusFor(COLIVING("2026-10-01", null))).toBe("ACTIVE");
-    expect(postPaymentStatusFor(COLIVING("2026-10-01", "2026-10-07"))).toBe("ACTIVE"); // 6 nights
-    expect(postPaymentStatusFor(COLIVING("2026-10-01", "2026-10-30"))).toBe("ACTIVE"); // 29 nights
+  // Changed 2026-09-28: this used to assert ungated co-living always lands
+  // ACTIVE. That was the bug — ACTIVE was a MODEL discriminator, so a stay
+  // booked for next March went live on payment and never moved again. The
+  // calendar decides now, and `today` is injected so these never rot.
+  it("ungated co-living lands CONFIRMED when the stay is still ahead", () => {
+    const today = "2026-09-28";
+    expect(postPaymentStatusFor(COLIVING("2026-10-01", null), today)).toBe("CONFIRMED");
+    expect(postPaymentStatusFor(COLIVING("2026-10-01", "2026-10-07"), today)).toBe("CONFIRMED"); // 6 nights
+    expect(postPaymentStatusFor(COLIVING("2026-10-01", "2026-10-30"), today)).toBe("CONFIRMED"); // 29 nights
+  });
+
+  it("ungated co-living lands ACTIVE when the stay is already under way", () => {
+    const today = "2026-10-03";
+    expect(postPaymentStatusFor(COLIVING("2026-10-01", null), today)).toBe("ACTIVE");
+    expect(postPaymentStatusFor(COLIVING("2026-10-01", "2026-10-07"), today)).toBe("ACTIVE");
+  });
+
+  it("an STR paid for mid-stay is ACTIVE too — the model no longer decides", () => {
+    expect(postPaymentStatusFor(STR("2026-10-01", "2026-10-05"), "2026-10-02")).toBe("ACTIVE");
   });
 
   it("only ever returns a real booking status", () => {
@@ -132,17 +147,23 @@ describe("PENDING_APPROVAL blocks the calendar", () => {
 
   // THE load-bearing assertion of this feature. A paid-but-unapproved booking
   // must occupy its dates. The Postgres exclusion constraints read
-  // `status NOT IN ('CANCELLED','CONFLICT')`, so membership in this array is
-  // exactly what decides whether the app and the database agree.
+  // `status NOT IN (...)`, so membership in this array is exactly what decides
+  // whether the app and the database agree.
   it("is NOT in NON_BLOCKING_BOOKING_STATUSES", () => {
     expect(NON_BLOCKING_BOOKING_STATUSES).not.toContain("PENDING_APPROVAL");
   });
 
-  it("NON_BLOCKING_BOOKING_STATUSES is still exactly CANCELLED + CONFLICT", () => {
-    // A regression fence: adding anything here without updating the exclusion
-    // constraints in scripts/push-deconfliction-messaging.mjs desynchronises the
-    // calendar from the database.
-    expect([...NON_BLOCKING_BOOKING_STATUSES]).toEqual(["CANCELLED", "CONFLICT"]);
+  it("NON_BLOCKING_BOOKING_STATUSES is exactly CANCELLED + CONFLICT + EXPIRED", () => {
+    // A regression fence, not a formality: this list also exists in SQL, in the
+    // two EXCLUDE constraints on `bookings`. Adding a status here without
+    // rebuilding them (scripts/push-expired-status.mjs) leaves the app offering
+    // dates Postgres then rejects with a 23P01 — a booking that fails for no
+    // visible reason. EXPIRED was added 2026-09-28 together with that script.
+    expect([...NON_BLOCKING_BOOKING_STATUSES]).toEqual(["CANCELLED", "CONFLICT", "EXPIRED"]);
+  });
+
+  it("an EXPIRED booking never holds dates — it was never paid for", () => {
+    expect(NON_BLOCKING_BOOKING_STATUSES).toContain("EXPIRED");
   });
 });
 

@@ -235,6 +235,7 @@ export interface IStorage {
 
   // --- Rooms ---
   getRoomsByProperty(propertyId: string): Promise<Room[]>;
+  getRoomsByPropertyIds(propertyIds: string[]): Promise<Room[]>;
   getRoom(id: string): Promise<Room | undefined>;
   createRoom(data: InsertRoom): Promise<Room>;
   updateRoom(id: string, updates: Partial<InsertRoom>): Promise<Room | undefined>;
@@ -269,7 +270,7 @@ export interface IStorage {
    * Date-BLOCKING STR bookings with a checkOut on/after `date`, for the given
    * properties, ordered by checkIn — the inputs to the "next opening" chain
    * walk (server/lib/nextOpening.ts). One batched query, never per-property.
-   * CANCELLED and CONFLICT rows are excluded (NON_BLOCKING_BOOKING_STATUSES).
+   * NON_BLOCKING_BOOKING_STATUSES rows are excluded (CANCELLED, CONFLICT, EXPIRED).
    */
   getStrBookingsEndingOnOrAfter(propertyIds: string[], date: string): Promise<Booking[]>;
   createBooking(data: InsertBooking): Promise<Booking>;
@@ -497,6 +498,8 @@ export interface IStorage {
 
   /** Non-cancelled, non-CONFLICT co-living direct bookings for a room (short-stay overlap guard). CONFLICT bookings are paid but never block dates. */
   getColivingBookingsForRoom(roomId: string): Promise<Booking[]>;
+  /** Batched version: non-cancelled, non-CONFLICT co-living direct bookings for multiple rooms. */
+  getColivingBookingsForRooms(roomIds: string[]): Promise<Booking[]>;
 
   /**
    * Room ids occupied on `dateIso` by a live booking (`checkIn <= d < checkOut`,
@@ -507,6 +510,7 @@ export interface IStorage {
 
   // --- Manual blocks (admin/UO off-platform holds; room_id null = whole property) ---
   getManualBlocksForRoom(roomId: string): Promise<ManualBlock[]>;
+  getManualBlocksForRooms(roomIds: string[]): Promise<ManualBlock[]>;
   getManualBlocksForProperty(propertyId: string): Promise<ManualBlock[]>;
   getManualBlocks(opts?: { propertyId?: string; roomId?: string; from?: string }): Promise<ManualBlock[]>;
   createManualBlock(data: InsertManualBlock): Promise<ManualBlock>;
@@ -533,6 +537,8 @@ export interface IStorage {
   getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]>;
   /** Busy external ranges for a co-living room listing. */
   getExternalBlocksForRoom(roomId: string): Promise<ExternalBooking[]>;
+  /** Batched version: busy external ranges for multiple co-living rooms. */
+  getExternalBlocksForRooms(roomIds: string[]): Promise<ExternalBooking[]>;
   /** Upsert on (property_id|room_id, external_id); returns the current row. */
   upsertExternalBooking(data: InsertExternalBooking): Promise<ExternalBooking>;
   deleteExternalBooking(id: string): Promise<void>;
@@ -540,11 +546,15 @@ export interface IStorage {
   // --- Direct-booking / lease reads used by iCal dedup + availability merge ---
   /**
    * Date-BLOCKING STR bookings for a property (external dedup + STR
-   * availability). Excludes NON_BLOCKING_BOOKING_STATUSES (CANCELLED, CONFLICT).
+   * availability). Excludes NON_BLOCKING_BOOKING_STATUSES (CANCELLED, CONFLICT, EXPIRED).
    */
   getStrBookingsForProperty(propertyId: string): Promise<Booking[]>;
   /** Room-blocking leases that include a given room (external dedup + reused by isRoomAvailableForRange). */
   getRoomBlockingLeasesForRoom(roomId: string): Promise<Lease[]>;
+  /** Batched version: room-blocking leases for multiple rooms. */
+  getRoomBlockingLeasesForRooms(roomIds: string[]): Promise<Lease[]>;
+  /** Lease-room join links for multiple rooms (to map leases back to rooms). */
+  getLeaseRoomLinksByRoomIds(roomIds: string[]): Promise<LeaseRoom[]>;
 
   // --- Aggregates (for KPI rollup; AGGREGATES ONLY, no PII) ---
   getKpiAggregates(): Promise<{
@@ -628,6 +638,11 @@ class Storage implements IStorage {
   // --- Rooms ---
   async getRoomsByProperty(propertyId: string): Promise<Room[]> {
     return db.select().from(rooms).where(eq(rooms.propertyId, propertyId));
+  }
+
+  async getRoomsByPropertyIds(propertyIds: string[]): Promise<Room[]> {
+    if (propertyIds.length === 0) return [];
+    return db.select().from(rooms).where(inArray(rooms.propertyId, propertyIds));
   }
 
   async getRoom(id: string): Promise<Room | undefined> {
@@ -1839,6 +1854,22 @@ class Storage implements IStorage {
       .orderBy(asc(bookings.checkIn));
   }
 
+  async getColivingBookingsForRooms(roomIds: string[]): Promise<Booking[]> {
+    if (roomIds.length === 0) return [];
+    return db
+      .select()
+      .from(bookings)
+      .where(
+        and(
+          inArray(bookings.roomId, roomIds),
+          eq(bookings.model, "COLIVING"),
+          ne(bookings.status, "CANCELLED"),
+          ne(bookings.status, "CONFLICT"),
+        ),
+      )
+      .orderBy(asc(bookings.checkIn));
+  }
+
   async getOccupiedRoomIdsOn(dateIso: string): Promise<Set<string>> {
     const occupied = new Set<string>();
 
@@ -1848,8 +1879,11 @@ class Storage implements IStorage {
       .where(
         and(
           sql`${bookings.roomId} IS NOT NULL`,
-          ne(bookings.status, "CANCELLED"),
-          ne(bookings.status, "CONFLICT"),
+          // Was two literal ne() calls, which is precisely why adding EXPIRED
+          // to the non-blocking set would have missed this query and left
+          // unpaid, lapsed bookings pinning rooms to OCCUPIED. Use the shared
+          // constant so it cannot drift again.
+          notInArray(bookings.status, [...NON_BLOCKING_BOOKING_STATUSES]),
           lte(bookings.checkIn, dateIso),
           gt(bookings.checkOut, dateIso),
         ),
@@ -1902,6 +1936,15 @@ class Storage implements IStorage {
       .select()
       .from(manualBlocks)
       .where(eq(manualBlocks.roomId, roomId))
+      .orderBy(asc(manualBlocks.startDate));
+  }
+
+  async getManualBlocksForRooms(roomIds: string[]): Promise<ManualBlock[]> {
+    if (roomIds.length === 0) return [];
+    return db
+      .select()
+      .from(manualBlocks)
+      .where(inArray(manualBlocks.roomId, roomIds))
       .orderBy(asc(manualBlocks.startDate));
   }
 
@@ -2049,6 +2092,11 @@ class Storage implements IStorage {
     return db.select().from(externalBookings).where(eq(externalBookings.roomId, roomId));
   }
 
+  async getExternalBlocksForRooms(roomIds: string[]): Promise<ExternalBooking[]> {
+    if (roomIds.length === 0) return [];
+    return db.select().from(externalBookings).where(inArray(externalBookings.roomId, roomIds));
+  }
+
   async upsertExternalBooking(data: InsertExternalBooking): Promise<ExternalBooking> {
     // Idempotency key is the LISTING + external_id: (room_id, external_id) for a
     // co-living room, else (property_id, external_id) for a whole-property STR.
@@ -2123,6 +2171,30 @@ class Storage implements IStorage {
           roomHoldingLeaseCondition(),
         ),
       );
+  }
+
+  async getRoomBlockingLeasesForRooms(roomIds: string[]): Promise<Lease[]> {
+    if (roomIds.length === 0) return [];
+    const links = await db
+      .select({ leaseId: leaseRooms.leaseId })
+      .from(leaseRooms)
+      .where(inArray(leaseRooms.roomId, roomIds));
+    const leaseIds = links.map((l) => l.leaseId);
+    if (leaseIds.length === 0) return [];
+    return db
+      .select()
+      .from(leases)
+      .where(
+        and(
+          inArray(leases.id, leaseIds),
+          roomHoldingLeaseCondition(),
+        ),
+      );
+  }
+
+  async getLeaseRoomLinksByRoomIds(roomIds: string[]): Promise<LeaseRoom[]> {
+    if (roomIds.length === 0) return [];
+    return db.select().from(leaseRooms).where(inArray(leaseRooms.roomId, roomIds));
   }
 
   // --- Aggregates ---
