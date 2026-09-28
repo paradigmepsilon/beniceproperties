@@ -191,6 +191,8 @@ export interface ExportableListing {
   exportToken: string;
   /** Inbound Airbnb feed URL for this listing (secret-ish), or null. */
   airbnbIcalUrl: string | null;
+  /** Last time this listing's export feed was actually fetched, or null (never). */
+  exportLastFetchedAt: Date | null;
 }
 
 export const BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"] as const;
@@ -549,6 +551,9 @@ export interface IStorage {
   getExportableListings(): Promise<ExportableListing[]>;
   getPropertyByExportToken(token: string): Promise<Property | undefined>;
   getRoomByExportToken(token: string): Promise<Room | undefined>;
+  /** Stamp export_last_fetched_at = now() after a successful export-feed render. */
+  touchPropertyExportFetched(id: string): Promise<void>;
+  touchRoomExportFetched(id: string): Promise<void>;
   /** Rotate a listing's export token (invalidates the URL Airbnb holds). Returns the new token, or undefined if the row doesn't exist. */
   regenerateExportToken(kind: "property" | "room", id: string): Promise<string | undefined>;
   /** Busy external ranges for an STR whole-property listing (room_id IS NULL). */
@@ -2064,6 +2069,7 @@ class Storage implements IStorage {
         name: properties.name,
         token: properties.exportToken,
         url: properties.airbnbIcalUrl,
+        lastFetchedAt: properties.exportLastFetchedAt,
       })
       .from(properties)
       .where(and(eq(properties.active, true), realPropertyCondition(), eq(properties.type, "STR")))
@@ -2076,6 +2082,7 @@ class Storage implements IStorage {
         roomNumber: rooms.roomNumber,
         token: rooms.exportToken,
         url: rooms.airbnbIcalUrl,
+        lastFetchedAt: rooms.exportLastFetchedAt,
         propertyName: properties.name,
       })
       .from(rooms)
@@ -2093,6 +2100,7 @@ class Storage implements IStorage {
         label: p.name,
         exportToken: p.token,
         airbnbIcalUrl: p.url ?? null,
+        exportLastFetchedAt: p.lastFetchedAt ?? null,
       });
     }
     for (const r of roomRows) {
@@ -2104,6 +2112,7 @@ class Storage implements IStorage {
         label: `${r.propertyName} — ${r.name}`,
         exportToken: r.token,
         airbnbIcalUrl: r.url ?? null,
+        exportLastFetchedAt: r.lastFetchedAt ?? null,
       });
     }
     return listings;
@@ -2135,6 +2144,14 @@ class Storage implements IStorage {
       .where(eq(rooms.id, id))
       .returning({ token: rooms.exportToken });
     return row?.token ?? undefined;
+  }
+
+  async touchPropertyExportFetched(id: string): Promise<void> {
+    await db.update(properties).set({ exportLastFetchedAt: new Date() }).where(eq(properties.id, id));
+  }
+
+  async touchRoomExportFetched(id: string): Promise<void> {
+    await db.update(rooms).set({ exportLastFetchedAt: new Date() }).where(eq(rooms.id, id));
   }
 
   async getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]> {

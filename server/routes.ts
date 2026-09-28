@@ -109,8 +109,9 @@ import { getPricingSettings, updatePricingSettings, getCardSurchargeRate } from 
 import * as adminMessages from "./lib/adminMessages";
 import { validateManualBlockInput } from "./lib/manualBlocks";
 import { boundedMessageLogLimit } from "./lib/messageLogQuery";
-import { refreshExternalCalendars, normalizeAirbnbIcalUrl } from "./lib/icalSync";
+import { refreshExternalCalendars, normalizeAirbnbIcalUrl, getLastSyncStatus } from "./lib/icalSync";
 import { getExportFeed } from "./lib/icalExport";
+import { computeCalendarSyncStatus } from "./lib/calendarSyncStatus";
 import { buildReconciliationReport } from "./lib/reconciliation";
 import {
   createDraftLeaseSchema,
@@ -1947,19 +1948,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       },
       calendarStatus: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
-          const [lastSyncAtRow, lastResultRow] = await Promise.all([
-            storage.getSetting("ical_last_sync_at"),
-            storage.getSetting("ical_last_sync_result"),
-          ]);
-          let lastResult: unknown = null;
-          if (lastResultRow?.value) {
-            try {
-              lastResult = JSON.parse(lastResultRow.value);
-            } catch {
-              lastResult = null;
-            }
-          }
-          res.json({ lastSyncAt: lastSyncAtRow?.value ?? null, lastResult });
+          res.json(await getLastSyncStatus());
         } catch (e) {
           messagingErr(e, res, next);
         }
@@ -2732,14 +2721,32 @@ export async function registerRoutes(app: Express): Promise<void> {
   app.get("/api/admin/calendar/listings", requireAdmin, async (_req, res, next) => {
     try {
       const base = publicBaseUrl();
-      const listings = await storage.getExportableListings();
+      const [listings, { lastResult }] = await Promise.all([storage.getExportableListings(), getLastSyncStatus()]);
+      const resultByKey = new Map((lastResult?.listings ?? []).map((l) => [l.key, l]));
+
       res.json(
-        listings.map(({ exportToken, airbnbIcalUrl, ...rest }) => ({
-          ...rest,
-          exportUrl: `${base}/api/calendar/export/${exportToken}.ics`,
-          hasImportUrl: !!airbnbIcalUrl,
-          importUrlHint: airbnbIcalUrl ? airbnbIcalUrl.slice(-4) : null,
-        })),
+        listings.map(({ exportToken, airbnbIcalUrl, exportLastFetchedAt, kind, propertyId, roomId, label }) => {
+          const key = roomId ? `room:${roomId}` : `property:${propertyId}`;
+          const status = computeCalendarSyncStatus({
+            hasImportUrl: !!airbnbIcalUrl,
+            syncResultEntry: resultByKey.get(key),
+            exportLastFetchedAt,
+          });
+          return {
+            kind,
+            propertyId,
+            roomId,
+            label,
+            exportUrl: `${base}/api/calendar/export/${exportToken}.ics`,
+            hasImportUrl: !!airbnbIcalUrl,
+            importUrlHint: airbnbIcalUrl ? airbnbIcalUrl.slice(-4) : null,
+            exportLastFetchedAt: exportLastFetchedAt ? exportLastFetchedAt.toISOString() : null,
+            inboundStatus: status.inboundStatus,
+            inboundError: status.inboundError ?? null,
+            outboundStatus: status.outboundStatus,
+            overall: status.overall,
+          };
+        }),
       );
     } catch (err) {
       next(err);

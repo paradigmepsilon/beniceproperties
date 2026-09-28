@@ -4390,3 +4390,43 @@ route and the admin panel are NOT exercised against a live DB or in a browser: t
 migration applied and an admin login.
 
 **Deferred:** none.
+
+---
+
+## 2026-09-28 — "Fully synced" indicator per listing (Airbnb ↔ BNP)
+
+**Problem:** the calendar-export feature (previous entry) gave BNP export/import links per listing,
+but no visibility into whether either side was actually working — a saved link only means "typed
+in," not "connected."
+
+**Built**
+- `properties.export_last_fetched_at` / `rooms.export_last_fetched_at` — stamped by
+  `icalExport.ts`'s `getExportFeed()` on every successful, publishable render (never on an
+  unknown token or a gated listing, so a stale/guessed token can't fake "connected"). A failed
+  stamp write never breaks the feed response. `scripts/push-export-fetch-tracking.mjs` (additive,
+  idempotent; null is the correct steady-state for "never fetched," no sanity-check block needed).
+- `server/lib/calendarSyncStatus.ts` — pure `computeCalendarSyncStatus()`: inbound
+  (not_connected/pending/ok/error, from whether `airbnb_ical_url` is set + this listing's entry in
+  the existing hourly `ical_last_sync_result`) × outbound (not_connected/ok/stale, from
+  `export_last_fetched_at` windowed at `EXPORT_FETCH_STALE_AFTER_HOURS = 26` — generous because
+  Airbnb's own poll cadence isn't guaranteed, unlike the 3h threshold `icalSync.ts` already uses
+  for BNP's own hourly job). `overall` is `full` only when both sides are `ok`, `none` only when
+  both have never connected, otherwise `partial`.
+- Factored the `ical_last_sync_at`/`ical_last_sync_result` read+parse (previously inline in the
+  `calendarStatus` handler) into `icalSync.ts`'s `getLastSyncStatus()`, reused by both that route
+  and the new one.
+- `GET /api/admin/calendar/listings` now returns `inboundStatus`, `inboundError`,
+  `outboundStatus`, `overall`, `exportLastFetchedAt` per listing.
+- `calendar-sync-panel.tsx`: a badge ("Fully synced" / "Partially synced" / "Not synced") and a
+  one-line explanation of what's missing, added to the existing per-listing card. No panel
+  restructure; explanation copy has no hour number so it can't drift from the server constant.
+
+**Tests run:** `npm test` **1236/1236** (82 files, +1 file / +33 tests) · `npm run check` 0 errors
+· client vite build and server esbuild bundle clean. Not exercised against a live DB or in a
+browser — needs the migration applied and an admin login. The 26h boundary and the full
+inbound×outbound matrix are covered by table-driven unit tests in `calendarSyncStatus.test.ts`.
+
+**Deploy order (load-bearing, same as last time):** run `node scripts/push-export-fetch-tracking.mjs`
+BEFORE deploying — not run from this session (production writes are blocked here).
+
+**Deferred:** none.

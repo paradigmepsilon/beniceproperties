@@ -29,6 +29,8 @@ vi.mock("../storage", () => ({
     getPropertyByExportToken: vi.fn(async () => store.propertyByToken),
     getRoomByExportToken: vi.fn(async () => store.roomByToken),
     getProperty: vi.fn(async () => store.property),
+    touchPropertyExportFetched: vi.fn(async () => {}),
+    touchRoomExportFetched: vi.fn(async () => {}),
   },
 }));
 
@@ -158,17 +160,22 @@ describe("getExportFeed", () => {
   const strProperty = { id: "p1", name: "The Retreat", type: "STR", active: true, isPlaceholder: false };
   const coProperty = { id: "p2", name: "Old Bill Cook", type: "COLIVING", active: true, isPlaceholder: false };
 
-  it("returns null for an unknown or empty token", async () => {
+  it("returns null and stamps nothing for an unknown or empty token", async () => {
     expect(await getExportFeed("nope", NOW)).toBeNull();
     expect(await getExportFeed("", NOW)).toBeNull();
+    expect(storage.touchPropertyExportFetched).not.toHaveBeenCalled();
+    expect(storage.touchRoomExportFetched).not.toHaveBeenCalled();
   });
 
-  it("serves an STR property's feed", async () => {
+  it("serves an STR property's feed and stamps export_last_fetched_at for it", async () => {
     store.propertyByToken = strProperty;
     store.strBookings = [{ id: "b1", status: "CONFIRMED", checkIn: "2026-10-01", checkOut: "2026-10-04" }];
     const ics = await getExportFeed("tok", NOW);
     expect(ics).toContain("UID:booking-b1@beniceproperties.com");
     expect(ics).toContain("X-WR-CALNAME:The Retreat");
+    expect(storage.touchPropertyExportFetched).toHaveBeenCalledTimes(1);
+    expect(storage.touchPropertyExportFetched).toHaveBeenCalledWith("p1");
+    expect(storage.touchRoomExportFetched).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -176,18 +183,22 @@ describe("getExportFeed", () => {
     ["placeholder", { ...strProperty, isPlaceholder: true }],
     ["co-living (wrong type for a property feed)", { ...strProperty, type: "COLIVING" }],
     ["LTR", { ...strProperty, type: "LTR" }],
-  ])("returns null for a %s property", async (_label, property) => {
+  ])("returns null and stamps nothing for a %s property", async (_label, property) => {
     store.propertyByToken = property;
     expect(await getExportFeed("tok", NOW)).toBeNull();
+    expect(storage.touchPropertyExportFetched).not.toHaveBeenCalled();
   });
 
-  it("serves a co-living room's feed", async () => {
+  it("serves a co-living room's feed and stamps export_last_fetched_at for the room, not the property", async () => {
     store.roomByToken = { id: "r1", propertyId: "p2", name: "Room 2" };
     store.property = coProperty;
     store.leases = [{ id: "L1", startDate: "2026-10-01", endDate: "2026-10-31" }];
     const ics = await getExportFeed("tok", NOW);
     expect(ics).toContain("DTEND;VALUE=DATE:20261101");
     expect(ics).toContain("Old Bill Cook");
+    expect(storage.touchRoomExportFetched).toHaveBeenCalledTimes(1);
+    expect(storage.touchRoomExportFetched).toHaveBeenCalledWith("r1");
+    expect(storage.touchPropertyExportFetched).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -195,9 +206,17 @@ describe("getExportFeed", () => {
     ["inactive parent", { ...coProperty, active: false }],
     ["placeholder parent", { ...coProperty, isPlaceholder: true }],
     ["STR parent (rooms only publish under co-living)", { ...coProperty, type: "STR" }],
-  ])("returns null for a room with %s", async (_label, parent) => {
+  ])("returns null and stamps nothing for a room with %s", async (_label, parent) => {
     store.roomByToken = { id: "r1", propertyId: "p2", name: "Room 2" };
     store.property = parent;
     expect(await getExportFeed("tok", NOW)).toBeNull();
+    expect(storage.touchRoomExportFetched).not.toHaveBeenCalled();
+  });
+
+  it("still returns the feed even when the stamp write fails", async () => {
+    store.propertyByToken = strProperty;
+    (storage.touchPropertyExportFetched as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("db down"));
+    const ics = await getExportFeed("tok", NOW);
+    expect(ics).toContain("BEGIN:VCALENDAR");
   });
 });

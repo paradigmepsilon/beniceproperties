@@ -71,6 +71,7 @@ const WITHHELD_PROPERTY_KEYS = [
   "airbnbListingRoomId",
   "airbnbIcalUrl",
   "exportToken",
+  "exportLastFetchedAt",
   "isPlaceholder",
 ] as const satisfies readonly (keyof Property)[];
 
@@ -128,6 +129,7 @@ const WITHHELD_ROOM_KEYS = [
   "airbnbListingRoomId",
   "airbnbIcalUrl",
   "exportToken",
+  "exportLastFetchedAt",
 ] as const satisfies readonly (keyof Room)[];
 
 type PublicRoomKey = (typeof PUBLIC_ROOM_KEYS)[number];

@@ -364,6 +364,51 @@ export interface SyncResult {
 const LAST_SYNC_AT_SETTING = "ical_last_sync_at";
 const LAST_SYNC_RESULT_SETTING = "ical_last_sync_result";
 
+/** One listing's outcome as actually persisted in ical_last_sync_result (trimmed — see syncAllListings). */
+export interface PersistedListingResult {
+  key: string;
+  label: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface PersistedSyncResult {
+  at: string;
+  totalListings: number;
+  ok: number;
+  failed: number;
+  created: number;
+  updated: number;
+  removed: number;
+  listings: PersistedListingResult[];
+}
+
+export interface LastSyncStatus {
+  lastSyncAt: string | null;
+  lastResult: PersistedSyncResult | null;
+}
+
+/**
+ * Reads and parses the two settings syncAllListings() persists. Shared by the
+ * admin status route and the per-listing calendar/listings route so the
+ * JSON-parse-with-fallback logic lives in exactly one place.
+ */
+export async function getLastSyncStatus(): Promise<LastSyncStatus> {
+  const [lastSyncAtRow, lastResultRow] = await Promise.all([
+    storage.getSetting(LAST_SYNC_AT_SETTING),
+    storage.getSetting(LAST_SYNC_RESULT_SETTING),
+  ]);
+  let lastResult: PersistedSyncResult | null = null;
+  if (lastResultRow?.value) {
+    try {
+      lastResult = JSON.parse(lastResultRow.value);
+    } catch {
+      lastResult = null;
+    }
+  }
+  return { lastSyncAt: lastSyncAtRow?.value ?? null, lastResult };
+}
+
 /**
  * Sync one listing's Airbnb calendar: fetch its `airbnb_ical_url`, parse, dedup
  * vs BNP direct bookings/leases, upsert external_bookings for that listing, and

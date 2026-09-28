@@ -83,6 +83,41 @@ interface ListingLinks {
   exportUrl: string;
   hasImportUrl: boolean;
   importUrlHint: string | null;
+  exportLastFetchedAt: string | null;
+  inboundStatus: "not_connected" | "pending" | "ok" | "error";
+  inboundError: string | null;
+  outboundStatus: "not_connected" | "ok" | "stale";
+  overall: "full" | "partial" | "none";
+}
+
+function overallBadge(overall: ListingLinks["overall"]): { label: string; variant: "default" | "secondary" | "outline" } {
+  switch (overall) {
+    case "full":
+      return { label: "Fully synced", variant: "default" };
+    case "partial":
+      return { label: "Partially synced", variant: "secondary" };
+    case "none":
+      return { label: "Not synced", variant: "outline" };
+  }
+}
+
+/** One-line explanation of what's missing, or null when overall === "full". */
+function syncExplanation(listing: ListingLinks): string | null {
+  if (listing.overall === "full") return null;
+  const parts: string[] = [];
+  if (listing.inboundStatus === "not_connected") {
+    parts.push("Paste the Airbnb export link above to receive Airbnb's bookings.");
+  } else if (listing.inboundStatus === "pending") {
+    parts.push("Waiting for the first Airbnb import sync.");
+  } else if (listing.inboundStatus === "error") {
+    parts.push(`Import failing${listing.inboundError ? `: ${listing.inboundError}` : ""}.`);
+  }
+  if (listing.outboundStatus === "not_connected") {
+    parts.push("Airbnb hasn't pulled your calendar yet — paste the export link into Airbnb's Import calendar.");
+  } else if (listing.outboundStatus === "stale") {
+    parts.push("Airbnb hasn't refetched your calendar recently — check the export link is still pasted into Airbnb.");
+  }
+  return parts.join(" ");
 }
 
 /** apiRequest throws `${status}: ${body}`; surface the server's `message` when the body is JSON. */
@@ -138,7 +173,24 @@ function ListingLinksRow({ listing, onImportSaved }: { listing: ListingLinks; on
 
   return (
     <div className="space-y-2 rounded border p-3" data-testid={`calendar-links-${key}`}>
-      <div className="font-medium">{listing.label}</div>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="font-medium">{listing.label}</div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge variant={overallBadge(listing.overall).variant} data-testid={`badge-sync-status-${key}`}>
+            {overallBadge(listing.overall).label}
+          </Badge>
+          <span className="text-muted-foreground">
+            {listing.exportLastFetchedAt
+              ? `Airbnb last fetched your calendar ${dateTime(listing.exportLastFetchedAt)}`
+              : "Airbnb has never fetched your calendar"}
+          </span>
+        </div>
+      </div>
+      {syncExplanation(listing) && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-sync-explanation-${key}`}>
+          {syncExplanation(listing)}
+        </p>
+      )}
 
       <div className="space-y-1">
         <p className="text-xs text-muted-foreground">Send to Airbnb (paste into Airbnb: Calendar, Import calendar)</p>

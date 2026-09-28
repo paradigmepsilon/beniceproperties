@@ -29,6 +29,7 @@ import { storage } from "../storage";
 import { addDaysIso, todayIso } from "@shared/dates";
 import { NON_BLOCKING_BOOKING_STATUSES } from "@shared/schema";
 import { countsTowardBusiness } from "@shared/placeholder";
+import { log } from "../server-log";
 
 const UID_DOMAIN = "beniceproperties.com";
 const EVENT_SUMMARY = "Reserved";
@@ -163,15 +164,32 @@ export async function getExportFeed(token: string, now: Date = new Date()): Prom
   const property = await storage.getPropertyByExportToken(token);
   if (property) {
     if (!property.active || !countsTowardBusiness(property) || property.type !== "STR") return null;
-    return renderIcs(property.name, await buildPropertyExportEvents(property.id, today), now);
+    const ics = renderIcs(property.name, await buildPropertyExportEvents(property.id, today), now);
+    await stampFetched(() => storage.touchPropertyExportFetched(property.id));
+    return ics;
   }
 
   const room = await storage.getRoomByExportToken(token);
   if (room) {
     const parent = await storage.getProperty(room.propertyId);
     if (!parent || !parent.active || !countsTowardBusiness(parent) || parent.type !== "COLIVING") return null;
-    return renderIcs(`${parent.name} — ${room.name}`, await buildRoomExportEvents(room.id, today), now);
+    const ics = renderIcs(`${parent.name} — ${room.name}`, await buildRoomExportEvents(room.id, today), now);
+    await stampFetched(() => storage.touchRoomExportFetched(room.id));
+    return ics;
   }
 
   return null;
+}
+
+/**
+ * Record that a listing's export feed was actually fetched — the only signal
+ * that Airbnb (or anything else) is pulling it (see calendarSyncStatus.ts). A
+ * failed stamp write must never break the feed response itself.
+ */
+async function stampFetched(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    log(`icalExport: failed to stamp export_last_fetched_at: ${(err as Error).message}`, "icalExport");
+  }
 }
