@@ -1,4 +1,5 @@
 node_modules/
+node_modules
 dist/
 # Catch-all: a bare `.env` rule does not cover `.env.bak-<ts>` (written by
 # scripts/rotate-uo-token.mjs), `.env.old`, or anything else created while

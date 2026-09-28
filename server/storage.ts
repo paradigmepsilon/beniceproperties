@@ -207,6 +207,8 @@ export interface IStorage {
 
   // --- Rooms ---
   getRoomsByProperty(propertyId: string): Promise<Room[]>;
+  /** Batched sibling of getRoomsByProperty — one query for many properties. */
+  getRoomsByProperties(propertyIds: string[]): Promise<Room[]>;
   getRoom(id: string): Promise<Room | undefined>;
   createRoom(data: InsertRoom): Promise<Room>;
   updateRoom(id: string, updates: Partial<InsertRoom>): Promise<Room | undefined>;
@@ -260,6 +262,8 @@ export interface IStorage {
   // --- Payments ---
   getPayment(id: string): Promise<Payment | undefined>;
   getPaymentsByBooking(bookingId: string): Promise<Payment[]>;
+  /** Batched sibling of getPaymentsByBooking — one query for many bookings. */
+  getPaymentsByBookings(bookingIds: string[]): Promise<Payment[]>;
   getPaymentByStripeRef(stripeRef: string): Promise<Payment | undefined>;
   getPendingManualPayments(): Promise<Payment[]>;
   createPayment(data: InsertPayment): Promise<Payment>;
@@ -267,6 +271,8 @@ export interface IStorage {
 
   // --- Subscriptions (co-living weekly rent) ---
   getSubscriptionByBooking(bookingId: string): Promise<Subscription | undefined>;
+  /** Batched sibling of getSubscriptionByBooking — one query for many bookings. */
+  getSubscriptionsByBookings(bookingIds: string[]): Promise<Subscription[]>;
   getSubscriptionByStripeId(stripeSubscriptionId: string): Promise<Subscription | undefined>;
   createSubscription(data: InsertSubscription): Promise<Subscription>;
   updateSubscription(id: string, updates: Partial<InsertSubscription>): Promise<Subscription | undefined>;
@@ -293,6 +299,13 @@ export interface IStorage {
    */
   getActiveLeasesWithGuest(): Promise<Array<Lease & { guest: Guest; property: Property }>>;
   /**
+   * Leases joined to guest/property in one query, for an explicit status set.
+   * getActiveLeasesWithGuest is the non-terminal special case of this.
+   */
+  getLeasesWithGuest(opts?: {
+    statuses?: string[];
+  }): Promise<Array<Lease & { guest: Guest; property: Property }>>;
+  /**
    * Soonest endDate (>= `onOrAfter`) of an OCCUPYING lease per property —
    * statuses where the deposit is paid and a room is actually held
    * (PENDING_VERIFICATION | ACTIVE). Feeds "Next opening" on fully-booked
@@ -317,6 +330,8 @@ export interface IStorage {
   updateLease(id: string, updates: Partial<InsertLease>): Promise<Lease | undefined>;
   getLeaseByPortalToken(token: string): Promise<Lease | undefined>;
   getLeaseRooms(leaseId: string): Promise<LeaseRoom[]>;
+  /** Batched sibling of getLeaseRooms — one query for many leases. */
+  getLeaseRoomsForLeases(leaseIds: string[]): Promise<LeaseRoom[]>;
 
   // --- Vehicles (one per lease; parking identification) ---
   getVehicleByLease(leaseId: string): Promise<Vehicle | undefined>;
@@ -397,6 +412,8 @@ export interface IStorage {
 
   // --- Payment schedule ---
   getScheduleByLease(leaseId: string): Promise<PaymentScheduleRow[]>;
+  /** Batched sibling of getScheduleByLease — one query for many leases. */
+  getScheduleForLeases(leaseIds: string[]): Promise<PaymentScheduleRow[]>;
   getScheduleRow(id: string): Promise<PaymentScheduleRow | undefined>;
   updateScheduleRow(
     id: string,
@@ -405,6 +422,8 @@ export interface IStorage {
 
   // --- Late fees ---
   getLateFeesByLease(leaseId: string): Promise<LateFee[]>;
+  /** Batched sibling of getLateFeesByLease — one query for many leases. */
+  getLateFeesForLeases(leaseIds: string[]): Promise<LateFee[]>;
   createLateFee(data: InsertLateFee): Promise<LateFee>;
   updateLateFee(id: string, updates: Partial<InsertLateFee>): Promise<LateFee | undefined>;
   /**
@@ -588,6 +607,11 @@ class Storage implements IStorage {
   // --- Rooms ---
   async getRoomsByProperty(propertyId: string): Promise<Room[]> {
     return db.select().from(rooms).where(eq(rooms.propertyId, propertyId));
+  }
+
+  async getRoomsByProperties(propertyIds: string[]): Promise<Room[]> {
+    if (propertyIds.length === 0) return [];
+    return db.select().from(rooms).where(inArray(rooms.propertyId, propertyIds));
   }
 
   async getRoom(id: string): Promise<Room | undefined> {
@@ -786,6 +810,15 @@ class Storage implements IStorage {
       .orderBy(desc(payments.createdAt));
   }
 
+  async getPaymentsByBookings(bookingIds: string[]): Promise<Payment[]> {
+    if (bookingIds.length === 0) return [];
+    return db
+      .select()
+      .from(payments)
+      .where(inArray(payments.bookingId, bookingIds))
+      .orderBy(desc(payments.createdAt));
+  }
+
   async getPaymentByStripeRef(stripeRef: string): Promise<Payment | undefined> {
     const [row] = await db.select().from(payments).where(eq(payments.stripeRef, stripeRef));
     return row;
@@ -821,6 +854,11 @@ class Storage implements IStorage {
       .from(subscriptions)
       .where(eq(subscriptions.bookingId, bookingId));
     return row;
+  }
+
+  async getSubscriptionsByBookings(bookingIds: string[]): Promise<Subscription[]> {
+    if (bookingIds.length === 0) return [];
+    return db.select().from(subscriptions).where(inArray(subscriptions.bookingId, bookingIds));
   }
 
   async getSubscriptionByStripeId(
@@ -914,12 +952,29 @@ class Storage implements IStorage {
    * guest picker uses this instead of getLeases() + a per-row lookup loop.
    */
   async getActiveLeasesWithGuest(): Promise<Array<Lease & { guest: Guest; property: Property }>> {
+    return this.getLeasesWithGuest({ statuses: [...NON_TERMINAL_LEASE_STATUSES] });
+  }
+
+  /**
+   * The general form: leases joined to guest + property in one query, for an
+   * explicit status set. Defaults to non-terminal so a caller that omits
+   * `statuses` gets getActiveLeasesWithGuest's behaviour. A report that needs
+   * historical money (COMPLETED/TERMINATED leases) passes them in.
+   *
+   * Note the inner-join semantics: a lease whose guest or property row is gone
+   * is DROPPED here. A caller that must not lose money diffs these ids against
+   * getLeases() and accounts for the difference itself.
+   */
+  async getLeasesWithGuest(opts?: {
+    statuses?: string[];
+  }): Promise<Array<Lease & { guest: Guest; property: Property }>> {
+    const statuses = opts?.statuses ?? [...NON_TERMINAL_LEASE_STATUSES];
     const rows = await db
       .select()
       .from(leases)
       .leftJoin(guests, eq(leases.guestId, guests.id))
       .leftJoin(properties, eq(leases.propertyId, properties.id))
-      .where(inArray(leases.status, [...NON_TERMINAL_LEASE_STATUSES]))
+      .where(inArray(leases.status, statuses))
       .orderBy(desc(leases.createdAt));
     return rows
       .filter((r) => r.guests !== null && r.properties !== null)
@@ -1018,6 +1073,11 @@ class Storage implements IStorage {
 
   async getLeaseRooms(leaseId: string): Promise<LeaseRoom[]> {
     return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+
+  async getLeaseRoomsForLeases(leaseIds: string[]): Promise<LeaseRoom[]> {
+    if (leaseIds.length === 0) return [];
+    return db.select().from(leaseRooms).where(inArray(leaseRooms.leaseId, leaseIds));
   }
 
   // --- Vehicles (one row per lease; upsert keyed on lease_id) ---
@@ -1418,6 +1478,15 @@ class Storage implements IStorage {
       .orderBy(asc(paymentSchedule.scheduleSeq));
   }
 
+  async getScheduleForLeases(leaseIds: string[]): Promise<PaymentScheduleRow[]> {
+    if (leaseIds.length === 0) return [];
+    return db
+      .select()
+      .from(paymentSchedule)
+      .where(inArray(paymentSchedule.leaseId, leaseIds))
+      .orderBy(asc(paymentSchedule.scheduleSeq));
+  }
+
   async getScheduleRow(id: string): Promise<PaymentScheduleRow | undefined> {
     const [row] = await db.select().from(paymentSchedule).where(eq(paymentSchedule.id, id));
     return row;
@@ -1441,6 +1510,15 @@ class Storage implements IStorage {
       .select()
       .from(lateFees)
       .where(eq(lateFees.leaseId, leaseId))
+      .orderBy(asc(lateFees.accrualDate));
+  }
+
+  async getLateFeesForLeases(leaseIds: string[]): Promise<LateFee[]> {
+    if (leaseIds.length === 0) return [];
+    return db
+      .select()
+      .from(lateFees)
+      .where(inArray(lateFees.leaseId, leaseIds))
       .orderBy(asc(lateFees.accrualDate));
   }
 

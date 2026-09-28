@@ -21,6 +21,7 @@ import { ROOM_STATUSES } from "@shared/schema";
 import { amountMatches, refundEligibility } from "@/lib/adminRefund";
 import MessagesTab from "./messages-tab";
 import StayApprovalsTab, { useStayApprovalCount } from "./stay-approvals-tab";
+import PaymentsTab from "./payments-tab";
 import BlocksPanel from "./blocks-panel";
 import CalendarSyncPanel from "./calendar-sync-panel";
 
@@ -92,6 +93,7 @@ export default function AdminDashboard() {
       queryClient.invalidateQueries({ queryKey: ["/api/admin/reconciliation"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/payments/by-property"] });
     },
     onError: (e: Error) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
@@ -368,44 +370,11 @@ export default function AdminDashboard() {
           </Card>
         </TabsContent>
 
-        {/* Payments */}
+        {/* Payments — Property → Room → Stay → line. The paymentsView query above
+            is still fetched, but only for the Overview tab's refund eligibility;
+            this tab reads the grouped tree from its own endpoint. */}
         <TabsContent value="payments" className="mt-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Payments &amp; subscriptions</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4 text-sm">
-                {paymentsView.data?.map((row) => (
-                  <div key={row.booking.id} className="rounded-md border p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-mono">{row.booking.reference}</span>
-                      <Badge variant="secondary">{row.booking.status}</Badge>
-                    </div>
-                    <div className="mt-2 space-y-1">
-                      {row.payments.map((p) => (
-                        <div key={p.id} className="flex justify-between text-muted-foreground">
-                          <span>{p.type} · {p.method}</span>
-                          <span>
-                            {money(parseFloat(p.amount) + parseFloat(p.surcharge))} · {p.status}
-                          </span>
-                        </div>
-                      ))}
-                      {row.subscription && (
-                        <div className="flex justify-between">
-                          <span>Weekly subscription</span>
-                          <span>
-                            {money(row.subscription.weeklyAmount)}/wk · {row.subscription.status}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                ))}
-                {!paymentsView.data?.length && <p className="py-4 text-muted-foreground">No payments yet.</p>}
-              </div>
-            </CardContent>
-          </Card>
+          <PaymentsTab />
         </TabsContent>
 
         {/* Messages */}
@@ -849,6 +818,7 @@ function ConflictBookingActions({ booking, payments }: { booking: Booking; payme
       setTypedAmount("");
       queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/payments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/payments/by-property"] });
       queryClient.invalidateQueries({ queryKey: ["/api/admin/reconciliation"] });
     },
     onError: (e: Error) => toast({ title: "Could not cancel", description: e.message, variant: "destructive" }),

@@ -110,6 +110,7 @@ import { validateManualBlockInput } from "./lib/manualBlocks";
 import { boundedMessageLogLimit } from "./lib/messageLogQuery";
 import { refreshExternalCalendars } from "./lib/icalSync";
 import { buildReconciliationReport } from "./lib/reconciliation";
+import { buildPaymentsByProperty } from "./lib/paymentsByProperty";
 import {
   createDraftLeaseSchema,
   signLeaseSchema,
@@ -199,6 +200,23 @@ async function reconciliationHandler(
     }
     const report = await buildReconciliationReport(parsed.data.from, parsed.data.to, new Date().toISOString());
     res.json(report);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Admin Payments tree (Property -> Room -> Stay -> line). Module-level for the
+// same reason as reconciliationHandler: mountable on either auth surface later
+// without depending on registration order. Admin-only today — UO already reads
+// this money via /api/uo/payments and /api/uo/leases, and a third view of it
+// would only invite drift.
+async function paymentsByPropertyHandler(
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): Promise<void> {
+  try {
+    res.json(await buildPaymentsByProperty(new Date().toISOString()));
   } catch (err) {
     next(err);
   }
@@ -2530,6 +2548,11 @@ export async function registerRoutes(app: Express): Promise<void> {
       next(err);
     }
   });
+
+  // Payments grouped Property -> Room -> Stay, unioning booking payments with
+  // lease rent + late fees. Separate from /api/admin/payments above, which the
+  // Overview tab's refund path consumes as raw Payment rows.
+  app.get("/api/admin/payments/by-property", requireAdmin, paymentsByPropertyHandler);
 
   // ---- Inventory management ----
   app.post("/api/admin/properties", requireAdmin, async (req, res, next) => {

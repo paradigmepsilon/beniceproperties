@@ -4186,3 +4186,98 @@ fair-housing surface than today's state. The manifest records the owner chose to
 class of risk; the form's honest "isn't available to book yet" copy is the mitigation taken. Steps
 1-3 fix the data problem and do not depend on step 4. Historical `kpi_snapshots` rows keep their
 contaminated occupancy figures — recomputing them is a production data write, not done here.
+
+## 2026-09-27 — Admin Payments tab: money read as Property → Room → Stay → line
+
+**Why:** the owner could not correlate a payment to a booking, a guest, or a room. The Payments tab
+rendered one bordered card per booking whose only handle was `booking.reference`, with lines reading
+`WEEKLY · STRIPE ‖ $362.25 · PAID` — no guest, no property, no room, no date. Cause was structural,
+not cosmetic: `GET /api/admin/payments` returns raw `Booking` rows, which carry `propertyId` /
+`roomId` / `guestId` as bare UUIDs and nothing else, so the UI had no names to render. Worse,
+recurring co-living rent was **not on the admin surface at all** — it lives in `payment_schedule`
+(lease-keyed) while booking money lives in `payments` (booking-keyed), `leases` has no `booking_id`,
+and no `/api/admin/*` route exposed the schedule. Only the resident saw their own rent.
+
+**Approach:** one new read-only endpoint `GET /api/admin/payments/by-property` (`requireAdmin`)
+returning a pre-grouped Property → Room → Stay → line tree, unioning both money worlds.
+`GET /api/admin/payments` is left byte-for-byte alone: the Overview tab consumes it for conflict-refund
+eligibility (`dashboard.tsx` → `refundEligibility`), only the pure helper is tested, and reshaping the
+query that feeds a real refund path did not belong in a legibility change. Grouping runs server-side
+because the client cannot be tested at all — vitest is `environment:"node"` with no jsdom — so no
+money decision was allowed to live in `.tsx`.
+
+**Placeholder listings are excluded**, via `countsTowardBusiness()` from `shared/placeholder.ts`
+(landed the same day). Real data confirms 9 placeholder properties filtered out; without the gate the
+tab would have listed nine fictional homes as $0-earning inventory. Money found sitting on a
+placeholder property is NOT swallowed — it surfaces under `unattributed` rather than vanishing.
+
+**Bug found by checking real data, and fixed before shipping:** the first working version reported
+`scheduled $7,015.03 / expected $9,166.80` when only $2,151.77 had ever been collected. All of it was
+dead money — $2,442.86 of remaining rent on a TERMINATED lease, $2,410.82 of PENDING charges on
+CANCELLED bookings, $1,961.35 on abandoned PENDING_PAYMENT checkouts. A forecast built from money
+that can never arrive is the exact misreading this tab exists to prevent. Unpaid rows on a CLOSED
+stay (booking CANCELLED/COMPLETED/PENDING_PAYMENT, lease COMPLETED/TERMINATED) are now shown but
+counted nowhere, carrying `counted: false` and rendering struck through with "not expected".
+`DEFAULTED` is deliberately NOT closed — unpaid rent there is real debt and still reads overdue.
+After the fix: `expected` $2,151.77, matching collected exactly; 20 of 26 lines shown-but-uncounted.
+
+**Multi-room leases diverge from `reconciliation.ts` on purpose.** That report attributes a
+multi-room lease entirely to `rooms[0]` ("the primary unit") so its totals tie out to Stripe without
+double counting — correct there, wrong here, since it would make the other rooms read "$0 earned".
+Here the stay is listed under **every** room it covers, its money held in `sharedTotals` (never a
+room's own `totals`), and counted **exactly once** at property level. Two machine-checked invariants:
+`sum(room.totals) + sum(distinct multi-room stays) === property.totals`, and
+`sum(property.totals) + unattributed === grand`. Both asserted in tests and verified against real
+data. **Consequence: the Payments tab and the Reconciliation report will report different per-room
+numbers for the same multi-room lease.** `reconciliation.ts` was not touched.
+
+**Performance:** the old handler was `1 + 2N` sequential queries over *every booking ever*
+(`uoApi.listLeases` is `1 + 5L`), and `server/db.ts` uses the Neon **HTTP** driver — one HTTPS
+round-trip per query, no pipelining. The new handler is a fixed ~11 queries in 2 waves regardless of
+portfolio size, via seven new batched storage reads.
+
+**Other decisions:** rooms are pre-seeded from the property even with zero stays, because for a
+four-room house the operator must see which rooms earn nothing. Late fees accrue one row per day
+indefinitely, so they are collapsed per installment **and status** into one line
+(`Late fees (inst. #6 — 3 days)`) — rendering 30 individual rows would have recreated the original
+complaint. A live stay with no money row at all shows a loud `MISSING` line rather than being tidied
+away. No new UI primitive was added: `@radix-ui/react-accordion` is already a dependency but nothing
+in `client/src/components/ui/` uses it, so the collapse copies the existing plain-`<button>` + `▾`/`▸`
+pattern from the Inventory tab, adding the `aria-expanded` that one lacks.
+
+**Read-only.** No schema change, no migration, no Stripe change, no new money-moving action. "Mark
+paid" stays on the Reconciliation tab.
+
+**Files:** `shared/api-types.ts` (7 new interfaces) · `server/lib/paymentsByProperty.ts` (new) ·
+`server/lib/paymentsByProperty.test.ts` (new) · `server/storage.ts` (7 batched reads;
+`getActiveLeasesWithGuest` generalized to `getLeasesWithGuest` and kept as a delegate) ·
+`server/routes.ts` (handler + one admin mount; existing payments route untouched) ·
+`client/src/lib/statusBadge.ts` (new, extracted from `portal.tsx`) ·
+`client/src/lib/statusBadge.test.ts` (new) · `client/src/pages/admin/payments-tab.tsx` (new) ·
+`client/src/pages/admin/dashboard.tsx` (import + tab swap + 2 cache-invalidation keys) ·
+`client/src/pages/portal.tsx` (imports the extracted helpers).
+
+**Tests run:** `npm test` **1201/1201** (78 files, +52 new: 47 builder + 5 statusBadge) ·
+`npm run check` (tsc) 0 errors · `npm run build` clean (prerender 43/43). The builder tests were
+mutation-checked: reverting the multi-room `sharedTotals` rule and the REFUNDED rule each failed 3
+tests, so they are not vacuous. Endpoint exercised end-to-end against the real Neon data on a local
+dev server — 401 unauthenticated, 200 authenticated, both invariants hold, 9 placeholders excluded.
+
+**Deferred / not done:**
+- **Pixel check not performed by the agent.** Authenticating a browser would have required putting
+  either the admin password or a session cookie into the session transcript, and sessions persist to
+  the shared Neon DB via `connect-pg-simple` with a 24h TTL, so that cookie is replayable against
+  production. The API is verified; the rendered layout is for the owner to eyeball.
+- No admin route exists to settle a MANUAL lease installment — only
+  `POST /api/uo/leases/:id/mark-paid` (service-token). The tab now makes a `DUE`/`LATE` manual
+  installment plainly visible with no way to act on it from `/admin`. Natural next ticket: mount the
+  existing idempotent `uo.markPaid` behind `requireAdmin`.
+- Leases still have no human reference; the tab shows the first 8 characters of the UUID. A real
+  `leases.reference` column would fix it (schema change, out of scope).
+- `GET /api/admin/reconciliation-report` still has zero UI anywhere in `client/`.
+- The `payment_schedule`/`late_fees` code paths are covered by tests but were exercised by only one
+  real lease (TERMINATED) in local data; no ACTIVE lease with live rent existed to observe.
+
+**Security note, unresolved:** while wiring the local verification, sourcing `.env` caused the shell
+to echo the full `DATABASE_URL` — including the Neon role password — into the agent session
+transcript. Transcripts persist and sync. **That Neon password should be rotated.**
