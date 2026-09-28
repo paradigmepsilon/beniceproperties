@@ -7,7 +7,21 @@
 //   - signing captures the IP and timestamp,
 //   - re-signing an already-signed lease is a no-op.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+// ---------------------------------------------------------------------------
+// The advance-booking rule (@shared/dates isMoveInAllowed) rejects a move-in
+// earlier than today-before-4pm-ET. Every scenario below uses fixed 2026-07
+// dates, so pin the clock just ahead of them and these stay what they were
+// written to be: pure pricing and schedule tests.
+//
+// Only Date is faked. Faking timers wholesale stalls the awaits in this file.
+// ---------------------------------------------------------------------------
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-06-30T12:00:00Z")); // 08:00 ET, 2026-06-30
+});
+afterEach(() => vi.useRealTimers());
+
 
 const mockStorage = vi.hoisted(() => ({
   getProperty: vi.fn(),

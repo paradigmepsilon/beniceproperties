@@ -18,6 +18,7 @@ import {
 import { combineLeaseRates, cascadeStayPrice, RateError } from "@shared/rateSelection";
 import type { LeaseQuoteResponse, LeaseScheduleLine } from "@shared/api-types";
 import { CADENCE_DAYS, MAX_LEASE_DAYS, ROOM_UNBOOKABLE_STATUSES, allowedCadencesForTerm } from "@shared/schema";
+import { isMoveInAllowed, moveInTooEarlyMessage } from "@shared/dates";
 import { storage } from "../storage";
 import { LeaseError } from "./errorResponse";
 import { overlapsRange } from "./ranges";
@@ -58,6 +59,8 @@ export interface LeaseQuoteInput {
    * so a preview always renders.
    */
   cadence?: PaymentCadence;
+  /** Injectable clock for the advance-booking rule. Defaults to now. */
+  now?: Date;
 }
 
 /**
@@ -68,6 +71,7 @@ export interface LeaseQuoteInput {
  *  - no room is blocked by an external (Airbnb/OTA) reservation or a manual
  *    admin block for the range,
  *  - the term is ≤ 90 days,
+ *  - the move-in clears the advance-booking rule,
  *  - the schedule generates cleanly.
  */
 export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuoteResponse> {
@@ -126,6 +130,19 @@ export async function buildLeaseQuote(input: LeaseQuoteInput): Promise<LeaseQuot
   const termDays = inclusiveDays(input.startDate, input.endDate);
   if (termDays > MAX_LEASE_DAYS) {
     throw new LeaseError(`Lease term cannot exceed ${MAX_LEASE_DAYS} days`, 422);
+  }
+
+  // Advance-booking rule, beside the term ceiling because both are "is this term
+  // one we can accept at all" questions. This is the choke point for BOTH
+  // /api/lease-quote and /api/leases (createDraftLease re-calls this), which
+  // until now would each price and PERSIST a lease starting in the past.
+  //
+  // `now` is resolved ONCE: letting the check and the message each call
+  // new Date() lets a request landing on the 4pm boundary test against one
+  // clock and name the other in its error.
+  const now = input.now ?? new Date();
+  if (!isMoveInAllowed(input.startDate, now)) {
+    throw new LeaseError(moveInTooEarlyMessage(now), 422);
   }
 
   // NOTE: the ONLY availability guard in this pricing path is the external-block

@@ -4107,3 +4107,87 @@ same, so `COLIVING_OPENING_HORIZON_DAYS` is now `2 * MAX_LEASE_DAYS` = 180 (two 
 max-term leases; imported from `shared/schema.ts`, not a magic number). A room turning over from
 one full lease into another always opens inside that window; a hold years out still does not.
 Tests updated (chain of two 90-day leases counts; day 181 does not). Re-verified live after deploy.
+
+---
+
+## 2026-09-27 — Advance-booking rule (Stage 0 of the reservation-change plan)
+
+**Why:** a guest booked one week when they wanted a month or more. Planning that gap surfaced a
+separate, unrelated hole: **nothing in the app required a booking to be in advance of the stay.**
+`POST /api/quote`, `POST /api/booking-intent`, `POST /api/lease-quote` and `POST /api/leases` all
+accepted a move-in date **in the past** — the request schemas validate only the `YYYY-MM-DD` shape,
+and `buildLeaseQuote` / `resolveBooking` never compared against today. The only "not before today"
+checks were client-side calendar decorations, which are cosmetic. A back-dated lease would also
+make installment 1 immediately due (`leasePayments.ts`), and a back-dated short stay would create a
+real Stripe PaymentIntent for a stay already underway.
+
+**Owner rule (2026-09-27):** the earliest move-in we can accept is **today while the hotel-local
+hour is < 16, otherwise tomorrow.** 4pm is not a new number — check-in is already 4pm and checkout
+11am, which is what makes every stay a whole number of billable days (`shared/rateSelection.ts`
+cascade header). Same-day is not banned; arriving after the door opens with nobody expecting you is.
+
+**Built — one predicate, two choke points.**
+
+`shared/dates.ts` gains `CHECK_IN_HOUR_ET = 16`, `hotelHour()`, `earliestMoveInIso()`,
+`isMoveInAllowed()`, `moveInTooEarlyMessage()`. `hotelHour` resolves the offset per-instant through
+`Intl` rather than subtracting a fixed −4/−5, so it is correct on both sides of a DST transition,
+and `% 24` guards the ICU h24 quirk that renders midnight as "24" (which would make every midnight
+booking look like check-in had passed). `friendlyDate` also **moved** here from
+`server/lib/stayReminders.ts`, which now re-exports it — the client formats the same YYYY-MM-DD
+strings and two formatters drift.
+
+Enforcement is at two choke points rather than four routes, because the four unguarded paths funnel
+through them:
+
+- `resolveBooking` (`server/lib/booking.ts`) — **both** branches, co-living and STR. Covers
+  `/api/quote` and `/api/booking-intent`.
+- `buildLeaseQuote` (`server/lib/lease.ts`) — beside the existing `MAX_LEASE_DAYS` ceiling, since
+  both answer "is this term one we can accept at all". Covers `/api/lease-quote` and `/api/leases`
+  (`createDraftLease` re-calls it; it is the only non-test caller of `createLeaseWithSchedule`).
+
+Both reject **422**, not 409: this is a policy, not a conflict. Both resolve `now` **once** — letting
+the check and the message each call `new Date()` lets a request landing on the 4pm boundary test
+against one clock and name the other. An injectable `now?: Date` is threaded through both inputs.
+
+**Deliberately NOT guarded:** `materializeShortStayBooking` in the Stripe webhook. If a PI created
+at 15:59 confirms at 16:05 the money has already moved, and refusing there would strand a paid
+guest. Existing arrival machinery (`GATE_INCOMPLETE_AT_CHECKIN`) handles it.
+
+**The subtle one — `server/lib/availability.ts`.** `AvailabilityResponse.minDate` is the floor the
+client's date picker trusts, so it is now `earliestMoveInIso()`. But `today` in those two builders
+does **double duty**: it also filters busy ranges to "ending today or later", where swapping in the
+advance floor would drop a range ending today and **hide a real block**. The two are now separate
+values with a comment saying why they are not interchangeable.
+
+**Client floors** (`search-bar`, `coliving-search-bar`, `property-detail`, `lease-booking`,
+`room-detail`): `todayIso()` → `earliestMoveInIso()`, and the local variable renamed `today` →
+`earliestMoveIn`, because after 4pm the old name is a lie. `portal.tsx` deliberately keeps
+`todayIso()` — it compares payment-schedule due dates, not a move-in.
+
+**Known and accepted:** `earliestMoveInIso()` is time-dependent while TanStack Query caches, so a
+client loaded at 15:30 still offers today at 16:05. The server rejects it with a message naming the
+correct date — a clean recoverable error, not a silent wrong booking.
+
+**Also fixed (unrelated, live, factual):** `client/src/pages/lease-pay.tsx` told the guest *"Your
+lease is active."* immediately after the deposit. `finalizeDepositPayment` sets
+`PENDING_VERIFICATION`; the lease only goes ACTIVE once an admin approves the licence. The copy now
+says what the `depositReceipt` email already said.
+
+**Tests:** 32 existing tests in `booking.test.ts` / `lease.test.ts` / `leaseFlow.test.ts` failed on
+first run — every scenario uses fixed 2026-07 dates, now in the past. Fixed by **pinning the clock**
+(`vi.useFakeTimers({ toFake: ["Date"] })` at 2026-06-30T12:00:00Z) rather than by weakening the
+guard, which keeps every golden pricing/schedule assertion intact. Only `Date` is faked; faking
+timers wholesale stalls the awaits in those files.
+
+New coverage: 14 cases in `shared/dates.test.ts` (15:59 vs 16:01 ET, midnight as 0 not 24, the DST
+fall-back pair where the same UTC wall time one day apart gives opposite answers, spring-forward, a
+past date rejected at every hour); 5 in `booking.test.ts` and 4 in `lease.test.ts` covering reject
+past / accept today before 4pm / reject the same dates one minute after 4pm / accept tomorrow / 422.
+
+**Tests run:** `tsc --noEmit` 0 errors · `npm run build` exit 0 · `vitest run` **1148/1148** (74 files).
+
+**Deferred:** Stages 1–9 of the plan (extended-stay copy, `reservation_changes`, admin adjustments,
+UO management, week→month+ conversion). Stages 5, 6 and 9 move money and need an owner review gate.
+Also outstanding: UO's calendar and iCal export omit `PENDING_VERIFICATION` from their lease-hold
+list and treat two 30-minute checkout holds as permanent — a live double-booking risk, fixed
+separately in the Unified-Ops repo.

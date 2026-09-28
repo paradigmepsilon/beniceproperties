@@ -8,7 +8,7 @@ import { Link, useParams, useLocation, useSearch } from "wouter";
 import { visibleRooms } from "@/lib/visibility";
 import { useQuery } from "@tanstack/react-query";
 import { MapPin, ArrowLeft } from "lucide-react";
-import { todayIso } from "@shared/dates";
+import { earliestMoveInIso } from "@shared/dates";
 import { ROOM_UNBOOKABLE_STATUSES, type Property, type RoomWithAvailability } from "@shared/schema";
 import type { QuoteResponse } from "@shared/api-types";
 import { apiRequest } from "@/lib/queryClient";
@@ -36,18 +36,19 @@ export default function PropertyDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const searchStr = useSearch();
-  const today = todayIso();
+  // Advance-booking floor, not "today" — see @shared/dates.earliestMoveInIso.
+  const earliestMoveIn = earliestMoveInIso();
   // Seed dates from the home hero search (?checkIn=&checkOut=) when they're
   // still sensible; otherwise start empty like a direct visit.
   const [checkIn, setCheckIn] = useState(() => {
     const v = new URLSearchParams(searchStr).get("checkIn") ?? "";
-    return /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= today ? v : "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(v) && v >= earliestMoveIn ? v : "";
   });
   const [checkOut, setCheckOut] = useState(() => {
     const params = new URLSearchParams(searchStr);
     const inV = params.get("checkIn") ?? "";
     const outV = params.get("checkOut") ?? "";
-    return /^\d{4}-\d{2}-\d{2}$/.test(outV) && outV > (inV >= today ? inV : today) ? outV : "";
+    return /^\d{4}-\d{2}-\d{2}$/.test(outV) && outV > (inV >= earliestMoveIn ? inV : earliestMoveIn) ? outV : "";
   });
 
   // A complete, forward date selection. When set, the detail request asks for
@@ -131,7 +132,7 @@ export default function PropertyDetail() {
   const hiddenRoomCount = datedSearch ? rooms.length - shownRooms.length : 0;
   const busy = avail?.busy ?? [];
   const disabledDays = busyToDisabledMatchers(busy, {
-    minDate: avail?.minDate ?? today,
+    minDate: avail?.minDate ?? earliestMoveIn,
     halfOpen: true, // STR: checkout day is free to check in
   });
   // Valid = availability is known AND a real forward range that doesn't straddle

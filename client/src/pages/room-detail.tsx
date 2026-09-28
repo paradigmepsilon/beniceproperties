@@ -9,7 +9,7 @@ import { useParams, useLocation, useSearch, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { ArrowLeft } from "lucide-react";
-import { todayIso } from "@shared/dates";
+import { earliestMoveInIso } from "@shared/dates";
 import type { Property, Room } from "@shared/schema";
 import { COLIVING_MIN_DAYS, requiresLease, isDirectCoLivingStay, ROOM_UNBOOKABLE_STATUSES } from "@shared/schema";
 import type { QuoteResponse, LeaseQuoteResponse } from "@shared/api-types";
@@ -59,7 +59,8 @@ export default function RoomDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const searchStr = useSearch();
-  const today = todayIso();
+  // Advance-booking floor, not "today" — see @shared/dates.earliestMoveInIso.
+  const earliestMoveIn = earliestMoveInIso();
 
   const { data, isLoading } = useQuery<RoomResponse>({ queryKey: ["/api/rooms", id!] });
   // Busy ranges (room-blocking leases ∪ Airbnb iCal blocks). `availLoading` gates
@@ -111,7 +112,7 @@ export default function RoomDetail() {
   const seedValid =
     /^\d{4}-\d{2}-\d{2}$/.test(seededIn) &&
     /^\d{4}-\d{2}-\d{2}$/.test(seededOut) &&
-    seededIn >= today &&
+    seededIn >= earliestMoveIn &&
     seededOut > seededIn;
   const [startDate, setStartDate] = useState(seedValid ? seededIn : "");
   const [endDate, setEndDate] = useState(seedValid ? seededOut : "");
@@ -131,7 +132,7 @@ export default function RoomDetail() {
   // passes halfOpen: true — the checkout/end day of a busy range stays free.
   const busy = avail?.busy ?? [];
   const disabledDays = busyToDisabledMatchers(busy, {
-    minDate: avail?.minDate ?? today,
+    minDate: avail?.minDate ?? earliestMoveIn,
     halfOpen: true,
   });
   // Availability must be LOADED before any range is treated as bookable — until
