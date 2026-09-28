@@ -1827,7 +1827,26 @@ var init_storage = __esm({
       async getUnpushedSnapshots() {
         return db.select().from(kpiSnapshots).where(eq(kpiSnapshots.pushedToUo, false));
       }
+      // ONE row per snapshot_date. This used to insert unconditionally, and the
+      // rollup runs on every scheduler sweep — hourly from the local scheduler,
+      // daily from the Vercel cron — so any day with a dev server up collected a
+      // row per tick: 652 rows by 2026-09-28, 23 of them for a single date. Every
+      // row was self-consistent, so no reported number was ever wrong, but the
+      // table was useless to read as history and the duplicates made a unique
+      // index impossible.
+      //
+      // Upserted in application code rather than with ON CONFLICT, deliberately:
+      // that keeps this safe to deploy BEFORE the unique index exists.
+      // scripts/dedupe-kpi-snapshots.mjs collapses the existing duplicates and
+      // adds the index, and once it has, the index also closes the race this
+      // version leaves open (two rollups for the same date both finding no row).
+      // The cron is single-instance, so that race is theoretical today.
       async createSnapshot(data) {
+        const [existing] = await db.select({ id: kpiSnapshots.id }).from(kpiSnapshots).where(eq(kpiSnapshots.snapshotDate, data.snapshotDate)).orderBy(desc(kpiSnapshots.createdAt)).limit(1);
+        if (existing) {
+          const [row2] = await db.update(kpiSnapshots).set(data).where(eq(kpiSnapshots.id, existing.id)).returning();
+          return row2;
+        }
         const [row] = await db.insert(kpiSnapshots).values(data).returning();
         return row;
       }

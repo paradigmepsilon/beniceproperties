@@ -4238,3 +4238,43 @@ reading live in one place. Read-only: the rows are append-only and follow-up hap
 
 **Tests run:** `npm test` **1158/1158** (77 files, +9) · `npm run check` 0 errors · `npm run build`
 and `build:api` clean.
+
+### Addendum — 2026-09-28, kpi_snapshots duplicate rows
+
+The historical correction ran (owner): 57 rows corrected, 652 backed up. That row count exposed the
+next problem — `kpi_snapshots` held **652 rows across 98 dates**, up to 25 for a single day.
+
+**Cause:** `storage.createSnapshot()` inserted unconditionally, and `buildAndPushSnapshot()` runs on
+every scheduler sweep — hourly from the local scheduler, daily from the Vercel cron. Any day with a
+dev server up collected a row per tick. No reported number was ever wrong (each row is
+self-consistent); the table was simply unreadable as history, and no unique index could exist over
+it. Nothing in the app reads the table back, which is why it went unnoticed.
+
+**Code fix (deployed):** `createSnapshot` now upserts on `snapshot_date` — one row per day, updated
+in place. Deliberately an application-level upsert rather than `ON CONFLICT`, so it is safe to
+deploy BEFORE the unique index exists and carries no ordering hazard.
+
+**Cleanup (owner-run, NOT applied — production writes are blocked from this session):**
+`scripts/dedupe-kpi-snapshots.mjs`. Dry-run verified against production: **652 → 98 rows**, 554
+duplicates across 32 dates deleted, then a unique index on `snapshot_date`. The survivor for each
+date is the newest `created_at` — the last figure computed that day — and if ANY row for that date
+had been pushed to UO, the survivor inherits `pushed_to_uo` plus the EARLIEST `pushed_at`, so the
+cleanup cannot erase the record that UO saw a date. Destructive, so it exports the whole table
+first and is a dry run until `--apply`.
+
+    node scripts/dedupe-kpi-snapshots.mjs            # dry run
+    node scripts/dedupe-kpi-snapshots.mjs --apply    # collapse + index
+
+**A real bug the tests caught before it shipped:** both scripts derived their date key with
+`String(row.snapshot_date).slice(0, 10)`. The driver returns a Date for a `date` column, so that
+yields `"Mon Sep 14"`, not an ISO date. Harmless in the recompute (display only — the filtering was
+SQL and the updates were by id, so the applied correction was right), but in the dedupe that string
+is the GROUPING KEY: two dates sharing a weekday and month-day — which recur every few years —
+would have merged into one group and deleted live rows. Both now use a shared `isoDate()`. The test
+that caught it is `planDedupe` "handles a Date object for snapshot_date".
+
+**Tests run:** `npm test` **1168/1168** (78 files, +10) · `npm run check` 0 errors · `npm run build`
+and `build:api` clean.
+
+**Also noted:** today's snapshot reads 4/6 = 66.67% — a fourth room became occupied since Sep 26.
+The owner's recollection of four was right; the Sep 26 backup data was simply two days stale.

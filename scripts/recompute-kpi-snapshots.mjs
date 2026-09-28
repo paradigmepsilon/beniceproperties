@@ -46,6 +46,18 @@
 // =============================================================================
 
 /**
+ * Normalize a snapshot_date to YYYY-MM-DD. The Neon driver hands back a Date
+ * for a `date` column, and String(date).slice(0, 10) gives "Mon Sep 14" — which
+ * as a grouping key would collapse two dates that merely share a weekday and
+ * month-day (they recur every few years), deleting live rows. Date columns come
+ * back at UTC midnight, so toISOString is the correct read.
+ */
+export function isoDate(value) {
+  if (value instanceof Date) return value.toISOString().slice(0, 10);
+  return String(value).slice(0, 10);
+}
+
+/**
  * The whole correction, as a pure function of one row plus the placeholder room
  * count — exported and unit-tested in recompute-kpi-snapshots.test.ts, because
  * arithmetic that rewrites history should not live only inside a script that
@@ -148,7 +160,7 @@ async function main() {
   }
 
   const plan = rows.map((r) => ({
-    date: String(r.snapshot_date).slice(0, 10),
+    date: isoDate(r.snapshot_date),
     r,
     ...correctSnapshot(Number(r.rooms_occupied), Number(r.occupancy_pct), phRooms),
   }));
