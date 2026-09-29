@@ -22,6 +22,7 @@ import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { uploadFile, cleanError } from "@/lib/portalFetch";
 import { money } from "@/lib/format";
+import { statusVariant, statusClass } from "@/lib/statusBadge";
 import { todayIso } from "@shared/dates";
 import { formatSurchargePct } from "@shared/pricing";
 
@@ -82,17 +83,6 @@ const US_STATES = [
   "WI","WY","DC",
 ];
 
-
-const statusVariant = (s: string) =>
-  s === "FAILED" || s === "LATE" || s === "DEFAULTED" || s === "REJECTED"
-    ? "destructive"
-    : "secondary";
-
-// Positive statuses get the green "good" tint (green = status, never brand).
-const statusClass = (s: string) =>
-  s === "PAID" || s === "ACTIVE" || s === "RESOLVED" || s === "APPROVED"
-    ? "bg-good-bg text-good hover:bg-good-bg"
-    : undefined;
 
 /** Friendly label for a lease status shown to the tenant. */
 const leaseStatusLabel = (s: string) =>

@@ -172,7 +172,12 @@ var init_schema = __esm({
     ROOM_UNBOOKABLE_STATUSES = ["HOLD", "MAINTENANCE", "INACTIVE"];
     BOOKING_MODELS = ["STR", "COLIVING"];
     BOOKING_STATUSES = [
+      // Awaiting money, check-in still ahead.
       "PENDING_PAYMENT",
+      // Never paid and the check-in date has passed. Terminal, and NON-BLOCKING:
+      // an unpaid hold with no expiry was a denial-of-inventory hole (it is why
+      // the public POST /api/bookings was retired — see server/routes.ts).
+      "EXPIRED",
       // Paid IN FULL, but held for human approval: a co-living stay of 7–28 nights
       // whose guest must upload a driver's license and sign a rental agreement, and
       // whose admin must check the name and set a door code, before it goes live.
@@ -180,15 +185,18 @@ var init_schema = __esm({
       // review happens. Deliberately absent from NON_BLOCKING_BOOKING_STATUSES; see
       // shared/bookingGate.ts and its test for the ratchet on that.
       "PENDING_APPROVAL",
+      // Paid and cleared; the stay is in the FUTURE.
       "CONFIRMED",
+      // The stay is happening RIGHT NOW (check-in <= today < check-out).
       "ACTIVE",
+      // The guest has checked out.
       "COMPLETED",
       "CANCELLED",
       // Paid, but the dates were taken (race / OTA block / constraint). Does NOT block
       // dates and never auto-notifies the guest. Admin resolves: confirm or cancel+refund.
       "CONFLICT"
     ];
-    NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT"];
+    NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT", "EXPIRED"];
     PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"];
     PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"];
     PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED", "REFUNDED"];
@@ -535,7 +543,8 @@ var init_schema = __esm({
         checkIn: date("check_in").notNull(),
         // Null for open-ended co-living stays.
         checkOut: date("check_out"),
-        // "PENDING_PAYMENT" | "CONFIRMED" | "ACTIVE" | "COMPLETED" | "CANCELLED"
+        // One of BOOKING_STATUSES. Describes the stay's phase in time; the daily
+        // job in server/lib/bookingLifecycle.ts advances it.
         status: text("status").notNull().default("PENDING_PAYMENT"),
         // "STRIPE" | "CASHAPP" | "ZELLE"
         paymentMethod: text("payment_method").notNull(),
@@ -1864,6 +1873,10 @@ var init_storage = __esm({
       async getRoomsByProperty(propertyId) {
         return db.select().from(rooms).where(eq(rooms.propertyId, propertyId));
       }
+      async getRoomsByPropertyIds(propertyIds) {
+        if (propertyIds.length === 0) return [];
+        return db.select().from(rooms).where(inArray(rooms.propertyId, propertyIds));
+      }
       async getRoom(id) {
         const [row] = await db.select().from(rooms).where(eq(rooms.id, id));
         return row;
@@ -2582,13 +2595,27 @@ var init_storage = __esm({
           )
         ).orderBy(asc(bookings.checkIn));
       }
+      async getColivingBookingsForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(bookings).where(
+          and(
+            inArray(bookings.roomId, roomIds),
+            eq(bookings.model, "COLIVING"),
+            ne(bookings.status, "CANCELLED"),
+            ne(bookings.status, "CONFLICT")
+          )
+        ).orderBy(asc(bookings.checkIn));
+      }
       async getOccupiedRoomIdsOn(dateIso) {
         const occupied = /* @__PURE__ */ new Set();
         const bookingRows = await db.select({ roomId: bookings.roomId }).from(bookings).where(
           and(
             sql3`${bookings.roomId} IS NOT NULL`,
-            ne(bookings.status, "CANCELLED"),
-            ne(bookings.status, "CONFLICT"),
+            // Was two literal ne() calls, which is precisely why adding EXPIRED
+            // to the non-blocking set would have missed this query and left
+            // unpaid, lapsed bookings pinning rooms to OCCUPIED. Use the shared
+            // constant so it cannot drift again.
+            notInArray(bookings.status, [...NON_BLOCKING_BOOKING_STATUSES]),
             lte(bookings.checkIn, dateIso),
             gt(bookings.checkOut, dateIso)
           )
@@ -2623,6 +2650,10 @@ var init_storage = __esm({
       // --- Manual blocks ---
       async getManualBlocksForRoom(roomId) {
         return db.select().from(manualBlocks).where(eq(manualBlocks.roomId, roomId)).orderBy(asc(manualBlocks.startDate));
+      }
+      async getManualBlocksForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(manualBlocks).where(inArray(manualBlocks.roomId, roomIds)).orderBy(asc(manualBlocks.startDate));
       }
       async getManualBlocksForProperty(propertyId) {
         return db.select().from(manualBlocks).where(and(eq(manualBlocks.propertyId, propertyId), sql3`${manualBlocks.roomId} IS NULL`)).orderBy(asc(manualBlocks.startDate));
@@ -2713,6 +2744,10 @@ var init_storage = __esm({
       async getExternalBlocksForRoom(roomId) {
         return db.select().from(externalBookings).where(eq(externalBookings.roomId, roomId));
       }
+      async getExternalBlocksForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(externalBookings).where(inArray(externalBookings.roomId, roomIds));
+      }
       async upsertExternalBooking(data) {
         const listingMatch = data.roomId ? eq(externalBookings.roomId, data.roomId) : and(
           eq(externalBookings.propertyId, data.propertyId),
@@ -2758,6 +2793,22 @@ var init_storage = __esm({
             roomHoldingLeaseCondition()
           )
         );
+      }
+      async getRoomBlockingLeasesForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        const links = await db.select({ leaseId: leaseRooms.leaseId }).from(leaseRooms).where(inArray(leaseRooms.roomId, roomIds));
+        const leaseIds = links.map((l) => l.leaseId);
+        if (leaseIds.length === 0) return [];
+        return db.select().from(leases).where(
+          and(
+            inArray(leases.id, leaseIds),
+            roomHoldingLeaseCondition()
+          )
+        );
+      }
+      async getLeaseRoomLinksByRoomIds(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(leaseRooms).where(inArray(leaseRooms.roomId, roomIds));
       }
       // --- Aggregates ---
       // Every source is inner-joined to `properties` and gated on
@@ -3573,11 +3624,32 @@ async function buildRoomAvailability(roomId) {
 }
 
 // server/routes.ts
+init_ranges();
 init_dates();
 
 // shared/bookingGate.ts
 init_schema();
 import { differenceInCalendarDays as differenceInCalendarDays2, parseISO as parseISO4 } from "date-fns";
+
+// shared/bookingStatus.ts
+var TERMINAL = ["CANCELLED", "CONFLICT", "EXPIRED", "COMPLETED"];
+function effectiveBookingStatus(booking, today) {
+  const { status, checkIn, checkOut } = booking;
+  if (TERMINAL.includes(status)) return status;
+  if (status === "PENDING_APPROVAL") return status;
+  if (status === "PENDING_PAYMENT") {
+    return checkIn < today ? "EXPIRED" : "PENDING_PAYMENT";
+  }
+  if (status === "CONFIRMED" || status === "ACTIVE") {
+    if (!checkOut) return checkIn <= today ? "ACTIVE" : "CONFIRMED";
+    if (checkOut <= today) return "COMPLETED";
+    return checkIn <= today ? "ACTIVE" : "CONFIRMED";
+  }
+  return status;
+}
+
+// shared/bookingGate.ts
+init_dates();
 function stayNights(checkIn, checkOut) {
   const n = differenceInCalendarDays2(parseISO4(checkOut), parseISO4(checkIn));
   return Number.isFinite(n) ? Math.max(0, n) : 0;
@@ -3587,9 +3659,13 @@ function isGatedStay(stay) {
   if (!stay.checkOut) return false;
   return isDirectCoLivingStay(stayNights(stay.checkIn, stay.checkOut));
 }
-function postPaymentStatusFor(stay) {
+function postPaymentStatusFor(stay, today = todayIso()) {
   if (isGatedStay(stay)) return "PENDING_APPROVAL";
-  return stay.model === "COLIVING" ? "ACTIVE" : "CONFIRMED";
+  const phase = effectiveBookingStatus(
+    { status: "CONFIRMED", checkIn: stay.checkIn, checkOut: stay.checkOut },
+    today
+  );
+  return phase === "ACTIVE" ? "ACTIVE" : "CONFIRMED";
 }
 
 // server/lib/stayPortal.ts
@@ -8990,41 +9066,117 @@ ${parts.join("\n")}
       const searchNights = dated ? differenceInCalendarDays3(parseISO6(dated.checkOut), parseISO6(dated.checkIn)) : 0;
       const colivingBelowMin = Boolean(dated) && searchNights < COLIVING_MIN_DAYS;
       const props = await storage.getProperties({ activeOnly: true });
-      const withRent = await Promise.all(
-        props.map(async (p) => {
-          let fromWeeklyRent = null;
-          let availableForDates = true;
-          if (p.type === "COLIVING") {
-            const rooms2 = await storage.getRoomsByProperty(p.id);
-            const openRooms = rooms2.filter((r) => isRoomBookableStatus(r.status));
-            let free;
-            if (dated) {
-              free = await Promise.all(
-                openRooms.map(
-                  (r) => storage.isRoomAvailableForRange({
-                    roomId: r.id,
-                    startDate: dated.checkIn,
-                    endDate: dated.checkOut,
-                    endExclusive: true
-                  })
-                )
+      const propIds = props.map((p) => p.id);
+      const allRooms = await storage.getRoomsByPropertyIds(propIds);
+      const roomsByPropertyId = /* @__PURE__ */ new Map();
+      for (const room of allRooms) {
+        if (!roomsByPropertyId.has(room.propertyId)) {
+          roomsByPropertyId.set(room.propertyId, []);
+        }
+        roomsByPropertyId.get(room.propertyId).push(room);
+      }
+      const roomIds = allRooms.map((r) => r.id);
+      const [blockingLeases, leaseRoomLinks, colivingBookings, externalBlocks, manualBlocks2] = await Promise.all([
+        storage.getRoomBlockingLeasesForRooms(roomIds),
+        storage.getLeaseRoomLinksByRoomIds(roomIds),
+        storage.getColivingBookingsForRooms(roomIds),
+        storage.getExternalBlocksForRooms(roomIds),
+        storage.getManualBlocksForRooms(roomIds)
+      ]);
+      const leasesByRoomId = /* @__PURE__ */ new Map();
+      const bookingsByRoomId = /* @__PURE__ */ new Map();
+      const blocksByRoomId = /* @__PURE__ */ new Map();
+      const manualByRoomId = /* @__PURE__ */ new Map();
+      for (const link of leaseRoomLinks) {
+        const lease = blockingLeases.find((l) => l.id === link.leaseId);
+        if (lease) {
+          if (!leasesByRoomId.has(link.roomId)) leasesByRoomId.set(link.roomId, []);
+          leasesByRoomId.get(link.roomId).push(lease);
+        }
+      }
+      for (const booking of colivingBookings) {
+        if (booking.roomId) {
+          if (!bookingsByRoomId.has(booking.roomId)) bookingsByRoomId.set(booking.roomId, []);
+          bookingsByRoomId.get(booking.roomId).push(booking);
+        }
+      }
+      for (const block of externalBlocks) {
+        if (block.roomId) {
+          if (!blocksByRoomId.has(block.roomId)) blocksByRoomId.set(block.roomId, []);
+          blocksByRoomId.get(block.roomId).push(block);
+        }
+      }
+      for (const block of manualBlocks2) {
+        if (block.roomId) {
+          if (!manualByRoomId.has(block.roomId)) manualByRoomId.set(block.roomId, []);
+          manualByRoomId.get(block.roomId).push(block);
+        }
+      }
+      const isRoomAvailableForRangeLocal = (roomId, startDate, endDate) => {
+        const want = { start: startDate, end: endDate, endExclusive: true };
+        const leases2 = leasesByRoomId.get(roomId) || [];
+        if (leases2.some((l) => overlapsRange(want, { start: l.startDate, end: l.endDate, endExclusive: false }))) {
+          return false;
+        }
+        const bookings2 = (bookingsByRoomId.get(roomId) || []).filter((b) => b.checkOut !== null);
+        if (bookings2.some((b) => overlapsRange(want, { start: b.checkIn, end: b.checkOut, endExclusive: true }))) {
+          return false;
+        }
+        const blocks = blocksByRoomId.get(roomId) || [];
+        if (blocks.some((b) => overlapsRange(want, { start: b.startDate, end: b.endDate, endExclusive: true }))) {
+          return false;
+        }
+        const manual = manualByRoomId.get(roomId) || [];
+        return !manual.some((b) => overlapsRange(want, { start: b.startDate, end: b.endDate, endExclusive: true }));
+      };
+      const withRent = props.map((p) => {
+        const rooms2 = roomsByPropertyId.get(p.id) || [];
+        let fromWeeklyRent = null;
+        let availableForDates = true;
+        if (p.type === "COLIVING") {
+          const openRooms = rooms2.filter((r) => isRoomBookableStatus(r.status));
+          let free;
+          if (dated) {
+            free = openRooms.map((r) => isRoomAvailableForRangeLocal(r.id, dated.checkIn, dated.checkOut));
+          } else {
+            free = openRooms.map((r) => {
+              const busy = [];
+              (leasesByRoomId.get(r.id) || []).forEach(
+                (l) => busy.push({ start: l.startDate, end: l.endDate })
               );
-            } else {
-              free = await Promise.all(
-                openRooms.map(async (r) => roomOpensWithin((await buildRoomAvailability(r.id)).busy, today))
+              (bookingsByRoomId.get(r.id) || []).filter((b) => b.checkOut).forEach((b) => busy.push({ start: b.checkIn, end: b.checkOut }));
+              (blocksByRoomId.get(r.id) || []).forEach(
+                (b) => busy.push({ start: b.startDate, end: b.endDate })
               );
-            }
-            const priced = cheapestAvailableWeeklyRent(
-              openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] }))
-            );
-            fromWeeklyRent = priced.fromWeeklyRent;
-            if (dated) availableForDates = colivingBelowMin ? false : priced.available;
-          } else if (p.type === "STR" && dated) {
-            availableForDates = !await strHasConflict(p.id, dated.checkIn, dated.checkOut);
+              (manualByRoomId.get(r.id) || []).forEach(
+                (b) => busy.push({ start: b.startDate, end: b.endDate })
+              );
+              return roomOpensWithin(busy, today);
+            });
           }
-          return { ...toPublicProperty(p), fromWeeklyRent, availableForDates };
-        })
-      );
+          const priced = cheapestAvailableWeeklyRent(
+            openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] }))
+          );
+          fromWeeklyRent = priced.fromWeeklyRent;
+          if (dated) availableForDates = colivingBelowMin ? false : priced.available;
+        } else if (p.type === "STR" && dated) {
+        }
+        return { ...toPublicProperty(p), fromWeeklyRent, availableForDates };
+      });
+      if (dated) {
+        const strIds2 = props.filter((p) => p.type === "STR").map((p) => p.id);
+        const strConflicts = /* @__PURE__ */ new Map();
+        await Promise.all(
+          strIds2.map(async (id) => {
+            strConflicts.set(id, await strHasConflict(id, dated.checkIn, dated.checkOut));
+          })
+        );
+        for (const item of withRent) {
+          if (item.type === "STR" && strConflicts.has(item.id)) {
+            item.availableForDates = !strConflicts.get(item.id);
+          }
+        }
+      }
       const bookedColivingIds = withRent.filter((p) => p.type === "COLIVING" && p.fromWeeklyRent === null).map((p) => p.id);
       const strIds = withRent.filter((p) => p.type === "STR").map((p) => p.id);
       const [leaseEnds, strBookings] = await Promise.all([

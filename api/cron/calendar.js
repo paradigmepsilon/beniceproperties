@@ -172,7 +172,12 @@ var init_schema = __esm({
     ROOM_UNBOOKABLE_STATUSES = ["HOLD", "MAINTENANCE", "INACTIVE"];
     BOOKING_MODELS = ["STR", "COLIVING"];
     BOOKING_STATUSES = [
+      // Awaiting money, check-in still ahead.
       "PENDING_PAYMENT",
+      // Never paid and the check-in date has passed. Terminal, and NON-BLOCKING:
+      // an unpaid hold with no expiry was a denial-of-inventory hole (it is why
+      // the public POST /api/bookings was retired — see server/routes.ts).
+      "EXPIRED",
       // Paid IN FULL, but held for human approval: a co-living stay of 7–28 nights
       // whose guest must upload a driver's license and sign a rental agreement, and
       // whose admin must check the name and set a door code, before it goes live.
@@ -180,15 +185,18 @@ var init_schema = __esm({
       // review happens. Deliberately absent from NON_BLOCKING_BOOKING_STATUSES; see
       // shared/bookingGate.ts and its test for the ratchet on that.
       "PENDING_APPROVAL",
+      // Paid and cleared; the stay is in the FUTURE.
       "CONFIRMED",
+      // The stay is happening RIGHT NOW (check-in <= today < check-out).
       "ACTIVE",
+      // The guest has checked out.
       "COMPLETED",
       "CANCELLED",
       // Paid, but the dates were taken (race / OTA block / constraint). Does NOT block
       // dates and never auto-notifies the guest. Admin resolves: confirm or cancel+refund.
       "CONFLICT"
     ];
-    NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT"];
+    NON_BLOCKING_BOOKING_STATUSES = ["CANCELLED", "CONFLICT", "EXPIRED"];
     PAYMENT_METHODS = ["STRIPE", "CASHAPP", "ZELLE"];
     PAYMENT_TYPES = ["DEPOSIT", "WEEKLY", "ONE_TIME"];
     PAYMENT_STATUSES = ["PENDING", "PAID", "FAILED", "REFUNDED"];
@@ -535,7 +543,8 @@ var init_schema = __esm({
         checkIn: date("check_in").notNull(),
         // Null for open-ended co-living stays.
         checkOut: date("check_out"),
-        // "PENDING_PAYMENT" | "CONFIRMED" | "ACTIVE" | "COMPLETED" | "CANCELLED"
+        // One of BOOKING_STATUSES. Describes the stay's phase in time; the daily
+        // job in server/lib/bookingLifecycle.ts advances it.
         status: text("status").notNull().default("PENDING_PAYMENT"),
         // "STRIPE" | "CASHAPP" | "ZELLE"
         paymentMethod: text("payment_method").notNull(),
@@ -1655,6 +1664,10 @@ var init_storage = __esm({
       async getRoomsByProperty(propertyId) {
         return db.select().from(rooms).where(eq(rooms.propertyId, propertyId));
       }
+      async getRoomsByPropertyIds(propertyIds) {
+        if (propertyIds.length === 0) return [];
+        return db.select().from(rooms).where(inArray(rooms.propertyId, propertyIds));
+      }
       async getRoom(id) {
         const [row] = await db.select().from(rooms).where(eq(rooms.id, id));
         return row;
@@ -2373,13 +2386,27 @@ var init_storage = __esm({
           )
         ).orderBy(asc(bookings.checkIn));
       }
+      async getColivingBookingsForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(bookings).where(
+          and(
+            inArray(bookings.roomId, roomIds),
+            eq(bookings.model, "COLIVING"),
+            ne(bookings.status, "CANCELLED"),
+            ne(bookings.status, "CONFLICT")
+          )
+        ).orderBy(asc(bookings.checkIn));
+      }
       async getOccupiedRoomIdsOn(dateIso) {
         const occupied = /* @__PURE__ */ new Set();
         const bookingRows = await db.select({ roomId: bookings.roomId }).from(bookings).where(
           and(
             sql3`${bookings.roomId} IS NOT NULL`,
-            ne(bookings.status, "CANCELLED"),
-            ne(bookings.status, "CONFLICT"),
+            // Was two literal ne() calls, which is precisely why adding EXPIRED
+            // to the non-blocking set would have missed this query and left
+            // unpaid, lapsed bookings pinning rooms to OCCUPIED. Use the shared
+            // constant so it cannot drift again.
+            notInArray(bookings.status, [...NON_BLOCKING_BOOKING_STATUSES]),
             lte(bookings.checkIn, dateIso),
             gt(bookings.checkOut, dateIso)
           )
@@ -2414,6 +2441,10 @@ var init_storage = __esm({
       // --- Manual blocks ---
       async getManualBlocksForRoom(roomId) {
         return db.select().from(manualBlocks).where(eq(manualBlocks.roomId, roomId)).orderBy(asc(manualBlocks.startDate));
+      }
+      async getManualBlocksForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(manualBlocks).where(inArray(manualBlocks.roomId, roomIds)).orderBy(asc(manualBlocks.startDate));
       }
       async getManualBlocksForProperty(propertyId) {
         return db.select().from(manualBlocks).where(and(eq(manualBlocks.propertyId, propertyId), sql3`${manualBlocks.roomId} IS NULL`)).orderBy(asc(manualBlocks.startDate));
@@ -2504,6 +2535,10 @@ var init_storage = __esm({
       async getExternalBlocksForRoom(roomId) {
         return db.select().from(externalBookings).where(eq(externalBookings.roomId, roomId));
       }
+      async getExternalBlocksForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(externalBookings).where(inArray(externalBookings.roomId, roomIds));
+      }
       async upsertExternalBooking(data) {
         const listingMatch = data.roomId ? eq(externalBookings.roomId, data.roomId) : and(
           eq(externalBookings.propertyId, data.propertyId),
@@ -2549,6 +2584,22 @@ var init_storage = __esm({
             roomHoldingLeaseCondition()
           )
         );
+      }
+      async getRoomBlockingLeasesForRooms(roomIds) {
+        if (roomIds.length === 0) return [];
+        const links = await db.select({ leaseId: leaseRooms.leaseId }).from(leaseRooms).where(inArray(leaseRooms.roomId, roomIds));
+        const leaseIds = links.map((l) => l.leaseId);
+        if (leaseIds.length === 0) return [];
+        return db.select().from(leases).where(
+          and(
+            inArray(leases.id, leaseIds),
+            roomHoldingLeaseCondition()
+          )
+        );
+      }
+      async getLeaseRoomLinksByRoomIds(roomIds) {
+        if (roomIds.length === 0) return [];
+        return db.select().from(leaseRooms).where(inArray(leaseRooms.roomId, roomIds));
       }
       // --- Aggregates ---
       // Every source is inner-joined to `properties` and gated on

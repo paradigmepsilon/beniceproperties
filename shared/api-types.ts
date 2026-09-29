@@ -257,3 +257,153 @@ export interface SignLeaseResponse {
   status: string;
   documentUrl: string;
 }
+
+// --- Admin payments-by-property tree (GET /api/admin/payments/by-property) ---
+// The admin Payments tab reads money as Property -> Room -> Stay -> line, so an
+// operator can see WHICH room in WHICH home a given dollar belongs to. Two
+// disjoint money worlds are unioned here, because neither alone answers that:
+//   bookings -> payments          (STR nights + short co-living stays)
+//   leases   -> payment_schedule  (recurring co-living rent) + late_fees
+// `leases` has no booking_id and `payments` has no lease_id, so the join to a
+// room runs through a different path for each and is done server-side once.
+//
+// PLACEHOLDER properties are absent entirely (shared/placeholder.ts): they are
+// front-end demand probes, so they hold no money and must never dilute a report.
+
+/** The one money shape, rendered identically at every level of the tree. */
+export interface MoneyTotals {
+  /** PAID only. REFUNDED is deliberately NOT collected. */
+  collected: number;
+  /** SCHEDULED, or DUE whose dueDate has not passed — on a LIVE stay only.
+   *  A cancelled booking's unpaid row and a terminated lease's future rent are
+   *  never arriving, so they are excluded here (see MoneyLine.counted). */
+  scheduled: number;
+  /** DUE past its dueDate, plus LATE and FAILED — on a LIVE stay only. */
+  overdue: number;
+  /** late_fees still owed — ACCRUED or BILLED, never PAID/WAIVED. */
+  lateFees: number;
+  refunded: number;
+  /** collected + scheduled + overdue. Excludes late fees and refunds. */
+  expected: number;
+}
+
+export type MoneyLineKind =
+  | "BOOKING_PAYMENT"
+  | "SUBSCRIPTION"
+  | "DEPOSIT"
+  | "CLEANING_FEE"
+  | "RENT"
+  | "LATE_FEE"
+  /** A live stay with no money row at all — an anomaly, surfaced not hidden. */
+  | "MISSING";
+
+export interface MoneyLine {
+  /** `payment:<id>` | `sub:<id>` | `sched:<leaseId>:<seq>` | `latefee:<leaseId>:<seq>`
+   *  | `deposit:<leaseId>` | `cleaning:<leaseId>` | `missing:<stayId>` */
+  id: string;
+  kind: MoneyLineKind;
+  /** Human label: "Rent", "Deposit", "Late fees (inst. #6 — 6 days)", "ONE_TIME · STRIPE". */
+  label: string;
+  scheduleSeq: number | null;
+  /** YYYY-MM-DD. Schedule dueDate, or a late fee's accrual date. */
+  dueDate: string | null;
+  /** Dollars. For a booking payment this is amount + surcharge. */
+  amount: number;
+  /** Booking payments only, so the fee split stays visible. */
+  surcharge: number | null;
+  /** Raw domain status, rendered verbatim in a Badge. */
+  status: string;
+  /** STRIPE | CASHAPP | ZELLE | CARD_ON_FILE | MANUAL */
+  method: string | null;
+  paidAt: string | null;
+  /** Reference only — never card data. */
+  stripeRef: string | null;
+  /** False when this line is shown but deliberately absent from every total:
+   *  a WAIVED row, a legacy subscription, or any unpaid row on a CLOSED stay
+   *  (cancelled/abandoned booking, completed/terminated lease). Those would
+   *  otherwise inflate `scheduled` and `expected` with money that will never
+   *  arrive — the exact misreading this whole view exists to prevent. */
+  counted: boolean;
+}
+
+export interface StayRoomRef {
+  roomId: string;
+  name: string;
+  roomNumber: string | null;
+}
+
+/** One booking or one lease, with every money line that belongs to it. */
+export interface StayMoney {
+  kind: "BOOKING" | "LEASE";
+  id: string;
+  /** booking.reference. Null for a lease — leases carry no human reference. */
+  reference: string | null;
+  /** What the UI shows: the reference, or a short lease-id handle. */
+  handle: string;
+  guestName: string;
+  guestEmail: string;
+  guestPhone: string | null;
+  status: string;
+  start: string;
+  end: string | null;
+  /** "STR" | "COLIVING" for a booking; "LEASE" for a lease. */
+  model: string;
+  /** Lease only: WEEKLY | BIWEEKLY | MONTHLY. */
+  cadence: string | null;
+  /** Every room this stay covers (lease_rooms snapshots for a lease). */
+  rooms: StayRoomRef[];
+  /** True when rooms.length > 1 — this stay is listed under each of them. */
+  multiRoom: boolean;
+  totals: MoneyTotals;
+  /** Pre-sorted by the server so the client only maps. */
+  lines: MoneyLine[];
+  /** Lease only → /portal/<token>. */
+  portalToken: string | null;
+}
+
+export interface RoomMoney {
+  /** Null identifies the "Whole property" bucket (STR, or a null-room booking). */
+  roomId: string | null;
+  roomName: string;
+  roomNumber: string | null;
+  /** rooms.status; null for the whole-property bucket. */
+  roomStatus: string | null;
+  /** Money from SINGLE-room stays only, so these sum cleanly across rooms. */
+  totals: MoneyTotals;
+  /** Money from multi-room stays listed here. Kept OUT of `totals` because the
+   *  same figure appears under every room the stay covers. */
+  sharedTotals: MoneyTotals;
+  stays: StayMoney[];
+}
+
+export interface PropertyMoney {
+  propertyId: string;
+  propertyName: string;
+  /** From the property row — "BNP" | "TRAD". Never hard-coded. */
+  entity: string;
+  type: string;
+  location: string;
+  active: boolean;
+  /** Exact: every stay counted once, multi-room leases included. */
+  totals: MoneyTotals;
+  stayCount: number;
+  rooms: RoomMoney[];
+}
+
+export interface PaymentsByPropertyView {
+  /** Injected by the caller, so the report is deterministic and testable. */
+  asOf: string;
+  grand: MoneyTotals;
+  properties: PropertyMoney[];
+  /** Money whose booking/lease lost its guest or property row. The joins that
+   *  build the tree drop those rows; this keeps them on the page, because a
+   *  money screen that silently understates is worse than one extra query. */
+  unattributed: { stays: StayMoney[]; totals: MoneyTotals };
+  /** Counted, not listed — so the footer can say how much is hidden and why. */
+  excluded: {
+    abandonedCheckouts: number;
+    draftLeases: number;
+    agedOut: number;
+    placeholderProperties: number;
+  };
+}

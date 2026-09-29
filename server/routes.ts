@@ -45,6 +45,7 @@ import {
 } from "./lib/booking";
 import { buildLeaseQuote, LeaseError } from "./lib/lease";
 import { buildStrAvailability, buildRoomAvailability, isRoomBookableStatus, roomAvailableForDates } from "./lib/availability";
+import { overlapsRange } from "./lib/ranges";
 import { todayIso } from "@shared/dates";
 import { postPaymentStatusFor } from "@shared/bookingGate";
 import {
@@ -124,6 +125,7 @@ import { refreshExternalCalendars, normalizeAirbnbIcalUrl, getLastSyncStatus } f
 import { getExportFeed } from "./lib/icalExport";
 import { computeCalendarSyncStatus } from "./lib/calendarSyncStatus";
 import { buildReconciliationReport } from "./lib/reconciliation";
+import { buildPaymentsByProperty } from "./lib/paymentsByProperty";
 import {
   createDraftLeaseSchema,
   signLeaseSchema,
@@ -213,6 +215,23 @@ async function reconciliationHandler(
     }
     const report = await buildReconciliationReport(parsed.data.from, parsed.data.to, new Date().toISOString());
     res.json(report);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Admin Payments tree (Property -> Room -> Stay -> line). Module-level for the
+// same reason as reconciliationHandler: mountable on either auth surface later
+// without depending on registration order. Admin-only today — UO already reads
+// this money via /api/uo/payments and /api/uo/leases, and a third view of it
+// would only invite drift.
+async function paymentsByPropertyHandler(
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): Promise<void> {
+  try {
+    res.json(await buildPaymentsByProperty(new Date().toISOString()));
   } catch (err) {
     next(err);
   }
@@ -643,60 +662,145 @@ export async function registerRoutes(app: Express): Promise<void> {
       const colivingBelowMin = Boolean(dated) && searchNights < COLIVING_MIN_DAYS;
 
       const props = await storage.getProperties({ activeOnly: true });
-      const withRent = await Promise.all(
-        props.map(async (p) => {
-          // Co-living cards price "from" the cheapest room a guest can actually
-          // book. Rooms pulled off the market (ROOM_UNBOOKABLE_STATUSES:
-          // HOLD/MAINTENANCE/INACTIVE) never count. Date-blind default: a room
-          // counts when it has a bookable night within COLIVING_OPENING_HORIZON_DAYS
-          // (180 = two max-term leases) per its busy ranges (leases ∪ direct
-          // bookings ∪ Airbnb ∪ manual blocks) — so an OCCUPIED room under a
-          // normal lease still counts, while a room held for the foreseeable
-          // future does not. Dated search: those rooms AND free for
-          // [checkIn, checkOut). null fromWeeklyRent → card shows "Fully booked".
-          let fromWeeklyRent: string | null = null;
-          let availableForDates = true;
-          if (p.type === "COLIVING") {
-            const rooms = await storage.getRoomsByProperty(p.id);
-            const openRooms = rooms.filter((r) => isRoomBookableStatus(r.status));
-            // Pair each open room with whether it's free for the searched range
-            // (date-blind: whether it opens within the horizon). The pure
-            // cheapestAvailableWeeklyRent picks the from-price + availability.
-            let free: boolean[];
-            if (dated) {
-              free = await Promise.all(
-                openRooms.map((r) =>
-                  storage.isRoomAvailableForRange({
-                    roomId: r.id,
-                    startDate: dated.checkIn,
-                    endDate: dated.checkOut,
-                    endExclusive: true,
-                  }),
-                ),
+      const propIds = props.map((p) => p.id);
+
+      // Batch-fetch all rooms for all properties at once.
+      const allRooms = await storage.getRoomsByProperties(propIds);
+      const roomsByPropertyId = new Map<string, typeof allRooms>();
+      for (const room of allRooms) {
+        if (!roomsByPropertyId.has(room.propertyId)) {
+          roomsByPropertyId.set(room.propertyId, []);
+        }
+        roomsByPropertyId.get(room.propertyId)!.push(room);
+      }
+
+      // Batch-fetch all blocking data for all rooms at once, then build room-indexed maps.
+      const roomIds = allRooms.map((r) => r.id);
+      const [blockingLeases, leaseRoomLinks, colivingBookings, externalBlocks, manualBlocks] =
+        await Promise.all([
+          storage.getRoomBlockingLeasesForRooms(roomIds),
+          storage.getLeaseRoomLinksByRoomIds(roomIds),
+          storage.getColivingBookingsForRooms(roomIds),
+          storage.getExternalBlocksForRooms(roomIds),
+          storage.getManualBlocksForRooms(roomIds),
+        ]);
+
+      // Index blocking data by roomId for O(1) lookup.
+      const leasesByRoomId = new Map<string, typeof blockingLeases>();
+      const bookingsByRoomId = new Map<string, typeof colivingBookings>();
+      const blocksByRoomId = new Map<string, typeof externalBlocks>();
+      const manualByRoomId = new Map<string, typeof manualBlocks>();
+
+      for (const link of leaseRoomLinks) {
+        const lease = blockingLeases.find((l) => l.id === link.leaseId);
+        if (lease) {
+          if (!leasesByRoomId.has(link.roomId)) leasesByRoomId.set(link.roomId, []);
+          leasesByRoomId.get(link.roomId)!.push(lease);
+        }
+      }
+      for (const booking of colivingBookings) {
+        if (booking.roomId) {
+          if (!bookingsByRoomId.has(booking.roomId)) bookingsByRoomId.set(booking.roomId, []);
+          bookingsByRoomId.get(booking.roomId)!.push(booking);
+        }
+      }
+      for (const block of externalBlocks) {
+        if (block.roomId) {
+          if (!blocksByRoomId.has(block.roomId)) blocksByRoomId.set(block.roomId, []);
+          blocksByRoomId.get(block.roomId)!.push(block);
+        }
+      }
+      for (const block of manualBlocks) {
+        if (block.roomId) {
+          if (!manualByRoomId.has(block.roomId)) manualByRoomId.set(block.roomId, []);
+          manualByRoomId.get(block.roomId)!.push(block);
+        }
+      }
+
+      // Helper to check if a room is available for a date range using pre-fetched data.
+      const isRoomAvailableForRangeLocal = (roomId: string, startDate: string, endDate: string): boolean => {
+        const want = { start: startDate, end: endDate, endExclusive: true };
+
+        // Check blocking leases
+        const leases = leasesByRoomId.get(roomId) || [];
+        if (leases.some((l) => overlapsRange(want, { start: l.startDate, end: l.endDate, endExclusive: false }))) {
+          return false;
+        }
+
+        // Check coliving bookings
+        const bookings = (bookingsByRoomId.get(roomId) || []).filter((b) => b.checkOut !== null);
+        if (bookings.some((b) => overlapsRange(want, { start: b.checkIn, end: b.checkOut!, endExclusive: true }))) {
+          return false;
+        }
+
+        // Check external blocks
+        const blocks = blocksByRoomId.get(roomId) || [];
+        if (blocks.some((b) => overlapsRange(want, { start: b.startDate, end: b.endDate, endExclusive: true }))) {
+          return false;
+        }
+
+        // Check manual blocks
+        const manual = manualByRoomId.get(roomId) || [];
+        return !manual.some((b) => overlapsRange(want, { start: b.startDate, end: b.endDate, endExclusive: true }));
+      };
+
+      const withRent = props.map((p) => {
+        const rooms = roomsByPropertyId.get(p.id) || [];
+        let fromWeeklyRent: string | null = null;
+        let availableForDates = true;
+
+        if (p.type === "COLIVING") {
+          const openRooms = rooms.filter((r) => isRoomBookableStatus(r.status));
+          let free: boolean[];
+          if (dated) {
+            free = openRooms.map((r) => isRoomAvailableForRangeLocal(r.id, dated.checkIn, dated.checkOut));
+          } else {
+            free = openRooms.map((r) => {
+              const busy: Array<{ start: string; end: string }> = [];
+              (leasesByRoomId.get(r.id) || []).forEach((l) =>
+                busy.push({ start: l.startDate, end: l.endDate }),
               );
-            } else {
-              free = await Promise.all(
-                openRooms.map(async (r) => roomOpensWithin((await buildRoomAvailability(r.id)).busy, today)),
+              (bookingsByRoomId.get(r.id) || [])
+                .filter((b) => b.checkOut)
+                .forEach((b) => busy.push({ start: b.checkIn, end: b.checkOut! }));
+              (blocksByRoomId.get(r.id) || []).forEach((b) =>
+                busy.push({ start: b.startDate, end: b.endDate }),
               );
-            }
-            const priced = cheapestAvailableWeeklyRent(
-              openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] })),
-            );
-            fromWeeklyRent = priced.fromWeeklyRent;
-            // Only assert unavailability for a dated search; with no dates the card
-            // falls back to status/nextOpening (availableForDates stays true).
-            // A sub-minimum range disqualifies co-living outright (can't book <7
-            // nights) even if a room is otherwise free for those dates.
-            if (dated) availableForDates = colivingBelowMin ? false : priced.available;
-          } else if (p.type === "STR" && dated) {
-            // Whole-property STR: available iff no direct/Airbnb conflict for the
-            // searched range — same overlap rule the checkout flow enforces.
-            availableForDates = !(await strHasConflict(p.id, dated.checkIn, dated.checkOut));
+              (manualByRoomId.get(r.id) || []).forEach((b) =>
+                busy.push({ start: b.startDate, end: b.endDate }),
+              );
+              return roomOpensWithin(busy, today);
+            });
           }
-          // toPublicProperty strips the internal columns and adds inquiryOnly.
-          return { ...toPublicProperty(p), fromWeeklyRent, availableForDates };
-        }),
-      );
+          const priced = cheapestAvailableWeeklyRent(
+            openRooms.map((r, i) => ({ weeklyRent: r.weeklyRent, available: free[i] })),
+          );
+          fromWeeklyRent = priced.fromWeeklyRent;
+          if (dated) availableForDates = colivingBelowMin ? false : priced.available;
+        } else if (p.type === "STR" && dated) {
+          // Whole-property STR: available iff no direct/Airbnb conflict for the
+          // searched range — same overlap rule the checkout flow enforces.
+          // Note: this still calls strHasConflict per-property (can't batch without
+          // refactoring that function), but it's much faster than the per-room checks.
+        }
+        return { ...toPublicProperty(p), fromWeeklyRent, availableForDates };
+      });
+
+      // Handle STR conflicts separately to avoid async/await in map
+      if (dated) {
+        const strIds = props.filter((p) => p.type === "STR").map((p) => p.id);
+        const strConflicts = new Map<string, boolean>();
+        await Promise.all(
+          strIds.map(async (id) => {
+            strConflicts.set(id, await strHasConflict(id, dated.checkIn, dated.checkOut));
+          }),
+        );
+        for (const item of withRent) {
+          if (item.type === "STR" && strConflicts.has(item.id)) {
+            item.availableForDates = !strConflicts.get(item.id)!;
+          }
+        }
+      }
 
       // "Next opening" for currently-unavailable inventory — two batched
       // queries across all properties, then pure math (lib/nextOpening.ts).
@@ -714,7 +818,6 @@ export async function registerRoutes(app: Express): Promise<void> {
       const list: PropertyListItem[] = withRent.map((p) => {
         let nextOpening: string | null = null;
         if (p.type === "COLIVING" && p.fromWeeklyRent === null) {
-          // Lease endDate is the last occupied night; opening is the next day.
           nextOpening = leaseEnds[p.id] ? dayAfter(leaseEnds[p.id]) : null;
         } else if (p.type === "STR") {
           nextOpening = strNextOpening(
@@ -2743,6 +2846,11 @@ export async function registerRoutes(app: Express): Promise<void> {
       next(err);
     }
   });
+
+  // Payments grouped Property -> Room -> Stay, unioning booking payments with
+  // lease rent + late fees. Separate from /api/admin/payments above, which the
+  // Overview tab's refund path consumes as raw Payment rows.
+  app.get("/api/admin/payments/by-property", requireAdmin, paymentsByPropertyHandler);
 
   // ---- Inventory management ----
   app.post("/api/admin/properties", requireAdmin, async (req, res, next) => {

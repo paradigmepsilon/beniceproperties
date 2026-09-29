@@ -4108,6 +4108,90 @@ max-term leases; imported from `shared/schema.ts`, not a magic number). A room t
 one full lease into another always opens inside that window; a hold years out still does not.
 Tests updated (chain of two 90-day leases counts; day 181 does not). Re-verified live after deploy.
 
+## 2026-09-27 — Advance-booking rule (Stage 0 of the reservation-change plan)
+
+**Why:** a guest booked one week when they wanted a month or more. Planning that gap surfaced a
+separate, unrelated hole: **nothing in the app required a booking to be in advance of the stay.**
+`POST /api/quote`, `POST /api/booking-intent`, `POST /api/lease-quote` and `POST /api/leases` all
+accepted a move-in date **in the past** — the request schemas validate only the `YYYY-MM-DD` shape,
+and `buildLeaseQuote` / `resolveBooking` never compared against today. The only "not before today"
+checks were client-side calendar decorations, which are cosmetic. A back-dated lease would also
+make installment 1 immediately due (`leasePayments.ts`), and a back-dated short stay would create a
+real Stripe PaymentIntent for a stay already underway.
+
+**Owner rule (2026-09-27):** the earliest move-in we can accept is **today while the hotel-local
+hour is < 16, otherwise tomorrow.** 4pm is not a new number — check-in is already 4pm and checkout
+11am, which is what makes every stay a whole number of billable days (`shared/rateSelection.ts`
+cascade header). Same-day is not banned; arriving after the door opens with nobody expecting you is.
+
+**Built — one predicate, two choke points.**
+
+`shared/dates.ts` gains `CHECK_IN_HOUR_ET = 16`, `hotelHour()`, `earliestMoveInIso()`,
+`isMoveInAllowed()`, `moveInTooEarlyMessage()`. `hotelHour` resolves the offset per-instant through
+`Intl` rather than subtracting a fixed −4/−5, so it is correct on both sides of a DST transition,
+and `% 24` guards the ICU h24 quirk that renders midnight as "24" (which would make every midnight
+booking look like check-in had passed). `friendlyDate` also **moved** here from
+`server/lib/stayReminders.ts`, which now re-exports it — the client formats the same YYYY-MM-DD
+strings and two formatters drift.
+
+Enforcement is at two choke points rather than four routes, because the four unguarded paths funnel
+through them:
+
+- `resolveBooking` (`server/lib/booking.ts`) — **both** branches, co-living and STR. Covers
+  `/api/quote` and `/api/booking-intent`.
+- `buildLeaseQuote` (`server/lib/lease.ts`) — beside the existing `MAX_LEASE_DAYS` ceiling, since
+  both answer "is this term one we can accept at all". Covers `/api/lease-quote` and `/api/leases`
+  (`createDraftLease` re-calls it; it is the only non-test caller of `createLeaseWithSchedule`).
+
+Both reject **422**, not 409: this is a policy, not a conflict. Both resolve `now` **once** — letting
+the check and the message each call `new Date()` lets a request landing on the 4pm boundary test
+against one clock and name the other. An injectable `now?: Date` is threaded through both inputs.
+
+**Deliberately NOT guarded:** `materializeShortStayBooking` in the Stripe webhook. If a PI created
+at 15:59 confirms at 16:05 the money has already moved, and refusing there would strand a paid
+guest. Existing arrival machinery (`GATE_INCOMPLETE_AT_CHECKIN`) handles it.
+
+**The subtle one — `server/lib/availability.ts`.** `AvailabilityResponse.minDate` is the floor the
+client's date picker trusts, so it is now `earliestMoveInIso()`. But `today` in those two builders
+does **double duty**: it also filters busy ranges to "ending today or later", where swapping in the
+advance floor would drop a range ending today and **hide a real block**. The two are now separate
+values with a comment saying why they are not interchangeable.
+
+**Client floors** (`search-bar`, `coliving-search-bar`, `property-detail`, `lease-booking`,
+`room-detail`): `todayIso()` → `earliestMoveInIso()`, and the local variable renamed `today` →
+`earliestMoveIn`, because after 4pm the old name is a lie. `portal.tsx` deliberately keeps
+`todayIso()` — it compares payment-schedule due dates, not a move-in.
+
+**Known and accepted:** `earliestMoveInIso()` is time-dependent while TanStack Query caches, so a
+client loaded at 15:30 still offers today at 16:05. The server rejects it with a message naming the
+correct date — a clean recoverable error, not a silent wrong booking.
+
+**Also fixed (unrelated, live, factual):** `client/src/pages/lease-pay.tsx` told the guest *"Your
+lease is active."* immediately after the deposit. `finalizeDepositPayment` sets
+`PENDING_VERIFICATION`; the lease only goes ACTIVE once an admin approves the licence. The copy now
+says what the `depositReceipt` email already said.
+
+**Tests:** 32 existing tests in `booking.test.ts` / `lease.test.ts` / `leaseFlow.test.ts` failed on
+first run — every scenario uses fixed 2026-07 dates, now in the past. Fixed by **pinning the clock**
+(`vi.useFakeTimers({ toFake: ["Date"] })` at 2026-06-30T12:00:00Z) rather than by weakening the
+guard, which keeps every golden pricing/schedule assertion intact. Only `Date` is faked; faking
+timers wholesale stalls the awaits in those files.
+
+New coverage: 14 cases in `shared/dates.test.ts` (15:59 vs 16:01 ET, midnight as 0 not 24, the DST
+fall-back pair where the same UTC wall time one day apart gives opposite answers, spring-forward, a
+past date rejected at every hour); 5 in `booking.test.ts` and 4 in `lease.test.ts` covering reject
+past / accept today before 4pm / reject the same dates one minute after 4pm / accept tomorrow / 422.
+
+**Tests run:** `tsc --noEmit` 0 errors · `npm run build` exit 0 · `vitest run` **1148/1148** (74 files).
+
+**Deferred:** Stages 1–9 of the plan (extended-stay copy, `reservation_changes`, admin adjustments,
+UO management, week→month+ conversion). Stages 5, 6 and 9 move money and need an owner review gate.
+Also outstanding: UO's calendar and iCal export omit `PENDING_VERIFICATION` from their lease-hold
+list and treat two 30-minute checkout holds as permanent — a live double-booking risk, fixed
+separately in the Unified-Ops repo.
+
+---
+
 ## 2026-09-27 — Placeholder listings: front-end only, excluded from every number
 
 **Ask:** the market-test properties are placeholders, not inventory. They should keep showing on the
@@ -4186,6 +4270,103 @@ fair-housing surface than today's state. The manifest records the owner chose to
 class of risk; the form's honest "isn't available to book yet" copy is the mitigation taken. Steps
 1-3 fix the data problem and do not depend on step 4. Historical `kpi_snapshots` rows keep their
 contaminated occupancy figures — recomputing them is a production data write, not done here.
+
+## 2026-09-27 — Admin Payments tab: money read as Property → Room → Stay → line
+
+**Why:** the owner could not correlate a payment to a booking, a guest, or a room. The Payments tab
+rendered one bordered card per booking whose only handle was `booking.reference`, with lines reading
+`WEEKLY · STRIPE ‖ $362.25 · PAID` — no guest, no property, no room, no date. Cause was structural,
+not cosmetic: `GET /api/admin/payments` returns raw `Booking` rows, which carry `propertyId` /
+`roomId` / `guestId` as bare UUIDs and nothing else, so the UI had no names to render. Worse,
+recurring co-living rent was **not on the admin surface at all** — it lives in `payment_schedule`
+(lease-keyed) while booking money lives in `payments` (booking-keyed), `leases` has no `booking_id`,
+and no `/api/admin/*` route exposed the schedule. Only the resident saw their own rent.
+
+**Approach:** one new read-only endpoint `GET /api/admin/payments/by-property` (`requireAdmin`)
+returning a pre-grouped Property → Room → Stay → line tree, unioning both money worlds.
+`GET /api/admin/payments` is left byte-for-byte alone: the Overview tab consumes it for conflict-refund
+eligibility (`dashboard.tsx` → `refundEligibility`), only the pure helper is tested, and reshaping the
+query that feeds a real refund path did not belong in a legibility change. Grouping runs server-side
+because the client cannot be tested at all — vitest is `environment:"node"` with no jsdom — so no
+money decision was allowed to live in `.tsx`.
+
+**Placeholder listings are excluded**, via `countsTowardBusiness()` from `shared/placeholder.ts`
+(landed the same day). Real data confirms 9 placeholder properties filtered out; without the gate the
+tab would have listed nine fictional homes as $0-earning inventory. Money found sitting on a
+placeholder property is NOT swallowed — it surfaces under `unattributed` rather than vanishing.
+
+**Bug found by checking real data, and fixed before shipping:** the first working version reported
+`scheduled $7,015.03 / expected $9,166.80` when only $2,151.77 had ever been collected. All of it was
+dead money — $2,442.86 of remaining rent on a TERMINATED lease, $2,410.82 of PENDING charges on
+CANCELLED bookings, $1,961.35 on abandoned PENDING_PAYMENT checkouts. A forecast built from money
+that can never arrive is the exact misreading this tab exists to prevent. Unpaid rows on a CLOSED
+stay (booking CANCELLED/COMPLETED/PENDING_PAYMENT, lease COMPLETED/TERMINATED) are now shown but
+counted nowhere, carrying `counted: false` and rendering struck through with "not expected".
+`DEFAULTED` is deliberately NOT closed — unpaid rent there is real debt and still reads overdue.
+After the fix: `expected` $2,151.77, matching collected exactly; 20 of 26 lines shown-but-uncounted.
+
+**Multi-room leases diverge from `reconciliation.ts` on purpose.** That report attributes a
+multi-room lease entirely to `rooms[0]` ("the primary unit") so its totals tie out to Stripe without
+double counting — correct there, wrong here, since it would make the other rooms read "$0 earned".
+Here the stay is listed under **every** room it covers, its money held in `sharedTotals` (never a
+room's own `totals`), and counted **exactly once** at property level. Two machine-checked invariants:
+`sum(room.totals) + sum(distinct multi-room stays) === property.totals`, and
+`sum(property.totals) + unattributed === grand`. Both asserted in tests and verified against real
+data. **Consequence: the Payments tab and the Reconciliation report will report different per-room
+numbers for the same multi-room lease.** `reconciliation.ts` was not touched.
+
+**Performance:** the old handler was `1 + 2N` sequential queries over *every booking ever*
+(`uoApi.listLeases` is `1 + 5L`), and `server/db.ts` uses the Neon **HTTP** driver — one HTTPS
+round-trip per query, no pipelining. The new handler is a fixed ~11 queries in 2 waves regardless of
+portfolio size, via seven new batched storage reads.
+
+**Other decisions:** rooms are pre-seeded from the property even with zero stays, because for a
+four-room house the operator must see which rooms earn nothing. Late fees accrue one row per day
+indefinitely, so they are collapsed per installment **and status** into one line
+(`Late fees (inst. #6 — 3 days)`) — rendering 30 individual rows would have recreated the original
+complaint. A live stay with no money row at all shows a loud `MISSING` line rather than being tidied
+away. No new UI primitive was added: `@radix-ui/react-accordion` is already a dependency but nothing
+in `client/src/components/ui/` uses it, so the collapse copies the existing plain-`<button>` + `▾`/`▸`
+pattern from the Inventory tab, adding the `aria-expanded` that one lacks.
+
+**Read-only.** No schema change, no migration, no Stripe change, no new money-moving action. "Mark
+paid" stays on the Reconciliation tab.
+
+**Files:** `shared/api-types.ts` (7 new interfaces) · `server/lib/paymentsByProperty.ts` (new) ·
+`server/lib/paymentsByProperty.test.ts` (new) · `server/storage.ts` (7 batched reads;
+`getActiveLeasesWithGuest` generalized to `getLeasesWithGuest` and kept as a delegate) ·
+`server/routes.ts` (handler + one admin mount; existing payments route untouched) ·
+`client/src/lib/statusBadge.ts` (new, extracted from `portal.tsx`) ·
+`client/src/lib/statusBadge.test.ts` (new) · `client/src/pages/admin/payments-tab.tsx` (new) ·
+`client/src/pages/admin/dashboard.tsx` (import + tab swap + 2 cache-invalidation keys) ·
+`client/src/pages/portal.tsx` (imports the extracted helpers).
+
+**Tests run:** `npm test` **1201/1201** (78 files, +52 new: 47 builder + 5 statusBadge) ·
+`npm run check` (tsc) 0 errors · `npm run build` clean (prerender 43/43). The builder tests were
+mutation-checked: reverting the multi-room `sharedTotals` rule and the REFUNDED rule each failed 3
+tests, so they are not vacuous. Endpoint exercised end-to-end against the real Neon data on a local
+dev server — 401 unauthenticated, 200 authenticated, both invariants hold, 9 placeholders excluded.
+
+**Deferred / not done:**
+- **Pixel check not performed by the agent.** Authenticating a browser would have required putting
+  either the admin password or a session cookie into the session transcript, and sessions persist to
+  the shared Neon DB via `connect-pg-simple` with a 24h TTL, so that cookie is replayable against
+  production. The API is verified; the rendered layout is for the owner to eyeball.
+- No admin route exists to settle a MANUAL lease installment — only
+  `POST /api/uo/leases/:id/mark-paid` (service-token). The tab now makes a `DUE`/`LATE` manual
+  installment plainly visible with no way to act on it from `/admin`. Natural next ticket: mount the
+  existing idempotent `uo.markPaid` behind `requireAdmin`.
+- Leases still have no human reference; the tab shows the first 8 characters of the UUID. A real
+  `leases.reference` column would fix it (schema change, out of scope).
+- `GET /api/admin/reconciliation-report` still has zero UI anywhere in `client/`.
+- The `payment_schedule`/`late_fees` code paths are covered by tests but were exercised by only one
+  real lease (TERMINATED) in local data; no ACTIVE lease with live rent existed to observe.
+
+**Security note, unresolved:** while wiring the local verification, sourcing `.env` caused the shell
+to echo the full `DATABASE_URL` — including the Neon role password — into the agent session
+transcript. Transcripts persist and sync. **That Neon password should be rotated.**
+
+---
 
 ### Addendum — 2026-09-27, historical KPI correction + a way to read the leads
 
@@ -4348,6 +4529,91 @@ tidying, not the fix.
 **Tests run:** `npm test` **1192/1192** (80 files, +24) · `npm run check` 0 errors ·
 `npm run build` and `build:api` clean. The admin UI is typechecked and built but not visually
 verified — the page needs a login.
+
+## 2026-09-28 — Booking status describes the stay's phase in time
+
+**Ask:** ACTIVE should mean a stay currently happening, PENDING_APPROVAL a booking awaiting admin
+action, PENDING_PAYMENT only a future booking (everything is paid before check-in), and the test
+bookings should be removed.
+
+### Root cause: status never described time
+
+`postPaymentStatusFor` read `model === "COLIVING" ? "ACTIVE" : "CONFIRMED"` — a **model**
+discriminator. A co-living stay booked for next March was written ACTIVE the moment the card
+cleared and stayed ACTIVE forever. Three findings, all verified against the source:
+
+- **No date-driven status job had ever existed.** All 12 scheduler jobs and both Vercel crons
+  checked; every one of the 8 status write sites fires on a payment, an admin click, or a
+  cancellation. None on a date.
+- **`COMPLETED` was a dead enum value** — nothing in the repo had ever written it.
+- **`PENDING_PAYMENT` rows are orphans of the retired public `POST /api/bookings`, and they still
+  BLOCK dates** — the exact denial-of-inventory hole that endpoint was retired for. The cleanup was
+  knowingly deferred (`build-log.md:1667`).
+
+Room occupancy, meanwhile, was already fully date-driven, so the two halves had been diverging by
+design.
+
+### What changed
+
+`shared/bookingStatus.ts` — one pure `effectiveBookingStatus(booking, today)`, the single
+definition of which status a booking should hold. `postPaymentStatusFor` now defers to it, so a
+payment and a sweep can never reach different conclusions about the same booking.
+`server/lib/bookingLifecycle.ts` runs it daily, modeled on `occupancy.ts`: idempotent, writes only
+on real change, and wired **before** the occupancy sync in both schedulers so rooms recompute
+against corrected statuses in the same pass. Its first run is the backfill.
+
+`PENDING_APPROVAL` is deliberately never touched. Those bookings are **paid**, and the gate's ghost
+sweep already auto-declines **and refunds** them after 72h of silence; expiring one here would
+strand a guest's money and race a refund path. Pinned by tests in two files.
+
+New `EXPIRED` status — never paid, check-in passed — added to `BOOKING_STATUSES` and to
+`NON_BLOCKING_BOOKING_STATUSES`, which stops those rows holding dates.
+
+**The half that would have been missed:** the non-blocking list also exists in SQL, inside two
+`EXCLUDE USING gist` constraints on `bookings` (`status NOT IN ('CANCELLED','CONFLICT')`). Changing
+only the app would have left the site offering dates Postgres then rejects with a 23P01 — a booking
+failing for no visible reason. `scripts/push-expired-status.mjs` rebuilds both. Related:
+`getOccupiedRoomIdsOn` spelled the rule as two literal `ne()` calls rather than the shared constant,
+which is exactly why it would have been missed — now uses `NON_BLOCKING_BOOKING_STATUSES`.
+
+The job writes through a runtime-checked union rather than a cast, so a status it does not
+understand is skipped and counted, never written blind.
+
+### Test bookings
+
+`scripts/delete-test-bookings.mjs` — dry-run verified against production: all 11 launch-week
+bookings found, all pass, 10 carrying one payment each.
+
+**The guard that matters.** `BNP-5F2B-WNJM`, `BNP-BGFK-W3FL`, `BNP-A85H-U2MH` look exactly like
+test data — created seconds apart, identical $362.25 totals — but they are **real guests who were
+in their rooms**; that timestamp belongs to `materialize-lost-bookings.mjs`. A "created together,
+round total" predicate would have deleted paying guests. The script requires a row to be on a
+hardcoded 11-reference list **and** inside the launch-week window **and** not on a protected list,
+and refuses anything ACTIVE or covering today. 17 tests.
+
+Deletes in FK order (`payment_refunds` → `payments` → `subscriptions` → `booking_gate` →
+`bookings`) because those three have NOT NULL FKs with no cascade, and also clears the four tables
+carrying a `booking_id` with **no** FK (`uo_escalations`, `guest_messages`, `lifecycle_events`,
+`message_log`) which would otherwise dangle silently. Reports orphaned guest rows; never deletes
+them — that is stored personal data and a separate decision.
+
+`BNP-9WTA-NNYK` is included per the owner's instruction. It carries a PAID $392.27 Stripe charge and
+**no refund is issued** — nothing here touches Stripe.
+
+**Tests run:** `npm test` **1245/1245** (83 files, +48) · `npm run check` 0 errors · `npm run build`
+and `build:api` clean. Two existing tests changed rather than added: they asserted the literal
+"ACTIVE" as shorthand for "not gated", which no longer follows, so they now assert gatedness
+directly and no longer couple a gate test to today's date.
+
+**NOT applied** — production writes are blocked from this session:
+
+    node scripts/push-expired-status.mjs --apply     # rebuild the two constraints
+    node scripts/delete-test-bookings.mjs --apply    # after a dry run
+
+**Not verified:** the constraint rebuild was not rehearsed on a Neon branch — `market-test-preview.sh`
+needs an interactive `neonctl auth`. The rebuild cannot fail on existing data (the new predicate is
+strictly more permissive, so anything satisfying the old constraint satisfies the new one), but
+there is a brief window between DROP and ADD with no overlap protection.
 
 ---
 

@@ -101,17 +101,22 @@ describe("settleManualBookingPayment", () => {
     expect(calls.indexOf("updatePayment")).toBeLessThan(calls.indexOf("onBookingConfirmed"));
   });
 
-  // The gate is length-scoped, not model-scoped: an open-ended co-living stay has
-  // unknowable nights, so it keeps the pre-gate behaviour.
-  it("still activates an open-ended co-living stay (null checkOut is ungated)", async () => {
+  // The gate is length-scoped, not model-scoped: an open-ended co-living stay
+  // has unknowable nights, so it is never gated. Since 2026-09-28 the ungated
+  // status is then decided by the calendar — this stay starts in the future, so
+  // it settles to CONFIRMED and the daily lifecycle job promotes it to ACTIVE
+  // on the check-in date. Before that change it went straight to ACTIVE and
+  // stayed there forever.
+  it("settles an open-ended co-living stay without gating it", async () => {
     const { deps } = makeDeps();
     (deps.storage.getBooking as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: "b1", propertyId: "p1", roomId: "r1", guestId: "g1", model: "COLIVING",
-      checkIn: "2026-10-01", checkOut: null,
+      checkIn: "2099-10-01", checkOut: null,
       status: "PENDING_PAYMENT", reference: "BNP-TEST-0003", quotedTotal: "300.00",
     });
     const result = await settleManualBookingPayment({ paymentId: "pay1", adminId: "a1", actor: "admin@x" }, deps);
-    expect(result.booking.status).toBe("ACTIVE");
+    expect(result.booking.status).not.toBe("PENDING_APPROVAL");
+    expect(result.booking.status).toBe("CONFIRMED");
   });
 
   it("uses the STR gate for a whole-property booking and confirms it as CONFIRMED", async () => {

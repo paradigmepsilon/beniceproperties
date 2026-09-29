@@ -4,7 +4,7 @@
 // ride along on card links so the booking flow can prefill them.
 
 import { Search } from "lucide-react";
-import { todayIso } from "@shared/dates";
+import { earliestMoveInIso } from "@shared/dates";
 
 export interface SearchValue {
   city: string; // "ALL" or a cityOf() value
@@ -20,7 +20,9 @@ interface Props {
 }
 
 export function SearchBar({ cities, value, onChange, onSearch }: Props) {
-  const today = todayIso();
+  // The advance-booking floor, not "today": same-day is bookable until
+  // check-in (4pm ET), after which the earliest move-in is tomorrow.
+  const earliestMoveIn = earliestMoveInIso();
   const set = (patch: Partial<SearchValue>) => onChange({ ...value, ...patch });
 
   return (
@@ -48,7 +50,7 @@ export function SearchBar({ cities, value, onChange, onSearch }: Props) {
         <input
           id="search-checkin"
           type="date"
-          min={today}
+          min={earliestMoveIn}
           value={value.checkIn}
           onChange={(e) => set({ checkIn: e.target.value })}
           className="min-h-[2.75rem] w-full bg-transparent text-base text-foreground focus:outline-none focus-visible:rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:min-h-0 sm:text-sm"
@@ -59,7 +61,7 @@ export function SearchBar({ cities, value, onChange, onSearch }: Props) {
         <input
           id="search-checkout"
           type="date"
-          min={value.checkIn || today}
+          min={value.checkIn || earliestMoveIn}
           value={value.checkOut}
           onChange={(e) => set({ checkOut: e.target.value })}
           className="min-h-[2.75rem] w-full bg-transparent text-base text-foreground focus:outline-none focus-visible:rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:min-h-0 sm:text-sm"
