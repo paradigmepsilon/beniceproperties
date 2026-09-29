@@ -4,7 +4,21 @@
 // generator, multi-room weekly rates are summed, dueToday = schedule_seq 1, and
 // the validation guards (property type, room availability, term ceiling) fire.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+// ---------------------------------------------------------------------------
+// The advance-booking rule (@shared/dates isMoveInAllowed) rejects a move-in
+// earlier than today-before-4pm-ET. Every scenario below uses fixed 2026-07
+// dates, so pin the clock just ahead of them and these stay what they were
+// written to be: pure pricing and schedule tests.
+//
+// Only Date is faked. Faking timers wholesale stalls the awaits in this file.
+// ---------------------------------------------------------------------------
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-06-30T12:00:00Z")); // 08:00 ET, 2026-06-30
+});
+afterEach(() => vi.useRealTimers());
+
 
 // --- Mock the storage module the builder imports. vi.mock is hoisted above
 // imports, so the mock object must be created with vi.hoisted to be available. ---
@@ -174,6 +188,48 @@ describe("buildLeaseQuote — guards", () => {
     await expect(
       buildLeaseQuote({ propertyId: "prop-1", roomIds: ["r1"], startDate: "2026-07-01", endDate: "2026-10-15", cadence: "WEEKLY" }),
     ).rejects.toThrow(/90 days/i);
+  });
+
+  // --- Advance-booking rule (owner, 2026-09-27) ---
+  // buildLeaseQuote is the choke point for BOTH /api/lease-quote and
+  // /api/leases (createDraftLease re-calls it), so this guard is what stops a
+  // lease being PRICED and PERSISTED with a move-in that has already passed.
+  describe("advance-booking rule", () => {
+    const quote = (startDate: string, endDate: string, now: Date) => {
+      mockStorage.getProperty.mockResolvedValue(COLIVING_PROP);
+      mockStorage.getRoom.mockResolvedValue(room("r1", "Room 1", "250.00"));
+      return buildLeaseQuote({
+        propertyId: "prop-1",
+        roomIds: ["r1"],
+        startDate,
+        endDate,
+        cadence: "WEEKLY",
+        now,
+      });
+    };
+
+    it("rejects a move-in in the past", async () => {
+      await expect(
+        quote("2026-06-01", "2026-06-28", new Date("2026-06-30T12:00:00Z")),
+      ).rejects.toThrow(/earliest move-in we can take/i);
+    });
+
+    it("accepts today while check-in has not passed", async () => {
+      const q = await quote("2026-06-30", "2026-07-27", new Date("2026-06-30T19:59:00Z"));
+      expect(q.startDate).toBe("2026-06-30");
+    });
+
+    it("rejects today once check-in has passed", async () => {
+      await expect(
+        quote("2026-06-30", "2026-07-27", new Date("2026-06-30T20:01:00Z")),
+      ).rejects.toThrow(/earliest move-in we can take/i);
+    });
+
+    it("rejects as 422, beside the term ceiling rather than as a conflict", async () => {
+      await expect(
+        quote("2026-06-01", "2026-06-28", new Date("2026-06-30T12:00:00Z")),
+      ).rejects.toMatchObject({ status: 422 });
+    });
   });
 
   it("rejects a room from a different property", async () => {

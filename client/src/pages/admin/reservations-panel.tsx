@@ -443,6 +443,7 @@ function ConflictBookingActions({ booking }: { booking: Booking }) {
     queryClient.invalidateQueries({ queryKey: ["/api/admin/bookings"] });
     queryClient.invalidateQueries({ queryKey: ["/api/admin/dashboard"] });
     queryClient.invalidateQueries({ queryKey: ["/api/admin/payments"] });
+    queryClient.invalidateQueries({ queryKey: ["/api/admin/payments/by-property"] });
     queryClient.invalidateQueries({ queryKey: ["/api/admin/reconciliation"] });
   };
 

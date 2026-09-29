@@ -2,7 +2,14 @@
 // Task 8 — calendar sync panel, rendered in the Inventory tab (above
 // BlocksPanel is fine either order; dashboard.tsx decides). Shows the last
 // Airbnb iCal sync status, a manual "Sync Airbnb now" trigger, and the
-// guest_auto_notifications toggle.
+// guest_auto_notifications toggle, and the per-listing Airbnb links:
+//   - OUT: the secret .ics URL to paste into Airbnb's "Import calendar" so a
+//     direct booking blocks Airbnb too (regenerate rotates it).
+//   - IN: the Airbnb calendar link to paste here so Airbnb bookings block direct
+//     booking (masked; replace-only, saved via the property/room PATCH).
+//   GET  /api/admin/calendar/listings -> ListingLinks[]
+//   POST /api/admin/calendar/export-urls/:kind/:id/regenerate -> { exportUrl }
+//   PATCH /api/admin/properties/:id | /rooms/:id { airbnbIcalUrl }
 //
 //   GET  /api/admin/calendar/status  -> { lastSyncAt, lastResult | null }
 //     lastResult.listings rows carry NO per-listing counts (only
@@ -19,6 +26,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { useToast } from "@/hooks/use-toast";
 import { dateTime } from "@/lib/format";
 
@@ -67,6 +75,194 @@ interface FreshSyncResult {
   listings: FreshListingResult[];
 }
 
+interface ListingLinks {
+  kind: "property" | "room";
+  propertyId: string;
+  roomId: string | null;
+  label: string;
+  exportUrl: string;
+  hasImportUrl: boolean;
+  importUrlHint: string | null;
+  exportLastFetchedAt: string | null;
+  inboundStatus: "not_connected" | "pending" | "ok" | "error";
+  inboundError: string | null;
+  outboundStatus: "not_connected" | "ok" | "stale";
+  overall: "full" | "partial" | "none";
+}
+
+function overallBadge(overall: ListingLinks["overall"]): { label: string; variant: "default" | "secondary" | "outline" } {
+  switch (overall) {
+    case "full":
+      return { label: "Fully synced", variant: "default" };
+    case "partial":
+      return { label: "Partially synced", variant: "secondary" };
+    case "none":
+      return { label: "Not synced", variant: "outline" };
+  }
+}
+
+/** One-line explanation of what's missing, or null when overall === "full". */
+function syncExplanation(listing: ListingLinks): string | null {
+  if (listing.overall === "full") return null;
+  const parts: string[] = [];
+  if (listing.inboundStatus === "not_connected") {
+    parts.push("Paste the Airbnb export link above to receive Airbnb's bookings.");
+  } else if (listing.inboundStatus === "pending") {
+    parts.push("Waiting for the first Airbnb import sync.");
+  } else if (listing.inboundStatus === "error") {
+    parts.push(`Import failing${listing.inboundError ? `: ${listing.inboundError}` : ""}.`);
+  }
+  if (listing.outboundStatus === "not_connected") {
+    parts.push("Airbnb hasn't pulled your calendar yet — paste the export link into Airbnb's Import calendar.");
+  } else if (listing.outboundStatus === "stale") {
+    parts.push("Airbnb hasn't refetched your calendar recently — check the export link is still pasted into Airbnb.");
+  }
+  return parts.join(" ");
+}
+
+/** apiRequest throws `${status}: ${body}`; surface the server's `message` when the body is JSON. */
+function apiErrorText(e: Error): string {
+  const body = e.message.replace(/^\d+:\s*/, "");
+  try {
+    const parsed = JSON.parse(body);
+    if (parsed && typeof parsed.message === "string") return parsed.message;
+  } catch {
+    /* not JSON */
+  }
+  return body;
+}
+
+function ListingLinksRow({ listing, onImportSaved }: { listing: ListingLinks; onImportSaved: () => void }) {
+  const { toast } = useToast();
+  const [draft, setDraft] = useState("");
+  const key = listing.roomId ? `room-${listing.roomId}` : `property-${listing.propertyId}`;
+  const patchUrl = listing.roomId
+    ? `/api/admin/rooms/${listing.roomId}`
+    : `/api/admin/properties/${listing.propertyId}`;
+
+  const saveImport = useMutation({
+    mutationFn: async (airbnbIcalUrl: string | null) => (await apiRequest("PATCH", patchUrl, { airbnbIcalUrl })).json(),
+    onSuccess: (_data, airbnbIcalUrl) => {
+      setDraft("");
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/calendar/listings"] });
+      toast({ title: airbnbIcalUrl ? "Airbnb link saved" : "Airbnb link removed" });
+      // Sync right away so a bad link fails visibly now, not at the next hourly run.
+      if (airbnbIcalUrl) onImportSaved();
+    },
+    onError: (e: Error) => toast({ title: "Could not save link", description: apiErrorText(e), variant: "destructive" }),
+  });
+
+  const regenerate = useMutation({
+    mutationFn: async (): Promise<{ exportUrl: string }> =>
+      (await apiRequest("POST", `/api/admin/calendar/export-urls/${listing.kind}/${listing.roomId ?? listing.propertyId}/regenerate`)).json(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/admin/calendar/listings"] });
+      toast({ title: "New export link created", description: "Paste it into Airbnb; the old link no longer works." });
+    },
+    onError: (e: Error) => toast({ title: "Could not regenerate", description: apiErrorText(e), variant: "destructive" }),
+  });
+
+  async function copyExport() {
+    try {
+      await navigator.clipboard.writeText(listing.exportUrl);
+      toast({ title: "Export link copied" });
+    } catch {
+      toast({ title: "Copy failed", description: "Select the link and copy it manually.", variant: "destructive" });
+    }
+  }
+
+  return (
+    <div className="space-y-2 rounded border p-3" data-testid={`calendar-links-${key}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="font-medium">{listing.label}</div>
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <Badge variant={overallBadge(listing.overall).variant} data-testid={`badge-sync-status-${key}`}>
+            {overallBadge(listing.overall).label}
+          </Badge>
+          <span className="text-muted-foreground">
+            {listing.exportLastFetchedAt
+              ? `Airbnb last fetched your calendar ${dateTime(listing.exportLastFetchedAt)}`
+              : "Airbnb has never fetched your calendar"}
+          </span>
+        </div>
+      </div>
+      {syncExplanation(listing) && (
+        <p className="text-xs text-muted-foreground" data-testid={`text-sync-explanation-${key}`}>
+          {syncExplanation(listing)}
+        </p>
+      )}
+
+      <div className="space-y-1">
+        <p className="text-xs text-muted-foreground">Send to Airbnb (paste into Airbnb: Calendar, Import calendar)</p>
+        <div className="flex gap-2">
+          <Input readOnly value={listing.exportUrl} onFocus={(e) => e.currentTarget.select()} className="text-xs" data-testid={`input-export-url-${key}`} />
+          <Button type="button" variant="outline" onClick={copyExport} data-testid={`button-copy-export-${key}`}>
+            Copy
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            disabled={regenerate.isPending}
+            onClick={() => {
+              if (window.confirm(`Create a new export link for ${listing.label}? The link currently in Airbnb will stop working until you paste the new one.`)) {
+                regenerate.mutate();
+              }
+            }}
+            data-testid={`button-regenerate-export-${key}`}
+          >
+            Regenerate
+          </Button>
+        </div>
+      </div>
+
+      <div className="space-y-1">
+        <p className="text-xs text-muted-foreground">
+          Receive from Airbnb (paste the link from Airbnb: Calendar, Export calendar) ·{" "}
+          {listing.hasImportUrl ? (
+            <span data-testid={`text-import-status-${key}`}>connected (ends …{listing.importUrlHint})</span>
+          ) : (
+            <span data-testid={`text-import-status-${key}`}>not connected</span>
+          )}
+        </p>
+        <div className="flex gap-2">
+          <Input
+            type="password"
+            autoComplete="off"
+            placeholder={listing.hasImportUrl ? "Paste a new link to replace" : "https://www.airbnb.com/calendar/ical/..."}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            className="text-xs"
+            data-testid={`input-import-url-${key}`}
+          />
+          <Button
+            type="button"
+            disabled={!draft.trim() || saveImport.isPending}
+            onClick={() => saveImport.mutate(draft.trim())}
+            data-testid={`button-save-import-${key}`}
+          >
+            Save
+          </Button>
+          {listing.hasImportUrl && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saveImport.isPending}
+              onClick={() => {
+                if (window.confirm(`Remove the Airbnb link for ${listing.label}? Airbnb bookings will stop blocking direct booking.`)) {
+                  saveImport.mutate(null);
+                }
+              }}
+              data-testid={`button-clear-import-${key}`}
+            >
+              Remove
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function CalendarSyncPanel() {
   const { toast } = useToast();
   const [lastRefresh, setLastRefresh] = useState<FreshSyncResult | null>(null);
@@ -103,6 +299,11 @@ export default function CalendarSyncPanel() {
       toast({ title: data.enabled ? "Guest auto-notifications on" : "Guest auto-notifications off" });
     },
     onError: (e: Error) => toast({ title: "Could not update", description: e.message, variant: "destructive" }),
+  });
+
+  const listingLinks = useQuery<ListingLinks[]>({
+    queryKey: ["/api/admin/calendar/listings"],
+    queryFn: async () => (await apiRequest("GET", "/api/admin/calendar/listings")).json(),
   });
 
   const lastResult = status.data?.lastResult;
@@ -168,6 +369,24 @@ export default function CalendarSyncPanel() {
             ))}
           </div>
         )}
+
+        <div className="space-y-2 border-t pt-3">
+          <p className="text-xs font-medium text-muted-foreground">Airbnb links (per listing)</p>
+          <p className="text-xs text-muted-foreground">
+            Paste each export link into that listing on Airbnb so direct bookings block Airbnb. Paste each Airbnb link
+            below so Airbnb bookings block direct booking. Do both for every listing or one side can still double-book.
+          </p>
+          {listingLinks.isLoading && <p className="text-xs text-muted-foreground">Loading…</p>}
+          {listingLinks.error && <p className="text-xs text-destructive">Could not load listings.</p>}
+          {listingLinks.data?.length === 0 && <p className="text-xs text-muted-foreground">No STR properties or co-living rooms yet.</p>}
+          {listingLinks.data?.map((l) => (
+            <ListingLinksRow
+              key={l.roomId ?? l.propertyId}
+              listing={l}
+              onImportSaved={() => refresh.mutate()}
+            />
+          ))}
+        </div>
 
         <div className="border-t pt-3">
           <label className="flex items-start gap-2 text-sm">

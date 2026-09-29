@@ -110,8 +110,11 @@ import { getPricingSettings, updatePricingSettings, getCardSurchargeRate } from 
 import * as adminMessages from "./lib/adminMessages";
 import { validateManualBlockInput } from "./lib/manualBlocks";
 import { boundedMessageLogLimit } from "./lib/messageLogQuery";
-import { refreshExternalCalendars } from "./lib/icalSync";
+import { refreshExternalCalendars, normalizeAirbnbIcalUrl, getLastSyncStatus } from "./lib/icalSync";
+import { getExportFeed } from "./lib/icalExport";
+import { computeCalendarSyncStatus } from "./lib/calendarSyncStatus";
 import { buildReconciliationReport } from "./lib/reconciliation";
+import { buildPaymentsByProperty } from "./lib/paymentsByProperty";
 import {
   createDraftLeaseSchema,
   signLeaseSchema,
@@ -201,6 +204,23 @@ async function reconciliationHandler(
     }
     const report = await buildReconciliationReport(parsed.data.from, parsed.data.to, new Date().toISOString());
     res.json(report);
+  } catch (err) {
+    next(err);
+  }
+}
+
+// Admin Payments tree (Property -> Room -> Stay -> line). Module-level for the
+// same reason as reconciliationHandler: mountable on either auth surface later
+// without depending on registration order. Admin-only today — UO already reads
+// this money via /api/uo/payments and /api/uo/leases, and a third view of it
+// would only invite drift.
+async function paymentsByPropertyHandler(
+  _req: express.Request,
+  res: express.Response,
+  next: express.NextFunction,
+): Promise<void> {
+  try {
+    res.json(await buildPaymentsByProperty(new Date().toISOString()));
   } catch (err) {
     next(err);
   }
@@ -634,7 +654,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       const propIds = props.map((p) => p.id);
 
       // Batch-fetch all rooms for all properties at once.
-      const allRooms = await storage.getRoomsByPropertyIds(propIds);
+      const allRooms = await storage.getRoomsByProperties(propIds);
       const roomsByPropertyId = new Map<string, typeof allRooms>();
       for (const room of allRooms) {
         if (!roomsByPropertyId.has(room.propertyId)) {
@@ -887,6 +907,24 @@ export async function registerRoutes(app: Express): Promise<void> {
         return res.status(404).json({ message: "Room not found" });
       }
       res.json(await buildRoomAvailability(room.id));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // --- Outbound calendar feed (BNP -> Airbnb "Import calendar") ---
+  // Public and credential-less by necessity (Airbnb polls it), so the secret
+  // token in the path is the only gate. Body carries dates only ("Reserved"),
+  // never guest data. Every miss is the same generic 404.
+  app.get("/api/calendar/export/:file", async (req, res, next) => {
+    try {
+      const file = req.params.file;
+      if (!file.endsWith(".ics")) return res.status(404).json({ message: "Not found" });
+      const ics = await getExportFeed(file.slice(0, -4));
+      if (!ics) return res.status(404).json({ message: "Not found" });
+      res.set("Content-Type", "text/calendar; charset=utf-8");
+      res.set("Cache-Control", "no-store");
+      res.send(ics);
     } catch (err) {
       next(err);
     }
@@ -2013,19 +2051,7 @@ export async function registerRoutes(app: Express): Promise<void> {
       },
       calendarStatus: async (_req: express.Request, res: express.Response, next: express.NextFunction) => {
         try {
-          const [lastSyncAtRow, lastResultRow] = await Promise.all([
-            storage.getSetting("ical_last_sync_at"),
-            storage.getSetting("ical_last_sync_result"),
-          ]);
-          let lastResult: unknown = null;
-          if (lastResultRow?.value) {
-            try {
-              lastResult = JSON.parse(lastResultRow.value);
-            } catch {
-              lastResult = null;
-            }
-          }
-          res.json({ lastSyncAt: lastSyncAtRow?.value ?? null, lastResult });
+          res.json(await getLastSyncStatus());
         } catch (e) {
           messagingErr(e, res, next);
         }
@@ -2704,6 +2730,11 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
+  // Payments grouped Property -> Room -> Stay, unioning booking payments with
+  // lease rent + late fees. Separate from /api/admin/payments above, which the
+  // Overview tab's refund path consumes as raw Payment rows.
+  app.get("/api/admin/payments/by-property", requireAdmin, paymentsByPropertyHandler);
+
   // ---- Inventory management ----
   app.post("/api/admin/properties", requireAdmin, async (req, res, next) => {
     try {
@@ -2719,6 +2750,13 @@ export async function registerRoutes(app: Express): Promise<void> {
     try {
       const parsed = insertPropertySchema.partial().safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      if (parsed.data.airbnbIcalUrl !== undefined) {
+        try {
+          parsed.data.airbnbIcalUrl = normalizeAirbnbIcalUrl(parsed.data.airbnbIcalUrl);
+        } catch (e) {
+          return res.status(400).json({ message: (e as Error).message });
+        }
+      }
       const updated = await storage.updateProperty(req.params.id, parsed.data);
       if (!updated) return res.status(404).json({ message: "Property not found" });
       res.json(updated);
@@ -2757,6 +2795,13 @@ export async function registerRoutes(app: Express): Promise<void> {
     try {
       const parsed = insertRoomSchema.partial().safeParse(req.body);
       if (!parsed.success) return res.status(400).json({ message: parsed.error.errors[0]?.message });
+      if (parsed.data.airbnbIcalUrl !== undefined) {
+        try {
+          parsed.data.airbnbIcalUrl = normalizeAirbnbIcalUrl(parsed.data.airbnbIcalUrl);
+        } catch (e) {
+          return res.status(400).json({ message: (e as Error).message });
+        }
+      }
       const updated = await storage.updateRoom(req.params.id, parsed.data);
       if (!updated) return res.status(404).json({ message: "Room not found" });
       res.json(updated);
@@ -2774,10 +2819,60 @@ export async function registerRoutes(app: Express): Promise<void> {
     }
   });
 
-  // NOTE: Airbnb iCal feed URLs are managed from Unified-Ops (the primary BNP
-  // admin), written to properties/rooms.airbnb_ical_url directly. BNP's sync
-  // (server/lib/icalSync.ts, driven by the scheduler + hourly cron) reads those
-  // URLs — there is no feed CRUD surface here.
+  // --- Airbnb calendar links (both directions) ---
+  // INBOUND: properties/rooms.airbnb_ical_url is editable here (PATCH above,
+  // validated by normalizeAirbnbIcalUrl) or from Unified-Ops; icalSync.ts reads it.
+  // OUTBOUND: each STR property / co-living room has a secret export URL to paste
+  // into Airbnb's "Import calendar" (served by GET /api/calendar/export/:file).
+  // The inbound URL is secret-ish, so this list only says whether one is set and
+  // its last 4 characters; it is replace-only from the UI.
+  app.get("/api/admin/calendar/listings", requireAdmin, async (_req, res, next) => {
+    try {
+      const base = publicBaseUrl();
+      const [listings, { lastResult }] = await Promise.all([storage.getExportableListings(), getLastSyncStatus()]);
+      const resultByKey = new Map((lastResult?.listings ?? []).map((l) => [l.key, l]));
+
+      res.json(
+        listings.map(({ exportToken, airbnbIcalUrl, exportLastFetchedAt, kind, propertyId, roomId, label }) => {
+          const key = roomId ? `room:${roomId}` : `property:${propertyId}`;
+          const status = computeCalendarSyncStatus({
+            hasImportUrl: !!airbnbIcalUrl,
+            syncResultEntry: resultByKey.get(key),
+            exportLastFetchedAt,
+          });
+          return {
+            kind,
+            propertyId,
+            roomId,
+            label,
+            exportUrl: `${base}/api/calendar/export/${exportToken}.ics`,
+            hasImportUrl: !!airbnbIcalUrl,
+            importUrlHint: airbnbIcalUrl ? airbnbIcalUrl.slice(-4) : null,
+            exportLastFetchedAt: exportLastFetchedAt ? exportLastFetchedAt.toISOString() : null,
+            inboundStatus: status.inboundStatus,
+            inboundError: status.inboundError ?? null,
+            outboundStatus: status.outboundStatus,
+            overall: status.overall,
+          };
+        }),
+      );
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  app.post("/api/admin/calendar/export-urls/:kind/:id/regenerate", requireAdmin, async (req, res, next) => {
+    try {
+      const { kind, id } = req.params;
+      if (kind !== "property" && kind !== "room") return res.status(400).json({ message: "Unknown listing kind" });
+      const token = await storage.regenerateExportToken(kind, id);
+      if (!token) return res.status(404).json({ message: "Listing not found" });
+      log(`calendar export url regenerated for ${kind} ${id} by ${adminActor(req)}`, "calendar");
+      res.json({ exportUrl: `${publicBaseUrl()}/api/calendar/export/${token}.ics` });
+    } catch (err) {
+      next(err);
+    }
+  });
 }
 
 // ===========================================================================

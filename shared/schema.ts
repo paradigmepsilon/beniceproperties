@@ -431,6 +431,22 @@ export const properties = pgTable("properties", {
   // fetches it into external_bookings). Managed from Unified-Ops. Tokenized;
   // treat as secret-ish (DB only, never logged/committed). Nullable. Additive.
   airbnbIcalUrl: text("airbnb_ical_url"),
+  // Secret path token for THIS listing's outbound calendar feed
+  // (GET /api/calendar/export/<token>.ics) — the URL an operator pastes into
+  // Airbnb's "Import calendar" so direct bookings block Airbnb too. The token IS
+  // the auth (Airbnb polls with no credentials). Set by a DB default; never
+  // client-writable (omitted from the insert schema); rotate via the admin
+  // regenerate action. Secret-ish: withheld from every public projection.
+  exportToken: text("export_token").default(sql`gen_random_uuid()::text`),
+  // Last time THIS listing's outbound export feed (GET /api/calendar/export/
+  // <exportToken>.ics) was actually fetched by something — in practice,
+  // Airbnb's calendar-import poller. Airbnb gives no webhook/confirmation of
+  // import, so this is the only signal that Airbnb is actively pulling BNP's
+  // calendar. Stamped by icalExport.ts's getExportFeed() only on a
+  // successful, publishable render — never on a 404/unknown token — so a
+  // stale or wrong token can't fake a connected status. Nullable: never
+  // fetched yet. Interpreted by server/lib/calendarSyncStatus.ts.
+  exportLastFetchedAt: timestamp("export_last_fetched_at"),
   active: boolean("active").notNull().default(true),
   // Added 2026-09-27: a PLACEHOLDER listing is real to look at and fake to the
   // business. It renders on the public site so we can measure demand for
@@ -459,7 +475,7 @@ export const insertPropertySchema = createInsertSchema(properties, {
   photos: z.array(z.string()).optional(),
   amenities: z.array(z.string()).optional(),
   listingContent: listingContentSchema.nullish(),
-}).omit({ id: true, createdAt: true, updatedAt: true });
+}).omit({ id: true, createdAt: true, updatedAt: true, exportToken: true, exportLastFetchedAt: true });
 
 // Type-only (erased at build): the public projections of these rows. See
 // shared/publicProjection.ts, which imports Property/Room back from here.
@@ -541,6 +557,12 @@ export const rooms = pgTable(
     // Unified-Ops. Tokenized; secret-ish. Nullable. Additive. See
     // properties.airbnbIcalUrl.
     airbnbIcalUrl: text("airbnb_ical_url"),
+    // Secret path token for this room's outbound calendar feed. See
+    // properties.exportToken.
+    exportToken: text("export_token").default(sql`gen_random_uuid()::text`),
+    // Last time this room's outbound export feed was fetched. See
+    // properties.exportLastFetchedAt.
+    exportLastFetchedAt: timestamp("export_last_fetched_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -555,7 +577,7 @@ export const insertRoomSchema = createInsertSchema(rooms, {
   status: z.enum(ROOM_STATUSES),
   photos: z.array(z.string()).optional(),
   listingContent: listingContentSchema.nullish(),
-}).omit({ id: true, createdAt: true, updatedAt: true });
+}).omit({ id: true, createdAt: true, updatedAt: true, exportToken: true, exportLastFetchedAt: true });
 
 export type Room = typeof rooms.$inferSelect;
 export type InsertRoom = z.infer<typeof insertRoomSchema>;

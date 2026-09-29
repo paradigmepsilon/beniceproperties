@@ -12,7 +12,7 @@
 //               into filtering without a real availability source.
 
 import { Search } from "lucide-react";
-import { todayIso } from "@shared/dates";
+import { earliestMoveInIso } from "@shared/dates";
 
 export interface ColivingSearchValue {
   city: string; // "ALL" or a cityOf() value
@@ -30,7 +30,8 @@ interface Props {
 }
 
 export function ColivingSearchBar({ cities, budgets, value, onChange, onSearch }: Props) {
-  const today = todayIso();
+  // Advance-booking floor — see search-bar.tsx.
+  const earliestMoveIn = earliestMoveInIso();
   const set = (patch: Partial<ColivingSearchValue>) => onChange({ ...value, ...patch });
 
   return (
@@ -59,7 +60,7 @@ export function ColivingSearchBar({ cities, budgets, value, onChange, onSearch }
         <input
           id="coliving-movein"
           type="date"
-          min={today}
+          min={earliestMoveIn}
           value={value.moveIn}
           onChange={(e) => set({ moveIn: e.target.value })}
           className="min-h-[2.75rem] w-full bg-transparent text-base text-foreground focus:outline-none focus-visible:rounded-lg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ring)] sm:min-h-0 sm:text-sm"

@@ -156,9 +156,15 @@ function PayForm({ portalToken }: { portalToken: string | null }) {
     return (
       <div className="space-y-3 text-sm" data-testid="text-pay-success">
         <p className="font-medium">Room secured ✓</p>
+        {/* The lease is NOT active here. finalizeDepositPayment sets
+            PENDING_VERIFICATION (server/lib/leasePayments.ts) and it only goes
+            ACTIVE once an admin approves the licence. Says what the
+            depositReceipt email already says, so the two cannot disagree. */}
         <p className="text-muted-foreground">
-          Your deposit is received and your room is secured. Your lease is active. Your first rent
-          payment will be charged on your move-in date. Redirecting to your bookings…
+          Your refundable deposit is received and your room is held for your whole term. One last
+          step: upload a photo of your ID in your portal. Once we&apos;ve approved it your lease goes
+          active, and your first rent payment is charged on your move-in date. Redirecting to your
+          portal…
         </p>
       </div>
     );

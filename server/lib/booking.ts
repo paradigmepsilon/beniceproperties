@@ -18,6 +18,7 @@ import {
   type RateTier,
   type WeekdayRates,
 } from "@shared/rateSelection";
+import { isMoveInAllowed, moveInTooEarlyMessage } from "@shared/dates";
 import type { QuoteResponse } from "@shared/api-types";
 import { isPlaceholder } from "@shared/placeholder";
 import { storage } from "../storage";
@@ -205,7 +206,10 @@ export async function resolveBooking(input: {
   roomId?: string;
   checkIn?: string;
   checkOut?: string;
+  /** Injectable clock for the advance-booking rule. Defaults to now. */
+  now?: Date;
 }): Promise<ResolvedBooking> {
+  const now = input.now ?? new Date();
   const property = await storage.getProperty(input.propertyId);
   if (!property) throw new BookingError("Property not found", 404);
   if (!property.active) throw new BookingError("Property is not available", 409);
@@ -236,6 +240,13 @@ export async function resolveBooking(input: {
     }
     if (!input.checkIn || !input.checkOut) {
       throw new BookingError("Select move-in and move-out dates");
+    }
+    // Advance-booking rule: a move-in of today is fine until check-in (4pm ET),
+    // after which the earliest we can take is tomorrow. Enforced here rather
+    // than at the route because BOTH /api/quote and /api/booking-intent funnel
+    // through resolveBooking — before this, either would accept a PAST date.
+    if (!isMoveInAllowed(input.checkIn, now)) {
+      throw new BookingError(moveInTooEarlyMessage(now), 422);
     }
     const n = nights(input.checkIn, input.checkOut);
     if (n < 1) throw new BookingError("Move-out must be after move-in");
@@ -301,6 +312,10 @@ export async function resolveBooking(input: {
   // ---- Whole-property (STR) ----
   if (!input.checkIn || !input.checkOut) {
     throw new BookingError("Select check-in and check-out dates");
+  }
+  // Same advance-booking rule as the co-living branch above.
+  if (!isMoveInAllowed(input.checkIn, now)) {
+    throw new BookingError(moveInTooEarlyMessage(now), 422);
   }
   const n = nights(input.checkIn, input.checkOut);
   if (n < 1) throw new BookingError("Check-out must be after check-in");

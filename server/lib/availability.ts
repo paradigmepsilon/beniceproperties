@@ -17,7 +17,7 @@
 import { addDays, format, parseISO } from "date-fns";
 import { storage } from "../storage";
 import type { AvailabilityResponse, BusyRange } from "@shared/api-types";
-import { todayIso } from "@shared/dates";
+import { todayIso, earliestMoveInIso } from "@shared/dates";
 import { ROOM_UNBOOKABLE_STATUSES, NON_BLOCKING_BOOKING_STATUSES, type Room } from "@shared/schema";
 
 /** CANCELLED / CONFLICT — paid or not, these rows occupy no dates. */
@@ -96,7 +96,15 @@ export async function buildStrAvailability(propertyId: string): Promise<Availabi
     .filter((b) => b.endDate >= today)
     .map((b) => ({ start: b.startDate, end: b.endDate, source: "manual" as const }));
 
-  return { busy: sortByStart([...directRanges, ...externalRanges, ...manualRanges]), minDate: today };
+  // minDate is the floor the CLIENT's date picker trusts, so it is the
+  // advance-booking rule, not `today`. The two are deliberately different:
+  // `today` filters busy ranges ("ending today or later"), where dropping a
+  // range that ends today would hide a real block. Handing the client a floor
+  // the server then rejects is the bug this split avoids.
+  return {
+    busy: sortByStart([...directRanges, ...externalRanges, ...manualRanges]),
+    minDate: earliestMoveInIso(),
+  };
 }
 
 /**
@@ -138,8 +146,10 @@ export async function buildRoomAvailability(roomId: string): Promise<Availabilit
     .filter((b) => b.endDate >= today)
     .map((b) => ({ start: b.startDate, end: b.endDate, source: "manual" as const }));
 
+  // See buildStrAvailability: minDate is the advance-booking floor, `today` is
+  // the busy-range cutoff. They are not interchangeable.
   return {
     busy: sortByStart([...leaseRanges, ...bookingRanges, ...externalRanges, ...manualRanges]),
-    minDate: today,
+    minDate: earliestMoveInIso(),
   };
 }

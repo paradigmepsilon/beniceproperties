@@ -181,6 +181,20 @@ function realPropertyCondition() {
   return eq(properties.isPlaceholder, false);
 }
 
+/** A listing that can publish an outbound .ics feed (see getExportableListings). */
+export interface ExportableListing {
+  kind: "property" | "room";
+  propertyId: string;
+  roomId: string | null;
+  /** Human label for the admin panel: property name, or "Property — Room". */
+  label: string;
+  exportToken: string;
+  /** Inbound Airbnb feed URL for this listing (secret-ish), or null. */
+  airbnbIcalUrl: string | null;
+  /** Last time this listing's export feed was actually fetched, or null (never). */
+  exportLastFetchedAt: Date | null;
+}
+
 export const BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"] as const;
 export type BookingsPageSort = (typeof BOOKINGS_PAGE_SORTS)[number];
 
@@ -235,7 +249,8 @@ export interface IStorage {
 
   // --- Rooms ---
   getRoomsByProperty(propertyId: string): Promise<Room[]>;
-  getRoomsByPropertyIds(propertyIds: string[]): Promise<Room[]>;
+  /** Batched sibling of getRoomsByProperty — one query for many properties. */
+  getRoomsByProperties(propertyIds: string[]): Promise<Room[]>;
   getRoom(id: string): Promise<Room | undefined>;
   createRoom(data: InsertRoom): Promise<Room>;
   updateRoom(id: string, updates: Partial<InsertRoom>): Promise<Room | undefined>;
@@ -301,6 +316,8 @@ export interface IStorage {
   // --- Payments ---
   getPayment(id: string): Promise<Payment | undefined>;
   getPaymentsByBooking(bookingId: string): Promise<Payment[]>;
+  /** Batched sibling of getPaymentsByBooking — one query for many bookings. */
+  getPaymentsByBookings(bookingIds: string[]): Promise<Payment[]>;
   getPaymentByStripeRef(stripeRef: string): Promise<Payment | undefined>;
   getPendingManualPayments(): Promise<Payment[]>;
   createPayment(data: InsertPayment): Promise<Payment>;
@@ -308,6 +325,8 @@ export interface IStorage {
 
   // --- Subscriptions (co-living weekly rent) ---
   getSubscriptionByBooking(bookingId: string): Promise<Subscription | undefined>;
+  /** Batched sibling of getSubscriptionByBooking — one query for many bookings. */
+  getSubscriptionsByBookings(bookingIds: string[]): Promise<Subscription[]>;
   getSubscriptionByStripeId(stripeSubscriptionId: string): Promise<Subscription | undefined>;
   createSubscription(data: InsertSubscription): Promise<Subscription>;
   updateSubscription(id: string, updates: Partial<InsertSubscription>): Promise<Subscription | undefined>;
@@ -334,6 +353,13 @@ export interface IStorage {
    */
   getActiveLeasesWithGuest(): Promise<Array<Lease & { guest: Guest; property: Property }>>;
   /**
+   * Leases joined to guest/property in one query, for an explicit status set.
+   * getActiveLeasesWithGuest is the non-terminal special case of this.
+   */
+  getLeasesWithGuest(opts?: {
+    statuses?: string[];
+  }): Promise<Array<Lease & { guest: Guest; property: Property }>>;
+  /**
    * Soonest endDate (>= `onOrAfter`) of an OCCUPYING lease per property —
    * statuses where the deposit is paid and a room is actually held
    * (PENDING_VERIFICATION | ACTIVE). Feeds "Next opening" on fully-booked
@@ -358,6 +384,8 @@ export interface IStorage {
   updateLease(id: string, updates: Partial<InsertLease>): Promise<Lease | undefined>;
   getLeaseByPortalToken(token: string): Promise<Lease | undefined>;
   getLeaseRooms(leaseId: string): Promise<LeaseRoom[]>;
+  /** Batched sibling of getLeaseRooms — one query for many leases. */
+  getLeaseRoomsForLeases(leaseIds: string[]): Promise<LeaseRoom[]>;
 
   // --- Vehicles (one per lease; parking identification) ---
   getVehicleByLease(leaseId: string): Promise<Vehicle | undefined>;
@@ -438,6 +466,8 @@ export interface IStorage {
 
   // --- Payment schedule ---
   getScheduleByLease(leaseId: string): Promise<PaymentScheduleRow[]>;
+  /** Batched sibling of getScheduleByLease — one query for many leases. */
+  getScheduleForLeases(leaseIds: string[]): Promise<PaymentScheduleRow[]>;
   getScheduleRow(id: string): Promise<PaymentScheduleRow | undefined>;
   updateScheduleRow(
     id: string,
@@ -446,6 +476,8 @@ export interface IStorage {
 
   // --- Late fees ---
   getLateFeesByLease(leaseId: string): Promise<LateFee[]>;
+  /** Batched sibling of getLateFeesByLease — one query for many leases. */
+  getLateFeesForLeases(leaseIds: string[]): Promise<LateFee[]>;
   createLateFee(data: InsertLateFee): Promise<LateFee>;
   updateLateFee(id: string, updates: Partial<InsertLateFee>): Promise<LateFee | undefined>;
   /**
@@ -533,6 +565,19 @@ export interface IStorage {
   getListingsWithIcalUrl(): Promise<
     { kind: "property" | "room"; propertyId: string; roomId: string | null; url: string; label: string }[]
   >;
+  /**
+   * Every listing that can publish an outbound calendar feed (real, active STR
+   * properties + rooms of real, active co-living properties), with its secret
+   * export token and its inbound Airbnb URL. Feeds the admin calendar panel.
+   */
+  getExportableListings(): Promise<ExportableListing[]>;
+  getPropertyByExportToken(token: string): Promise<Property | undefined>;
+  getRoomByExportToken(token: string): Promise<Room | undefined>;
+  /** Stamp export_last_fetched_at = now() after a successful export-feed render. */
+  touchPropertyExportFetched(id: string): Promise<void>;
+  touchRoomExportFetched(id: string): Promise<void>;
+  /** Rotate a listing's export token (invalidates the URL Airbnb holds). Returns the new token, or undefined if the row doesn't exist. */
+  regenerateExportToken(kind: "property" | "room", id: string): Promise<string | undefined>;
   /** Busy external ranges for an STR whole-property listing (room_id IS NULL). */
   getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]>;
   /** Busy external ranges for a co-living room listing. */
@@ -640,7 +685,7 @@ class Storage implements IStorage {
     return db.select().from(rooms).where(eq(rooms.propertyId, propertyId));
   }
 
-  async getRoomsByPropertyIds(propertyIds: string[]): Promise<Room[]> {
+  async getRoomsByProperties(propertyIds: string[]): Promise<Room[]> {
     if (propertyIds.length === 0) return [];
     return db.select().from(rooms).where(inArray(rooms.propertyId, propertyIds));
   }
@@ -911,6 +956,15 @@ class Storage implements IStorage {
       .orderBy(desc(payments.createdAt));
   }
 
+  async getPaymentsByBookings(bookingIds: string[]): Promise<Payment[]> {
+    if (bookingIds.length === 0) return [];
+    return db
+      .select()
+      .from(payments)
+      .where(inArray(payments.bookingId, bookingIds))
+      .orderBy(desc(payments.createdAt));
+  }
+
   async getPaymentByStripeRef(stripeRef: string): Promise<Payment | undefined> {
     const [row] = await db.select().from(payments).where(eq(payments.stripeRef, stripeRef));
     return row;
@@ -967,6 +1021,11 @@ class Storage implements IStorage {
       .from(subscriptions)
       .where(eq(subscriptions.bookingId, bookingId));
     return row;
+  }
+
+  async getSubscriptionsByBookings(bookingIds: string[]): Promise<Subscription[]> {
+    if (bookingIds.length === 0) return [];
+    return db.select().from(subscriptions).where(inArray(subscriptions.bookingId, bookingIds));
   }
 
   async getSubscriptionByStripeId(
@@ -1089,12 +1148,29 @@ class Storage implements IStorage {
    * guest picker uses this instead of getLeases() + a per-row lookup loop.
    */
   async getActiveLeasesWithGuest(): Promise<Array<Lease & { guest: Guest; property: Property }>> {
+    return this.getLeasesWithGuest({ statuses: [...NON_TERMINAL_LEASE_STATUSES] });
+  }
+
+  /**
+   * The general form: leases joined to guest + property in one query, for an
+   * explicit status set. Defaults to non-terminal so a caller that omits
+   * `statuses` gets getActiveLeasesWithGuest's behaviour. A report that needs
+   * historical money (COMPLETED/TERMINATED leases) passes them in.
+   *
+   * Note the inner-join semantics: a lease whose guest or property row is gone
+   * is DROPPED here. A caller that must not lose money diffs these ids against
+   * getLeases() and accounts for the difference itself.
+   */
+  async getLeasesWithGuest(opts?: {
+    statuses?: string[];
+  }): Promise<Array<Lease & { guest: Guest; property: Property }>> {
+    const statuses = opts?.statuses ?? [...NON_TERMINAL_LEASE_STATUSES];
     const rows = await db
       .select()
       .from(leases)
       .leftJoin(guests, eq(leases.guestId, guests.id))
       .leftJoin(properties, eq(leases.propertyId, properties.id))
-      .where(inArray(leases.status, [...NON_TERMINAL_LEASE_STATUSES]))
+      .where(inArray(leases.status, statuses))
       .orderBy(desc(leases.createdAt));
     return rows
       .filter((r) => r.guests !== null && r.properties !== null)
@@ -1193,6 +1269,11 @@ class Storage implements IStorage {
 
   async getLeaseRooms(leaseId: string): Promise<LeaseRoom[]> {
     return db.select().from(leaseRooms).where(eq(leaseRooms.leaseId, leaseId));
+  }
+
+  async getLeaseRoomsForLeases(leaseIds: string[]): Promise<LeaseRoom[]> {
+    if (leaseIds.length === 0) return [];
+    return db.select().from(leaseRooms).where(inArray(leaseRooms.leaseId, leaseIds));
   }
 
   // --- Vehicles (one row per lease; upsert keyed on lease_id) ---
@@ -1593,6 +1674,15 @@ class Storage implements IStorage {
       .orderBy(asc(paymentSchedule.scheduleSeq));
   }
 
+  async getScheduleForLeases(leaseIds: string[]): Promise<PaymentScheduleRow[]> {
+    if (leaseIds.length === 0) return [];
+    return db
+      .select()
+      .from(paymentSchedule)
+      .where(inArray(paymentSchedule.leaseId, leaseIds))
+      .orderBy(asc(paymentSchedule.scheduleSeq));
+  }
+
   async getScheduleRow(id: string): Promise<PaymentScheduleRow | undefined> {
     const [row] = await db.select().from(paymentSchedule).where(eq(paymentSchedule.id, id));
     return row;
@@ -1616,6 +1706,15 @@ class Storage implements IStorage {
       .select()
       .from(lateFees)
       .where(eq(lateFees.leaseId, leaseId))
+      .orderBy(asc(lateFees.accrualDate));
+  }
+
+  async getLateFeesForLeases(leaseIds: string[]): Promise<LateFee[]> {
+    if (leaseIds.length === 0) return [];
+    return db
+      .select()
+      .from(lateFees)
+      .where(inArray(lateFees.leaseId, leaseIds))
       .orderBy(asc(lateFees.accrualDate));
   }
 
@@ -2076,6 +2175,98 @@ class Storage implements IStorage {
       listings.push({ kind: "room", propertyId: r.propertyId, roomId: r.id, url: r.url, label: r.name });
     }
     return listings;
+  }
+
+  async getExportableListings(): Promise<ExportableListing[]> {
+    const propRows = await db
+      .select({
+        id: properties.id,
+        name: properties.name,
+        token: properties.exportToken,
+        url: properties.airbnbIcalUrl,
+        lastFetchedAt: properties.exportLastFetchedAt,
+      })
+      .from(properties)
+      .where(and(eq(properties.active, true), realPropertyCondition(), eq(properties.type, "STR")))
+      .orderBy(asc(properties.name));
+    const roomRows = await db
+      .select({
+        id: rooms.id,
+        propertyId: rooms.propertyId,
+        name: rooms.name,
+        roomNumber: rooms.roomNumber,
+        token: rooms.exportToken,
+        url: rooms.airbnbIcalUrl,
+        lastFetchedAt: rooms.exportLastFetchedAt,
+        propertyName: properties.name,
+      })
+      .from(rooms)
+      .innerJoin(properties, eq(rooms.propertyId, properties.id))
+      .where(and(eq(properties.active, true), realPropertyCondition(), eq(properties.type, "COLIVING")))
+      .orderBy(asc(properties.name), asc(rooms.roomNumber), asc(rooms.name));
+
+    const listings: ExportableListing[] = [];
+    for (const p of propRows) {
+      if (!p.token) continue;
+      listings.push({
+        kind: "property",
+        propertyId: p.id,
+        roomId: null,
+        label: p.name,
+        exportToken: p.token,
+        airbnbIcalUrl: p.url ?? null,
+        exportLastFetchedAt: p.lastFetchedAt ?? null,
+      });
+    }
+    for (const r of roomRows) {
+      if (!r.token) continue;
+      listings.push({
+        kind: "room",
+        propertyId: r.propertyId,
+        roomId: r.id,
+        label: `${r.propertyName} — ${r.name}`,
+        exportToken: r.token,
+        airbnbIcalUrl: r.url ?? null,
+        exportLastFetchedAt: r.lastFetchedAt ?? null,
+      });
+    }
+    return listings;
+  }
+
+  async getPropertyByExportToken(token: string): Promise<Property | undefined> {
+    const [row] = await db.select().from(properties).where(eq(properties.exportToken, token)).limit(1);
+    return row;
+  }
+
+  async getRoomByExportToken(token: string): Promise<Room | undefined> {
+    const [row] = await db.select().from(rooms).where(eq(rooms.exportToken, token)).limit(1);
+    return row;
+  }
+
+  async regenerateExportToken(kind: "property" | "room", id: string): Promise<string | undefined> {
+    const fresh = sql`gen_random_uuid()::text`;
+    if (kind === "property") {
+      const [row] = await db
+        .update(properties)
+        .set({ exportToken: fresh, updatedAt: new Date() })
+        .where(eq(properties.id, id))
+        .returning({ token: properties.exportToken });
+      return row?.token ?? undefined;
+    }
+    const [row] = await db
+      .update(rooms)
+      .set({ exportToken: fresh, updatedAt: new Date() })
+      .where(eq(rooms.id, id))
+      .returning({ token: rooms.exportToken });
+    return row?.token ?? undefined;
+  }
+
+  async touchPropertyExportFetched(id: string): Promise<void> {
+    await db.update(properties).set({ exportLastFetchedAt: new Date() }).where(eq(properties.id, id));
+  }
+
+  async touchRoomExportFetched(id: string): Promise<void> {
+    await db.update(rooms).set({ exportLastFetchedAt: new Date() }).where(eq(rooms.id, id));
   }
 
   async getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]> {
