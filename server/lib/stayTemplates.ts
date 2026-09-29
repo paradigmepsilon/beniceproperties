@@ -329,6 +329,42 @@ export function stayDeclinedRefunded(v: {
   };
 }
 
+/**
+ * Guest: an admin changed the stay (usually shortened it) and part of what the
+ * guest paid is going back to them. `manualAmount` is the part we owe but could
+ * not return through Stripe (a CashApp/Zelle payment) — it is promised, not sent.
+ */
+export function stayModifiedRefunded(v: {
+  name: string;
+  property: string;
+  reference: string;
+  checkIn: string;
+  checkOut: string;
+  refundAmount: string | null;
+  manualAmount: string | null;
+  stayUrl: string;
+}): StayTemplate {
+  const cardLine = v.refundAmount
+    ? `${v.refundAmount} has been refunded to the card you paid with. Refunds usually land within ` +
+      `5 to 10 business days.`
+    : "";
+  const manualLine = v.manualAmount
+    ? `${v.manualAmount} is being returned to you the same way you paid; we will be in touch ` +
+      `to confirm it has been sent.`
+    : "";
+  return {
+    subject: `Your booking ${v.reference} has been updated`,
+    body:
+      `Hi ${v.name}, your stay at ${v.property} (${v.reference}) has been updated. Your dates are ` +
+      `now ${v.checkIn} to ${v.checkOut}.\n\n` +
+      [cardLine, manualLine].filter(Boolean).join("\n\n") +
+      `\n\nYour booking: ${v.stayUrl}\n\nIf anything here looks wrong, just reply to this email.`,
+    smsBody:
+      `BNP: booking ${v.reference} updated to ${v.checkIn} - ${v.checkOut}. ` +
+      `Refund details in your email.`,
+  };
+}
+
 /** Admin: the sweep moved money with no human in the loop. No contact details. */
 export function adminStayAutoDeclined(v: {
   property: string;

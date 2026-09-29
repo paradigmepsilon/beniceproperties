@@ -79,6 +79,17 @@ import {
 import { billAccruedLateFees, handleChargeFailure } from "./lib/dunning";
 import { materializeShortStayBooking } from "./lib/materialize";
 import { cancelBooking, confirmConflictBooking } from "./lib/bookingConflicts";
+import {
+  applyModification,
+  contactInputSchema,
+  externalPaymentSchema,
+  linkModificationInvoice,
+  modifyInputSchema,
+  quoteModification,
+  recordExternalPayment,
+  updateGuestContact,
+} from "./lib/bookingModify";
+import { applyPaymentPlan, paymentPlanInputSchema, paymentPlanQuoteSchema, quotePaymentPlan } from "./lib/leasePaymentPlan";
 import { onBookingConfirmed } from "./lib/lifecycle";
 import { notifyAdmin } from "./lib/notifications";
 import {
@@ -2171,6 +2182,112 @@ export async function registerRoutes(app: Express): Promise<void> {
       const actor = uoActor(req);
       const refund = req.body?.refund === true;
       const result = await cancelBooking({ bookingId: req.params.id, actor, refund });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+
+  // UO booking edits (server/lib/bookingModify.ts). The quote is a pure read;
+  // the apply re-quotes and refuses unless `expectedDelta` still matches.
+  app.post("/api/uo/bookings/:id/modify/quote", requireServiceToken, async (req, res, next) => {
+    try {
+      const parsed = modifyInputSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      const quote = await quoteModification(req.params.id, parsed.data);
+      res.json({ ok: true, quote });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+  app.post("/api/uo/bookings/:id/modify", requireServiceToken, async (req, res, next) => {
+    try {
+      const actor = uoActor(req);
+      const parsed = modifyInputSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      const expectedDelta = Number(req.body?.expectedDelta);
+      if (!Number.isFinite(expectedDelta)) {
+        return res.status(400).json({ message: "expectedDelta is required" });
+      }
+      const result = await applyModification({
+        bookingId: req.params.id,
+        input: parsed.data,
+        expectedDelta,
+        refund: req.body?.refund === true,
+        actor,
+      });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+  app.patch("/api/uo/booking-modifications/:id", requireServiceToken, async (req, res, next) => {
+    try {
+      uoActor(req);
+      const uoInvoiceId = typeof req.body?.uoInvoiceId === "string" ? req.body.uoInvoiceId : "";
+      if (!uoInvoiceId) return res.status(400).json({ message: "uoInvoiceId is required" });
+      const modification = await linkModificationInvoice(req.params.id, uoInvoiceId);
+      res.json({ ok: true, modification });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+  app.post("/api/uo/bookings/:id/payments", requireServiceToken, async (req, res, next) => {
+    try {
+      const actor = uoActor(req);
+      const parsed = externalPaymentSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      const result = await recordExternalPayment({ bookingId: req.params.id, input: parsed.data, actor });
+      res.json({ ok: true, created: result.created, paymentId: result.payment.id });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+  app.patch("/api/uo/guests/:id", requireServiceToken, async (req, res, next) => {
+    try {
+      const actor = uoActor(req);
+      const { actor: _a, ...fields } = req.body ?? {};
+      const parsed = contactInputSchema.safeParse(fields);
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      const result = await updateGuestContact({ guestId: req.params.id, input: parsed.data, actor });
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+  // Lease payment plan (server/lib/leasePaymentPlan.ts) — overrides a signed term.
+  app.post("/api/uo/leases/:id/payment-plan/quote", requireServiceToken, async (req, res, next) => {
+    try {
+      const parsed = paymentPlanQuoteSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      const quote = await quotePaymentPlan(req.params.id, parsed.data);
+      res.json({ ok: true, quote });
+    } catch (e) {
+      messagingErr(e, res, next);
+    }
+  });
+  app.post("/api/uo/leases/:id/payment-plan", requireServiceToken, async (req, res, next) => {
+    try {
+      const actor = uoActor(req);
+      const parsed = paymentPlanInputSchema.safeParse(req.body ?? {});
+      if (!parsed.success) {
+        return res.status(400).json({ message: parsed.error.errors[0]?.message ?? "Invalid request" });
+      }
+      const expectedNewRemaining = Number(req.body?.expectedNewRemaining);
+      if (!Number.isFinite(expectedNewRemaining)) {
+        return res.status(400).json({ message: "expectedNewRemaining is required" });
+      }
+      const result = await applyPaymentPlan({ leaseId: req.params.id, input: parsed.data, expectedNewRemaining, actor });
       res.json({ ok: true, ...result });
     } catch (e) {
       messagingErr(e, res, next);

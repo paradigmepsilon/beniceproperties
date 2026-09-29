@@ -4696,3 +4696,53 @@ inbound×outbound matrix are covered by table-driven unit tests in `calendarSync
 BEFORE deploying — not run from this session (production writes are blocked here).
 
 **Deferred:** none.
+
+---
+
+## 2026-09-28 — UO booking edits: dates, price override, contact, lease payment plan
+
+Owner-approved (Alex, 2026-09-28): Unified Ops admins/managers edit a live booking from its details
+view, invoice the guest when they owe more, refund the difference + email when a stay is shortened,
+edit guest contact, and change a lease's payment cadence. UO still never writes this DB — every
+write is a new `/api/uo/*` write-back, per the architecture rule.
+
+**Built:**
+- `booking_modifications` table (`shared/schema.ts`) + `scripts/push-booking-modifications.mjs`
+  (additive, idempotent; one new table, nothing altered). One row per UO edit; its id keys the money.
+- `server/lib/bookingModify.ts` — `quoteModification` (pure read: re-prices new dates with the SAME
+  functions as checkout — `strBaseTotal` / room cascade — compares PRE-SURCHARGE base against paid
+  net of `payment_refunds` and of manual refunds promised by earlier edits), `applyModification`
+  (`expectedDelta` must match to the cent; dates written first, 23P01 → 409; partial refunds
+  newest-payment-first carrying the card-fee share, keyed `modify-refund:<modId>:<paymentId>`,
+  ledgered as kind ADMIN; `charge_already_refunded` = success; failure → HIGH REFUND_FAILED
+  escalation, dates stand; CashApp/Zelle share recorded as a manual refund owed; guest emailed via
+  new `stayModifiedRefunded`), `updateGuestContact` (refuses an email another guest row owns),
+  `recordExternalPayment` (UO-collected invoice payments, idempotent on the PI), and
+  `linkModificationInvoice`.
+- `refundPaymentIntent` gained an optional `amount` (dollars). Omitted = full refund, unchanged for
+  every existing caller.
+- `server/lib/leasePaymentPlan.ts` — re-cuts ONLY the trailing run of SCHEDULED installments due
+  after today with `generateCascadeSchedule` at the new cadence (optional rate override); history
+  keeps its seqs so late fees stay attached. Reason required. **Overrides a signed term** — the
+  agreement states the cadence; owner decision, flagged for counsel.
+- Routes: `POST /api/uo/bookings/:id/modify/quote`, `POST /api/uo/bookings/:id/modify`,
+  `PATCH /api/uo/booking-modifications/:id`, `POST /api/uo/bookings/:id/payments`,
+  `PATCH /api/uo/guests/:id`, `POST /api/uo/leases/:id/payment-plan/quote`,
+  `POST /api/uo/leases/:id/payment-plan`.
+- Ratchets updated deliberately: `bookingModify.ts` added to the refund-caller allowlist
+  (`stayGateHardening.test.ts`); `stayModifiedRefunded` fixtures classified INFORMATIONAL with a stay
+  link (`bookingMessageLinks.test.ts`).
+
+**Tests run:** `npm test` **1272/1272** (84 files; +2 files / +22 tests: `bookingModify.test.ts`,
+`leasePaymentPlan.test.ts`) · `npm run check` 0 errors. Stripe mocked; not run against a live DB.
+
+**After merging origin/main (booking-status lifecycle):** a date edit now writes
+`effectiveBookingStatus()` for the new dates, so a stay shortened into the past reads COMPLETED at
+once instead of waiting for the daily job (COMPLETED / PENDING_APPROVAL untouched, per that module).
+Re-run: `npm test` **1401/1401** (89 files) · `npm run check` 0 errors.
+
+**Deploy order:** run `node scripts/push-booking-modifications.mjs` BEFORE deploying — not run from
+this session (production write, needs Alex).
+
+**Deferred:** lease start/end date edits (not requested). Extension-by-invoice is applied
+immediately (the admin is the authorization) rather than payment-first like the guest flow.

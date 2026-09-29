@@ -108,6 +108,9 @@ import {
   type InsertPaymentRefund,
   type PropertyAccessInfo,
   type RoomAccessInfo,
+  bookingModifications,
+  type BookingModification,
+  type InsertBookingModification,
 } from "@shared/schema";
 import { inclusiveDays } from "@shared/leaseSchedule";
 import {
@@ -414,6 +417,30 @@ export interface IStorage {
   /** Idempotent on stripe_refund_id: recording the same refund twice is a no-op. */
   recordPaymentRefund(data: InsertPaymentRefund): Promise<PaymentRefund | null>;
   getRefundsByPayment(paymentId: string): Promise<PaymentRefund[]>;
+  getRefundsByBooking(bookingId: string): Promise<PaymentRefund[]>;
+
+  // --- UO booking edits (server/lib/bookingModify.ts) ---
+  updateGuest(id: string, updates: Partial<InsertGuest>): Promise<Guest | undefined>;
+  /** How many bookings + leases reference this guest row (a contact edit touches them all). */
+  countGuestReferences(guestId: string): Promise<number>;
+  createBookingModification(data: InsertBookingModification): Promise<BookingModification>;
+  getBookingModification(id: string): Promise<BookingModification | undefined>;
+  getBookingModificationsByBooking(bookingId: string): Promise<BookingModification[]>;
+  updateBookingModification(
+    id: string,
+    updates: Partial<InsertBookingModification>,
+  ): Promise<BookingModification | undefined>;
+  /**
+   * Swap the not-yet-due tail of a lease schedule: delete `removeIds` and insert
+   * `rows`. Callers pass ONLY rows still SCHEDULED — a paid, late, failed or
+   * waived installment is history and is never deleted here (the WHERE clause
+   * re-asserts it, so a row that changed status underneath is left alone).
+   */
+  replaceScheduledInstallments(
+    leaseId: string,
+    removeIds: string[],
+    rows: InsertPaymentScheduleRow[],
+  ): Promise<{ removed: number; inserted: number }>;
 
   // --- Guest messages (threaded portal questions / requests) ---
   getMessageThreadsByLease(leaseId: string): Promise<GuestMessage[]>; // roots only
@@ -1507,6 +1534,82 @@ class Storage implements IStorage {
 
   async getRefundsByPayment(paymentId: string): Promise<PaymentRefund[]> {
     return db.select().from(paymentRefunds).where(eq(paymentRefunds.paymentId, paymentId));
+  }
+
+  async getRefundsByBooking(bookingId: string): Promise<PaymentRefund[]> {
+    return db.select().from(paymentRefunds).where(eq(paymentRefunds.bookingId, bookingId));
+  }
+
+  // --- UO booking edits ---------------------------------------------------
+
+  async updateGuest(id: string, updates: Partial<InsertGuest>): Promise<Guest | undefined> {
+    const [row] = await db
+      .update(guests)
+      .set({ ...updates, updatedAt: new Date() })
+      .where(eq(guests.id, id))
+      .returning();
+    return row;
+  }
+
+  async countGuestReferences(guestId: string): Promise<number> {
+    const [b] = await db.select({ n: count() }).from(bookings).where(eq(bookings.guestId, guestId));
+    const [l] = await db.select({ n: count() }).from(leases).where(eq(leases.guestId, guestId));
+    return Number(b?.n ?? 0) + Number(l?.n ?? 0);
+  }
+
+  async createBookingModification(data: InsertBookingModification): Promise<BookingModification> {
+    const [row] = await db.insert(bookingModifications).values(data).returning();
+    return row;
+  }
+
+  async getBookingModification(id: string): Promise<BookingModification | undefined> {
+    const [row] = await db.select().from(bookingModifications).where(eq(bookingModifications.id, id));
+    return row;
+  }
+
+  async getBookingModificationsByBooking(bookingId: string): Promise<BookingModification[]> {
+    return db
+      .select()
+      .from(bookingModifications)
+      .where(eq(bookingModifications.bookingId, bookingId))
+      .orderBy(asc(bookingModifications.createdAt));
+  }
+
+  async updateBookingModification(
+    id: string,
+    updates: Partial<InsertBookingModification>,
+  ): Promise<BookingModification | undefined> {
+    const [row] = await db
+      .update(bookingModifications)
+      .set(updates)
+      .where(eq(bookingModifications.id, id))
+      .returning();
+    return row;
+  }
+
+  async replaceScheduledInstallments(
+    leaseId: string,
+    removeIds: string[],
+    rows: InsertPaymentScheduleRow[],
+  ): Promise<{ removed: number; inserted: number }> {
+    let removed = 0;
+    if (removeIds.length) {
+      const gone = await db
+        .delete(paymentSchedule)
+        .where(
+          and(
+            eq(paymentSchedule.leaseId, leaseId),
+            inArray(paymentSchedule.id, removeIds),
+            eq(paymentSchedule.status, "SCHEDULED"),
+          ),
+        )
+        .returning({ id: paymentSchedule.id });
+      removed = gone.length;
+    }
+    if (rows.length) {
+      await db.insert(paymentSchedule).values(rows.map((r) => ({ ...r, leaseId })));
+    }
+    return { removed, inserted: rows.length };
   }
 
   // --- Guest messages ---

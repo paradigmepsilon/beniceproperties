@@ -1267,6 +1267,56 @@ export type PaymentRefund = typeof paymentRefunds.$inferSelect;
 export type InsertPaymentRefund = typeof paymentRefunds.$inferInsert;
 
 // =============================================================================
+// booking_modifications — one row per admin edit made from Unified Ops: a date
+// change, a price override, or a lease payment-plan change. The audit trail of
+// what moved, who moved it and what money it implied.
+//
+// Its id is also the idempotency anchor for the money that follows: a partial
+// refund is keyed `modify-refund:<id>:<paymentId>` and the UO invoice for a
+// balance owed is keyed on it, so a retried request can never move money twice.
+//
+// Exactly one of booking_id / lease_id is set. Not FKs to keep the table
+// additive-only, like payment_refunds.lease_id.
+// =============================================================================
+export const BOOKING_MODIFICATION_KINDS = ["BOOKING", "LEASE_PLAN"] as const;
+
+export const bookingModifications = pgTable(
+  "booking_modifications",
+  {
+    id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+    bookingId: varchar("booking_id"),
+    leaseId: varchar("lease_id"),
+    // BOOKING_MODIFICATION_KINDS
+    kind: text("kind").notNull(),
+    // What changed, before and after — dates, totals, cadence. Never guest
+    // contact details or a door code.
+    before: jsonb("before").$type<Record<string, unknown>>().notNull(),
+    after: jsonb("after").$type<Record<string, unknown>>().notNull(),
+    // bookings.quoted_total before / after, as quoted (card fee included). For a
+    // lease plan change: the total lease value before / after.
+    oldTotal: decimal("old_total", { precision: 12, scale: 2 }).notNull(),
+    newTotal: decimal("new_total", { precision: 12, scale: 2 }).notNull(),
+    // What the guest had paid, net of refunds, BEFORE card fees.
+    paidNet: decimal("paid_net", { precision: 12, scale: 2 }).notNull(),
+    // New pre-surcharge price minus paid_net: > 0 the guest owes, < 0 we owe them.
+    delta: decimal("delta", { precision: 12, scale: 2 }).notNull(),
+    reason: text("reason"),
+    refundIds: jsonb("refund_ids").$type<string[]>().default(sql`'[]'::jsonb`).notNull(),
+    // Set by UO once it has invoiced the balance owed (UO's BnpGuestInvoice id).
+    uoInvoiceId: text("uo_invoice_id"),
+    actor: text("actor").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    bookingIdx: index("booking_modifications_booking_idx").on(table.bookingId),
+    leaseIdx: index("booking_modifications_lease_idx").on(table.leaseId),
+  }),
+);
+
+export type BookingModification = typeof bookingModifications.$inferSelect;
+export type InsertBookingModification = typeof bookingModifications.$inferInsert;
+
+// =============================================================================
 // Access info — what a guest needs to get in. SEPARATE TABLES, deliberately
 // against the convention of putting fields on `properties`/`rooms`.
 //
