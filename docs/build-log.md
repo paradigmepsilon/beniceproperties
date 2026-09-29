@@ -4736,6 +4736,11 @@ write is a new `/api/uo/*` write-back, per the architecture rule.
 **Tests run:** `npm test` **1272/1272** (84 files; +2 files / +22 tests: `bookingModify.test.ts`,
 `leasePaymentPlan.test.ts`) · `npm run check` 0 errors. Stripe mocked; not run against a live DB.
 
+**After merging origin/main (booking-status lifecycle):** a date edit now writes
+`effectiveBookingStatus()` for the new dates, so a stay shortened into the past reads COMPLETED at
+once instead of waiting for the daily job (COMPLETED / PENDING_APPROVAL untouched, per that module).
+Re-run: `npm test` **1401/1401** (89 files) · `npm run check` 0 errors.
+
 **Deploy order:** run `node scripts/push-booking-modifications.mjs` BEFORE deploying — not run from
 this session (production write, needs Alex).
 

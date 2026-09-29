@@ -51,7 +51,9 @@ import { log } from "../server-log";
 import { calculateBreakdown, type PaymentMethod } from "@shared/pricing";
 import { cascadeStayPrice, RateError } from "@shared/rateSelection";
 import { stayNights } from "@shared/bookingGate";
-import type { Booking, Payment, PaymentRefund, Property, Room } from "@shared/schema";
+import { effectiveBookingStatus } from "@shared/bookingStatus";
+import { todayIso } from "@shared/dates";
+import type { BOOKING_STATUSES, Booking, Payment, PaymentRefund, Property, Room } from "@shared/schema";
 
 /** Postgres exclusion_violation — the range-overlap constraint rejected the row. */
 const PG_EXCLUSION_VIOLATION = "23P01";
@@ -438,6 +440,13 @@ export async function applyModification(args: {
       checkIn: quote.proposed.checkIn,
       checkOut: quote.proposed.checkOut,
       quotedTotal: newQuoted.toFixed(2),
+      // Status describes the stay's phase in time (shared/bookingStatus.ts), so
+      // moving the dates re-derives it now rather than waiting for the daily job.
+      // COMPLETED and PENDING_APPROVAL are left alone by that function.
+      status: effectiveBookingStatus(
+        { status: booking.status, checkIn: quote.proposed.checkIn, checkOut: quote.proposed.checkOut },
+        todayIso(),
+      ) as (typeof BOOKING_STATUSES)[number],
     });
   } catch (err) {
     if ((err as { code?: string }).code === PG_EXCLUSION_VIOLATION) {

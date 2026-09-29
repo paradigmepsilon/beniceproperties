@@ -44,6 +44,10 @@ vi.mock("../storage", () => ({ storage: mockStorage }));
 vi.mock("./stripe", () => mockStripe);
 vi.mock("./notifications", () => mockNotify);
 vi.mock("./pricingSettings", () => ({ getCardSurchargeRate: vi.fn().mockResolvedValue(0.035) }));
+vi.mock("@shared/dates", async (orig) => ({
+  ...(await orig<typeof import("@shared/dates")>()),
+  todayIso: () => "2026-09-28",
+}));
 
 import {
   applyModification,
@@ -171,7 +175,7 @@ describe("applyModification", () => {
   it("moves the dates, refunds the difference, records it, and emails the guest", async () => {
     const r = await applyModification(shorten);
     expect(mockStorage.updateBooking).toHaveBeenCalledWith("bk-1", {
-      checkIn: "2026-10-01", checkOut: "2026-10-08", quotedTotal: "414.00",
+      checkIn: "2026-10-01", checkOut: "2026-10-08", quotedTotal: "414.00", status: "CONFIRMED",
     });
     expect(mockStripe.refundPaymentIntent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -200,6 +204,15 @@ describe("applyModification", () => {
     expect(mockStorage.createBookingModification).toHaveBeenCalledWith(
       expect.objectContaining({ after: expect.objectContaining({ refundWithheld: 350 }) }),
     );
+  });
+
+  it("re-derives the status from the new dates, as the daily lifecycle job would", async () => {
+    // Today is pinned below; a stay moved to have ended already reads COMPLETED.
+    mockStorage.getBooking.mockResolvedValue({ ...BOOKING, status: "ACTIVE", checkIn: "2026-09-20", checkOut: "2026-10-04" });
+    mockStorage.getPaymentsByBooking.mockResolvedValue([payment()]);
+    const q = await quoteModification("bk-1", { checkOut: "2026-09-27" });
+    await applyModification({ ...shorten, input: { checkOut: "2026-09-27" }, expectedDelta: q.delta, refund: false });
+    expect(mockStorage.updateBooking).toHaveBeenCalledWith("bk-1", expect.objectContaining({ status: "COMPLETED" }));
   });
 
   it("an extension moves the dates and moves no money here", async () => {
