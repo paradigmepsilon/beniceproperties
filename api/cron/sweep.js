@@ -1565,11 +1565,12 @@ var init_leaseSchedule = __esm({
 // server/storage.ts
 var storage_exports = {};
 __export(storage_exports, {
+  BOOKINGS_PAGE_SORTS: () => BOOKINGS_PAGE_SORTS,
   StorageError: () => StorageError,
   parseSettingNumber: () => parseSettingNumber,
   storage: () => storage
 });
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, lte, max, ne, notInArray, or, sql as sql3 } from "drizzle-orm";
 function roomHoldingLeaseCondition(now = /* @__PURE__ */ new Date()) {
   const windowStart = new Date(now.getTime() - CHECKOUT_HOLD_MINUTES * 6e4);
   return or(
@@ -1593,7 +1594,7 @@ function parseSettingNumber(value, fallback) {
   const n = parseFloat(value);
   return Number.isFinite(n) ? n : fallback;
 }
-var NON_TERMINAL_LEASE_STATUSES, StorageError, Storage, storage;
+var NON_TERMINAL_LEASE_STATUSES, BOOKINGS_PAGE_SORTS, StorageError, Storage, storage;
 var init_storage = __esm({
   "server/storage.ts"() {
     "use strict";
@@ -1611,6 +1612,7 @@ var init_storage = __esm({
       "PENDING_VERIFICATION",
       "ACTIVE"
     ];
+    BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"];
     StorageError = class extends Error {
       status;
       constructor(message, status = 400) {
@@ -1716,6 +1718,10 @@ var init_storage = __esm({
         const [row] = await db.insert(listingInterest).values(data).returning();
         return row;
       }
+      // Newest first — the list is read as "who asked recently", not browsed.
+      async getListingInterest(opts) {
+        return db.select().from(listingInterest).orderBy(desc(listingInterest.createdAt)).limit(Math.min(Math.max(opts?.limit ?? 200, 1), 500));
+      }
       // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
       // person may inquire more than once, so this is a plain insert (no dedupe).
       async createPartnerInquiry(data) {
@@ -1779,6 +1785,37 @@ var init_storage = __esm({
           room: r.rooms
         }));
       }
+      async getBookingsPage(opts) {
+        const pageSize = Math.min(Math.max(Math.trunc(opts.pageSize) || 10, 1), 100);
+        const page = Math.max(Math.trunc(opts.page) || 0, 0);
+        const filters = [];
+        if (opts.status) filters.push(eq(bookings.status, opts.status));
+        if (opts.propertyId) filters.push(eq(bookings.propertyId, opts.propertyId));
+        if (opts.q?.trim()) {
+          const term = `%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+          filters.push(
+            or(ilike(bookings.reference, term), ilike(guests.name, term), ilike(guests.email, term))
+          );
+        }
+        const where = filters.length ? and(...filters) : void 0;
+        const sortColumn = opts.sort === "checkIn" ? bookings.checkIn : opts.sort === "total" ? bookings.quotedTotal : bookings.createdAt;
+        const direction = opts.dir === "asc" ? asc : desc;
+        const [rows, totalRows] = await Promise.all([
+          db.select().from(bookings).leftJoin(guests, eq(bookings.guestId, guests.id)).leftJoin(properties, eq(bookings.propertyId, properties.id)).leftJoin(rooms, eq(bookings.roomId, rooms.id)).where(where).orderBy(direction(sortColumn), direction(bookings.id)).limit(pageSize).offset(page * pageSize),
+          db.select({ n: count() }).from(bookings).leftJoin(guests, eq(bookings.guestId, guests.id)).where(where)
+        ]);
+        return {
+          rows: rows.map((r) => ({
+            ...r.bookings,
+            guest: r.guests,
+            property: r.properties,
+            room: r.rooms
+          })),
+          total: totalRows[0]?.n ?? 0,
+          page,
+          pageSize
+        };
+      }
       // --- Payments ---
       async getPayment(id) {
         const [row] = await db.select().from(payments).where(eq(payments.id, id));
@@ -1791,8 +1828,29 @@ var init_storage = __esm({
         const [row] = await db.select().from(payments).where(eq(payments.stripeRef, stripeRef));
         return row;
       }
+      /**
+       * The manual-payment reconcile queue: CashApp/Zelle rows awaiting admin
+       * confirmation, on bookings that are still live.
+       *
+       * Both filters are load-bearing and neither used to be here — the method
+       * filter lived in the /api/admin/reconciliation route while the Overview
+       * badge counted this method's raw output, so the badge said 10 (9 abandoned
+       * Stripe checkouts) against a 1-row list. The booking-status filter is new:
+       * money can never arrive for a CANCELLED booking, so a PENDING row against
+       * one is dead and must not sit in a queue asking an admin to action it.
+       *
+       * The scheduler's "N payment(s) awaiting reconciliation" log and the cron
+       * sweep's pending count read this too, and were wrong for the same reason.
+       */
       async getPendingManualPayments() {
-        return db.select().from(payments).where(eq(payments.status, "PENDING")).orderBy(desc(payments.createdAt));
+        const rows = await db.select({ payment: payments }).from(payments).innerJoin(bookings, eq(payments.bookingId, bookings.id)).where(
+          and(
+            eq(payments.status, "PENDING"),
+            ne(payments.method, "STRIPE"),
+            ne(bookings.status, "CANCELLED")
+          )
+        ).orderBy(desc(payments.createdAt));
+        return rows.map((r) => r.payment);
       }
       async createPayment(data) {
         const [row] = await db.insert(payments).values(data).returning();
@@ -1823,7 +1881,26 @@ var init_storage = __esm({
       async getUnpushedSnapshots() {
         return db.select().from(kpiSnapshots).where(eq(kpiSnapshots.pushedToUo, false));
       }
+      // ONE row per snapshot_date. This used to insert unconditionally, and the
+      // rollup runs on every scheduler sweep — hourly from the local scheduler,
+      // daily from the Vercel cron — so any day with a dev server up collected a
+      // row per tick: 652 rows by 2026-09-28, 23 of them for a single date. Every
+      // row was self-consistent, so no reported number was ever wrong, but the
+      // table was useless to read as history and the duplicates made a unique
+      // index impossible.
+      //
+      // Upserted in application code rather than with ON CONFLICT, deliberately:
+      // that keeps this safe to deploy BEFORE the unique index exists.
+      // scripts/dedupe-kpi-snapshots.mjs collapses the existing duplicates and
+      // adds the index, and once it has, the index also closes the race this
+      // version leaves open (two rollups for the same date both finding no row).
+      // The cron is single-instance, so that race is theoretical today.
       async createSnapshot(data) {
+        const [existing] = await db.select({ id: kpiSnapshots.id }).from(kpiSnapshots).where(eq(kpiSnapshots.snapshotDate, data.snapshotDate)).orderBy(desc(kpiSnapshots.createdAt)).limit(1);
+        if (existing) {
+          const [row2] = await db.update(kpiSnapshots).set(data).where(eq(kpiSnapshots.id, existing.id)).returning();
+          return row2;
+        }
         const [row] = await db.insert(kpiSnapshots).values(data).returning();
         return row;
       }

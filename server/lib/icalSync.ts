@@ -85,6 +85,23 @@ export function validateUrl(urlString: string): URL {
   return url;
 }
 
+/**
+ * Normalize an admin-typed Airbnb import URL for storage: blank -> null,
+ * otherwise a trimmed, HTTPS-only URL. Throws a message safe to show the admin.
+ * The fetch path (secureFetch) re-validates on every sync; this just rejects
+ * garbage at save time and catches the easy mix-up of pasting BNP's own
+ * outbound feed into the inbound field (which would sync a calendar to itself).
+ */
+export function normalizeAirbnbIcalUrl(input: string | null | undefined): string | null {
+  const trimmed = (input ?? "").trim();
+  if (!trimmed) return null;
+  const url = validateUrl(trimmed);
+  if (url.pathname.startsWith("/api/calendar/export/")) {
+    throw new Error("That is a BNP export link. Paste the Airbnb calendar link (from Airbnb's Export calendar) here instead.");
+  }
+  return trimmed;
+}
+
 export async function validateIP(hostname: string): Promise<void> {
   if (net.isIP(hostname)) {
     if (isBlockedIP(hostname)) throw new Error(`IP address not allowed: ${hostname}`);
@@ -346,6 +363,51 @@ export interface SyncResult {
 
 const LAST_SYNC_AT_SETTING = "ical_last_sync_at";
 const LAST_SYNC_RESULT_SETTING = "ical_last_sync_result";
+
+/** One listing's outcome as actually persisted in ical_last_sync_result (trimmed — see syncAllListings). */
+export interface PersistedListingResult {
+  key: string;
+  label: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface PersistedSyncResult {
+  at: string;
+  totalListings: number;
+  ok: number;
+  failed: number;
+  created: number;
+  updated: number;
+  removed: number;
+  listings: PersistedListingResult[];
+}
+
+export interface LastSyncStatus {
+  lastSyncAt: string | null;
+  lastResult: PersistedSyncResult | null;
+}
+
+/**
+ * Reads and parses the two settings syncAllListings() persists. Shared by the
+ * admin status route and the per-listing calendar/listings route so the
+ * JSON-parse-with-fallback logic lives in exactly one place.
+ */
+export async function getLastSyncStatus(): Promise<LastSyncStatus> {
+  const [lastSyncAtRow, lastResultRow] = await Promise.all([
+    storage.getSetting(LAST_SYNC_AT_SETTING),
+    storage.getSetting(LAST_SYNC_RESULT_SETTING),
+  ]);
+  let lastResult: PersistedSyncResult | null = null;
+  if (lastResultRow?.value) {
+    try {
+      lastResult = JSON.parse(lastResultRow.value);
+    } catch {
+      lastResult = null;
+    }
+  }
+  return { lastSyncAt: lastSyncAtRow?.value ?? null, lastResult };
+}
 
 /**
  * Sync one listing's Airbnb calendar: fetch its `airbnb_ical_url`, parse, dedup

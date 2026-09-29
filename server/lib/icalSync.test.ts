@@ -58,6 +58,7 @@ import { notifyAdmin } from "./notifications";
 import {
   parseICalData,
   validateUrl,
+  normalizeAirbnbIcalUrl,
   validateIP,
   isBlockedIP,
   isGenericPlaceholder,
@@ -495,5 +496,32 @@ describe("checkCalendarSyncHealth", () => {
       expect.objectContaining({ scheduleSeq: 20260902 }),
     );
     expect(notifyAdmin).not.toHaveBeenCalled();
+  });
+});
+
+describe("normalizeAirbnbIcalUrl (save-time validation of the admin-typed import URL)", () => {
+  it("turns blank / whitespace / null / undefined into null (clears the link)", () => {
+    expect(normalizeAirbnbIcalUrl("")).toBeNull();
+    expect(normalizeAirbnbIcalUrl("   ")).toBeNull();
+    expect(normalizeAirbnbIcalUrl(null)).toBeNull();
+    expect(normalizeAirbnbIcalUrl(undefined)).toBeNull();
+  });
+
+  it("trims and accepts an https Airbnb feed URL", () => {
+    expect(normalizeAirbnbIcalUrl("  https://www.airbnb.com/calendar/ical/123.ics?s=abc  ")).toBe(
+      "https://www.airbnb.com/calendar/ical/123.ics?s=abc",
+    );
+  });
+
+  it("rejects non-https, malformed, and disallowed-port URLs", () => {
+    expect(() => normalizeAirbnbIcalUrl("http://www.airbnb.com/calendar/ical/1.ics")).toThrow(/HTTPS/);
+    expect(() => normalizeAirbnbIcalUrl("not a url")).toThrow(/Invalid URL/);
+    expect(() => normalizeAirbnbIcalUrl("https://example.com:22/x.ics")).toThrow(/Port not allowed/);
+  });
+
+  it("rejects BNP's own export link so a calendar can't be synced to itself", () => {
+    expect(() =>
+      normalizeAirbnbIcalUrl("https://www.beniceproperties.com/api/calendar/export/abc.ics"),
+    ).toThrow(/BNP export link/);
   });
 });

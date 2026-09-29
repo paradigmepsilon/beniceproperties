@@ -3,7 +3,21 @@
 // a ResolvedBooking, so we test it directly (no storage needed). The tier math
 // itself is covered in shared/rateSelection.test.ts.
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+// ---------------------------------------------------------------------------
+// The advance-booking rule (@shared/dates isMoveInAllowed) rejects a move-in
+// earlier than today-before-4pm-ET. Every scenario below uses fixed 2026-07
+// dates, so pin the clock just ahead of them and these stay what they were
+// written to be: pure pricing and schedule tests.
+//
+// Only Date is faked. Faking timers wholesale stalls the awaits in this file.
+// ---------------------------------------------------------------------------
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-06-30T12:00:00Z")); // 08:00 ET, 2026-06-30
+});
+afterEach(() => vi.useRealTimers());
+
 
 // booking.ts imports ../storage, which throws at import time without DATABASE_URL.
 // buildQuote is pure (no storage); resolveBooking needs a few methods stubbed.
@@ -213,6 +227,50 @@ describe("resolveBooking — co-living term gate (7–28 = booking, else rejecte
     await expect(
       resolveBooking({ propertyId: "p2", roomId: "r1", checkIn: "2026-07-01", checkOut: "2026-07-06" }),
     ).rejects.toThrow(/7-night minimum/i);
+  });
+
+  // --- Advance-booking rule (owner, 2026-09-27) ---
+  // Before this, resolveBooking priced a stay starting in the PAST without
+  // complaint, and /api/quote + /api/booking-intent both accepted it — which is
+  // how a Stripe PaymentIntent could be created for a stay already underway.
+  describe("advance-booking rule", () => {
+    const args = (checkIn: string, checkOut: string, now: Date) => ({
+      propertyId: "p2",
+      roomId: "r1",
+      checkIn,
+      checkOut,
+      now,
+    });
+
+    it("rejects a move-in in the past", async () => {
+      await expect(
+        resolveBooking(args("2026-06-01", "2026-06-11", new Date("2026-06-30T12:00:00Z"))),
+      ).rejects.toThrow(/earliest move-in we can take/i);
+    });
+
+    it("accepts today while check-in has not passed", async () => {
+      // 19:59Z = 15:59 ET on 2026-06-30 — one minute before check-in.
+      const r = await resolveBooking(args("2026-06-30", "2026-07-10", new Date("2026-06-30T19:59:00Z")));
+      expect(r.nights).toBe(10);
+    });
+
+    it("rejects today once check-in has passed", async () => {
+      // 20:01Z = 16:01 ET on the same day. Same dates, one minute later, refused.
+      await expect(
+        resolveBooking(args("2026-06-30", "2026-07-10", new Date("2026-06-30T20:01:00Z"))),
+      ).rejects.toThrow(/earliest move-in we can take/i);
+    });
+
+    it("still accepts tomorrow after check-in has passed", async () => {
+      const r = await resolveBooking(args("2026-07-01", "2026-07-11", new Date("2026-06-30T20:01:00Z")));
+      expect(r.nights).toBe(10);
+    });
+
+    it("rejects as 422, not 409 — a policy, not a conflict", async () => {
+      await expect(
+        resolveBooking(args("2026-06-01", "2026-06-11", new Date("2026-06-30T12:00:00Z"))),
+      ).rejects.toMatchObject({ status: 422 });
+    });
   });
 
   it("rejects a stay over 28 nights (routes to the lease flow)", async () => {

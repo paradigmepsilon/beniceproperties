@@ -9,7 +9,7 @@
 // thin and typed off shared/schema.ts.
 // =============================================================================
 
-import { and, asc, count, desc, eq, gt, gte, inArray, isNull, lte, max, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, gte, ilike, inArray, isNull, lte, max, ne, notInArray, or, sql } from "drizzle-orm";
 import { db } from "./db";
 import { overlapsRange } from "./lib/ranges";
 import { planMessageLogQuery } from "./lib/messageLogQuery";
@@ -181,6 +181,48 @@ function realPropertyCondition() {
   return eq(properties.isPlaceholder, false);
 }
 
+/** A listing that can publish an outbound .ics feed (see getExportableListings). */
+export interface ExportableListing {
+  kind: "property" | "room";
+  propertyId: string;
+  roomId: string | null;
+  /** Human label for the admin panel: property name, or "Property — Room". */
+  label: string;
+  exportToken: string;
+  /** Inbound Airbnb feed URL for this listing (secret-ish), or null. */
+  airbnbIcalUrl: string | null;
+  /** Last time this listing's export feed was actually fetched, or null (never). */
+  exportLastFetchedAt: Date | null;
+}
+
+export const BOOKINGS_PAGE_SORTS = ["created", "checkIn", "total"] as const;
+export type BookingsPageSort = (typeof BOOKINGS_PAGE_SORTS)[number];
+
+export interface BookingsPageOpts {
+  page: number;
+  pageSize: number;
+  /** One BOOKING_STATUSES value; omitted means every status. */
+  status?: string;
+  propertyId?: string;
+  /** Matches reference, guest name, or guest email. */
+  q?: string;
+  sort?: BookingsPageSort;
+  dir?: "asc" | "desc";
+}
+
+export type BookingsPageRow = Booking & {
+  guest: Guest | null;
+  property: Property | null;
+  room: Room | null;
+};
+
+export interface BookingsPage {
+  rows: BookingsPageRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 export class StorageError extends Error {
   status: number;
   constructor(message: string, status = 400) {
@@ -228,6 +270,7 @@ export interface IStorage {
 
   // --- Listing interest (placeholder-listing demand capture; append-only) ---
   createListingInterest(data: InsertListingInterest): Promise<ListingInterest>;
+  getListingInterest(opts?: { limit?: number }): Promise<ListingInterest[]>;
 
   // --- Partner inquiries (B2B /partner lead capture; append-only) ---
   createPartnerInquiry(data: InsertPartnerInquiry): Promise<PartnerInquiry>;
@@ -258,6 +301,17 @@ export interface IStorage {
     statuses?: string[];
     from?: string;
   }): Promise<Array<Booking & { guest: Guest; property: Property; room: Room | null }>>;
+
+  /**
+   * One page of bookings for the admin reservations list, joined to guest,
+   * property and room, with the total matching the same filters so the pager
+   * can be trusted.
+   *
+   * Unlike getBookingsWithGuest this keeps rows whose guest or property is
+   * missing: this list is the admin's view of EVERY booking, and silently
+   * dropping a broken one is how a broken one never gets fixed.
+   */
+  getBookingsPage(opts: BookingsPageOpts): Promise<BookingsPage>;
 
   // --- Payments ---
   getPayment(id: string): Promise<Payment | undefined>;
@@ -508,6 +562,19 @@ export interface IStorage {
   getListingsWithIcalUrl(): Promise<
     { kind: "property" | "room"; propertyId: string; roomId: string | null; url: string; label: string }[]
   >;
+  /**
+   * Every listing that can publish an outbound calendar feed (real, active STR
+   * properties + rooms of real, active co-living properties), with its secret
+   * export token and its inbound Airbnb URL. Feeds the admin calendar panel.
+   */
+  getExportableListings(): Promise<ExportableListing[]>;
+  getPropertyByExportToken(token: string): Promise<Property | undefined>;
+  getRoomByExportToken(token: string): Promise<Room | undefined>;
+  /** Stamp export_last_fetched_at = now() after a successful export-feed render. */
+  touchPropertyExportFetched(id: string): Promise<void>;
+  touchRoomExportFetched(id: string): Promise<void>;
+  /** Rotate a listing's export token (invalidates the URL Airbnb holds). Returns the new token, or undefined if the row doesn't exist. */
+  regenerateExportToken(kind: "property" | "room", id: string): Promise<string | undefined>;
   /** Busy external ranges for an STR whole-property listing (room_id IS NULL). */
   getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]>;
   /** Busy external ranges for a co-living room listing. */
@@ -693,6 +760,15 @@ class Storage implements IStorage {
     return row;
   }
 
+  // Newest first — the list is read as "who asked recently", not browsed.
+  async getListingInterest(opts?: { limit?: number }): Promise<ListingInterest[]> {
+    return db
+      .select()
+      .from(listingInterest)
+      .orderBy(desc(listingInterest.createdAt))
+      .limit(Math.min(Math.max(opts?.limit ?? 200, 1), 500));
+  }
+
   // Append-only B2B lead capture for the /partner page — like LTR inquiries, a
   // person may inquire more than once, so this is a plain insert (no dedupe).
   async createPartnerInquiry(data: InsertPartnerInquiry): Promise<PartnerInquiry> {
@@ -796,6 +872,67 @@ class Storage implements IStorage {
       }));
   }
 
+  async getBookingsPage(opts: BookingsPageOpts): Promise<BookingsPage> {
+    // Never trust the query string with a page size.
+    const pageSize = Math.min(Math.max(Math.trunc(opts.pageSize) || 10, 1), 100);
+    const page = Math.max(Math.trunc(opts.page) || 0, 0);
+
+    const filters = [];
+    if (opts.status) filters.push(eq(bookings.status, opts.status));
+    if (opts.propertyId) filters.push(eq(bookings.propertyId, opts.propertyId));
+    if (opts.q?.trim()) {
+      // % and _ are wildcards in LIKE; escape them so a literal search for
+      // "100%" doesn't match everything.
+      const term = `%${opts.q.trim().replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+      filters.push(
+        or(ilike(bookings.reference, term), ilike(guests.name, term), ilike(guests.email, term)),
+      );
+    }
+    const where = filters.length ? and(...filters) : undefined;
+
+    const sortColumn =
+      opts.sort === "checkIn"
+        ? bookings.checkIn
+        : opts.sort === "total"
+          ? bookings.quotedTotal
+          : bookings.createdAt;
+    const direction = opts.dir === "asc" ? asc : desc;
+
+    // The count runs over the same joins and the same where — a total taken
+    // from a different query is how a pager starts lying.
+    const [rows, totalRows] = await Promise.all([
+      db
+        .select()
+        .from(bookings)
+        .leftJoin(guests, eq(bookings.guestId, guests.id))
+        .leftJoin(properties, eq(bookings.propertyId, properties.id))
+        .leftJoin(rooms, eq(bookings.roomId, rooms.id))
+        .where(where)
+        // id as a tiebreaker: without it, rows sharing a checkIn or total can
+        // swap between pages and a booking is seen twice or not at all.
+        .orderBy(direction(sortColumn), direction(bookings.id))
+        .limit(pageSize)
+        .offset(page * pageSize),
+      db
+        .select({ n: count() })
+        .from(bookings)
+        .leftJoin(guests, eq(bookings.guestId, guests.id))
+        .where(where),
+    ]);
+
+    return {
+      rows: rows.map((r) => ({
+        ...r.bookings,
+        guest: r.guests,
+        property: r.properties,
+        room: r.rooms,
+      })),
+      total: totalRows[0]?.n ?? 0,
+      page,
+      pageSize,
+    };
+  }
+
   // --- Payments ---
   async getPayment(id: string): Promise<Payment | undefined> {
     const [row] = await db.select().from(payments).where(eq(payments.id, id));
@@ -824,13 +961,34 @@ class Storage implements IStorage {
     return row;
   }
 
+  /**
+   * The manual-payment reconcile queue: CashApp/Zelle rows awaiting admin
+   * confirmation, on bookings that are still live.
+   *
+   * Both filters are load-bearing and neither used to be here — the method
+   * filter lived in the /api/admin/reconciliation route while the Overview
+   * badge counted this method's raw output, so the badge said 10 (9 abandoned
+   * Stripe checkouts) against a 1-row list. The booking-status filter is new:
+   * money can never arrive for a CANCELLED booking, so a PENDING row against
+   * one is dead and must not sit in a queue asking an admin to action it.
+   *
+   * The scheduler's "N payment(s) awaiting reconciliation" log and the cron
+   * sweep's pending count read this too, and were wrong for the same reason.
+   */
   async getPendingManualPayments(): Promise<Payment[]> {
-    // Manual = CashApp/Zelle awaiting admin confirmation.
-    return db
-      .select()
+    const rows = await db
+      .select({ payment: payments })
       .from(payments)
-      .where(eq(payments.status, "PENDING"))
+      .innerJoin(bookings, eq(payments.bookingId, bookings.id))
+      .where(
+        and(
+          eq(payments.status, "PENDING"),
+          ne(payments.method, "STRIPE"),
+          ne(bookings.status, "CANCELLED"),
+        ),
+      )
       .orderBy(desc(payments.createdAt));
+    return rows.map((r) => r.payment);
   }
 
   async createPayment(data: InsertPayment): Promise<Payment> {
@@ -893,7 +1051,36 @@ class Storage implements IStorage {
     return db.select().from(kpiSnapshots).where(eq(kpiSnapshots.pushedToUo, false));
   }
 
+  // ONE row per snapshot_date. This used to insert unconditionally, and the
+  // rollup runs on every scheduler sweep — hourly from the local scheduler,
+  // daily from the Vercel cron — so any day with a dev server up collected a
+  // row per tick: 652 rows by 2026-09-28, 23 of them for a single date. Every
+  // row was self-consistent, so no reported number was ever wrong, but the
+  // table was useless to read as history and the duplicates made a unique
+  // index impossible.
+  //
+  // Upserted in application code rather than with ON CONFLICT, deliberately:
+  // that keeps this safe to deploy BEFORE the unique index exists.
+  // scripts/dedupe-kpi-snapshots.mjs collapses the existing duplicates and
+  // adds the index, and once it has, the index also closes the race this
+  // version leaves open (two rollups for the same date both finding no row).
+  // The cron is single-instance, so that race is theoretical today.
   async createSnapshot(data: InsertKpiSnapshot): Promise<KpiSnapshot> {
+    const [existing] = await db
+      .select({ id: kpiSnapshots.id })
+      .from(kpiSnapshots)
+      .where(eq(kpiSnapshots.snapshotDate, data.snapshotDate))
+      .orderBy(desc(kpiSnapshots.createdAt))
+      .limit(1);
+
+    if (existing) {
+      const [row] = await db
+        .update(kpiSnapshots)
+        .set(data)
+        .where(eq(kpiSnapshots.id, existing.id))
+        .returning();
+      return row;
+    }
     const [row] = await db.insert(kpiSnapshots).values(data).returning();
     return row;
   }
@@ -1951,6 +2138,98 @@ class Storage implements IStorage {
       listings.push({ kind: "room", propertyId: r.propertyId, roomId: r.id, url: r.url, label: r.name });
     }
     return listings;
+  }
+
+  async getExportableListings(): Promise<ExportableListing[]> {
+    const propRows = await db
+      .select({
+        id: properties.id,
+        name: properties.name,
+        token: properties.exportToken,
+        url: properties.airbnbIcalUrl,
+        lastFetchedAt: properties.exportLastFetchedAt,
+      })
+      .from(properties)
+      .where(and(eq(properties.active, true), realPropertyCondition(), eq(properties.type, "STR")))
+      .orderBy(asc(properties.name));
+    const roomRows = await db
+      .select({
+        id: rooms.id,
+        propertyId: rooms.propertyId,
+        name: rooms.name,
+        roomNumber: rooms.roomNumber,
+        token: rooms.exportToken,
+        url: rooms.airbnbIcalUrl,
+        lastFetchedAt: rooms.exportLastFetchedAt,
+        propertyName: properties.name,
+      })
+      .from(rooms)
+      .innerJoin(properties, eq(rooms.propertyId, properties.id))
+      .where(and(eq(properties.active, true), realPropertyCondition(), eq(properties.type, "COLIVING")))
+      .orderBy(asc(properties.name), asc(rooms.roomNumber), asc(rooms.name));
+
+    const listings: ExportableListing[] = [];
+    for (const p of propRows) {
+      if (!p.token) continue;
+      listings.push({
+        kind: "property",
+        propertyId: p.id,
+        roomId: null,
+        label: p.name,
+        exportToken: p.token,
+        airbnbIcalUrl: p.url ?? null,
+        exportLastFetchedAt: p.lastFetchedAt ?? null,
+      });
+    }
+    for (const r of roomRows) {
+      if (!r.token) continue;
+      listings.push({
+        kind: "room",
+        propertyId: r.propertyId,
+        roomId: r.id,
+        label: `${r.propertyName} — ${r.name}`,
+        exportToken: r.token,
+        airbnbIcalUrl: r.url ?? null,
+        exportLastFetchedAt: r.lastFetchedAt ?? null,
+      });
+    }
+    return listings;
+  }
+
+  async getPropertyByExportToken(token: string): Promise<Property | undefined> {
+    const [row] = await db.select().from(properties).where(eq(properties.exportToken, token)).limit(1);
+    return row;
+  }
+
+  async getRoomByExportToken(token: string): Promise<Room | undefined> {
+    const [row] = await db.select().from(rooms).where(eq(rooms.exportToken, token)).limit(1);
+    return row;
+  }
+
+  async regenerateExportToken(kind: "property" | "room", id: string): Promise<string | undefined> {
+    const fresh = sql`gen_random_uuid()::text`;
+    if (kind === "property") {
+      const [row] = await db
+        .update(properties)
+        .set({ exportToken: fresh, updatedAt: new Date() })
+        .where(eq(properties.id, id))
+        .returning({ token: properties.exportToken });
+      return row?.token ?? undefined;
+    }
+    const [row] = await db
+      .update(rooms)
+      .set({ exportToken: fresh, updatedAt: new Date() })
+      .where(eq(rooms.id, id))
+      .returning({ token: rooms.exportToken });
+    return row?.token ?? undefined;
+  }
+
+  async touchPropertyExportFetched(id: string): Promise<void> {
+    await db.update(properties).set({ exportLastFetchedAt: new Date() }).where(eq(properties.id, id));
+  }
+
+  async touchRoomExportFetched(id: string): Promise<void> {
+    await db.update(rooms).set({ exportLastFetchedAt: new Date() }).where(eq(rooms.id, id));
   }
 
   async getExternalBlocksForProperty(propertyId: string): Promise<ExternalBooking[]> {

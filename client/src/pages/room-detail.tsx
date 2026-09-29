@@ -9,7 +9,7 @@ import { useParams, useLocation, useSearch, Link } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { differenceInCalendarDays, parseISO } from "date-fns";
 import { ArrowLeft } from "lucide-react";
-import { todayIso } from "@shared/dates";
+import { earliestMoveInIso } from "@shared/dates";
 import { COLIVING_MIN_DAYS, requiresLease, isDirectCoLivingStay, ROOM_UNBOOKABLE_STATUSES } from "@shared/schema";
 import type { PublicProperty, PublicRoom } from "@shared/publicProjection";
 import type { QuoteResponse, LeaseQuoteResponse } from "@shared/api-types";
@@ -60,7 +60,8 @@ export default function RoomDetail() {
   const { id } = useParams();
   const [, navigate] = useLocation();
   const searchStr = useSearch();
-  const today = todayIso();
+  // Advance-booking floor, not "today" — see @shared/dates.earliestMoveInIso.
+  const earliestMoveIn = earliestMoveInIso();
 
   const { data, isLoading } = useQuery<RoomResponse>({ queryKey: ["/api/rooms", id!] });
   // Busy ranges (room-blocking leases ∪ Airbnb iCal blocks). `availLoading` gates
@@ -112,7 +113,7 @@ export default function RoomDetail() {
   const seedValid =
     /^\d{4}-\d{2}-\d{2}$/.test(seededIn) &&
     /^\d{4}-\d{2}-\d{2}$/.test(seededOut) &&
-    seededIn >= today &&
+    seededIn >= earliestMoveIn &&
     seededOut > seededIn;
   const [startDate, setStartDate] = useState(seedValid ? seededIn : "");
   const [endDate, setEndDate] = useState(seedValid ? seededOut : "");
@@ -132,7 +133,7 @@ export default function RoomDetail() {
   // passes halfOpen: true — the checkout/end day of a busy range stays free.
   const busy = avail?.busy ?? [];
   const disabledDays = busyToDisabledMatchers(busy, {
-    minDate: avail?.minDate ?? today,
+    minDate: avail?.minDate ?? earliestMoveIn,
     halfOpen: true,
   });
   // Availability must be LOADED before any range is treated as bookable — until
@@ -315,12 +316,24 @@ export default function RoomDetail() {
 
           <aside id="reserve" className="scroll-mt-24">
             {inquiryOnly ? (
-              <ListingInterestForm
-                propertyId={room.propertyId}
-                roomId={room.id}
-                listingName={room.name}
-                className="bnp-card sticky top-24 p-6"
-              />
+              // Placeholder: no booking panel, but the RATE still leads. The
+              // price is the thing the market test is measuring — a guest who
+              // clicked a "from $310 / week" card must not land on a page with
+              // no number on it. Mirrors the real panel's accent bar and rate
+              // treatment so the two read as the same component family.
+              <div className="bnp-card sticky top-24 overflow-hidden p-6">
+                <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />
+                <p className="text-sm" data-testid="text-placeholder-rate">
+                  <span className="font-display text-2xl font-semibold">{money(room.weeklyRent)}</span>
+                  <span className="text-muted-foreground"> / week</span>
+                </p>
+                <Separator className="my-4" />
+                <ListingInterestForm
+                  propertyId={room.propertyId}
+                  roomId={room.id}
+                  listingName={room.name}
+                />
+              </div>
             ) : (
               <div className="bnp-card sticky top-24 overflow-hidden p-6">
                 <span aria-hidden className="absolute inset-y-0 left-0 w-[5px] bg-segment-room" />

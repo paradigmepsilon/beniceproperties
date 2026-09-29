@@ -17,7 +17,7 @@ import { differenceInCalendarDays, parseISO } from "date-fns";
 import { useLocation, useSearch, Link } from "wouter";
 import { useQuery, useQueries } from "@tanstack/react-query";
 import { ArrowLeft } from "lucide-react";
-import { todayIso } from "@shared/dates";
+import { earliestMoveInIso } from "@shared/dates";
 import { apiRequest, getQueryFn } from "@/lib/queryClient";
 import type {
   LeaseQuoteResponse,
@@ -83,7 +83,8 @@ export default function LeaseBooking() {
   // One or more roomId params (?roomId=a&roomId=b).
   const roomIds = useMemo(() => params.getAll("roomId").filter(Boolean), [params]);
 
-  const today = todayIso();
+  // Advance-booking floor, not "today" — see @shared/dates.earliestMoveInIso.
+  const earliestMoveIn = earliestMoveInIso();
   // Seed the term from a range carried in from the property/room page
   // (?checkIn=&checkOut=) when it's a valid forward, not-past range; otherwise
   // start at today with an open end, as before.
@@ -92,9 +93,9 @@ export default function LeaseBooking() {
   const seedValid =
     /^\d{4}-\d{2}-\d{2}$/.test(seededIn) &&
     /^\d{4}-\d{2}-\d{2}$/.test(seededOut) &&
-    seededIn >= today &&
+    seededIn >= earliestMoveIn &&
     seededOut > seededIn;
-  const [startDate, setStartDate] = useState(seedValid ? seededIn : today);
+  const [startDate, setStartDate] = useState(seedValid ? seededIn : earliestMoveIn);
   const [endDate, setEndDate] = useState(seedValid ? seededOut : "");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -118,8 +119,8 @@ export default function LeaseBooking() {
     [availabilityQueries],
   );
   const disabledDays = useMemo(
-    () => busyToDisabledMatchers(busy, { minDate: today, halfOpen: true }),
-    [busy, today],
+    () => busyToDisabledMatchers(busy, { minDate: earliestMoveIn, halfOpen: true }),
+    [busy, earliestMoveIn],
   );
   // Until EVERY room's availability has loaded, the busy set is unknown (each
   // query's data defaults to undefined → []), so a booked range would look free

@@ -57,6 +57,19 @@ export async function settleManualBookingPayment(
   const booking = await storage.getBooking(payment.bookingId);
   if (payment.status === "PAID") return { payment, booking: booking ?? null };
 
+  // A CANCELLED booking cannot be settled. Without this the queue's only
+  // button would, on a dead row, record the money as collected, flip the
+  // booking back to a live status via postPaymentStatusFor(), set the room
+  // OCCUPIED, and fire onBookingConfirmed() — emailing and texting a guest
+  // about a stay that was called off. Reinstating a cancelled booking is a
+  // deliberate act, not a side effect of marking a payment paid.
+  if (booking?.status === "CANCELLED") {
+    throw new BookingError(
+      "That booking is cancelled — reinstate it before settling the payment",
+      409,
+    );
+  }
+
   // Gate BEFORE any write. Exclude this booking so a pending row can't block
   // its own settlement.
   if (booking && booking.checkOut) {

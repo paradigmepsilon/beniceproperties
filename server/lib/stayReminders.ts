@@ -37,7 +37,7 @@
 // =============================================================================
 
 import { storage } from "../storage";
-import { todayIso, addDaysIso, daysUntil } from "@shared/dates";
+import { todayIso, addDaysIso, daysUntil, friendlyDate } from "@shared/dates";
 import { GUEST_AUTO_NOTIFICATIONS_SETTING } from "@shared/schema";
 import { GATE_DOCS_DEADLINE_HOURS } from "./gateToken";
 import { declineAndRefundBooking } from "./bookingGateDecline";
@@ -91,16 +91,12 @@ const toContext = (stay: GateStayRow): StayContext => ({
   room: stay.room,
 });
 
-/** A friendly date for guest copy: "Friday 2 October". Never an hour count. */
-export function friendlyDate(iso: string): string {
-  const d = new Date(`${iso}T12:00:00Z`);
-  return new Intl.DateTimeFormat("en-GB", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    timeZone: "UTC",
-  }).format(d);
-}
+/**
+ * Re-exported so every existing caller and test keeps its import. The
+ * implementation moved to @shared/dates, which is where the rest of the
+ * YYYY-MM-DD helpers live and which the client can import too.
+ */
+export { friendlyDate } from "@shared/dates";
 
 // ---------------------------------------------------------------------------
 // 1. Ghost sweep — nudge, escalate, or decline
