@@ -94,6 +94,14 @@ const ALL: Record<string, StayTemplate> = {
     reason: "The name on the licence did not match the booking.",
     refundAmount: "$980.00", auto: false, rebookUrl: `${BASE}/property/p1`,
   }),
+  stayModifiedRefunded: T.stayModifiedRefunded({
+    name: "Jane", property: "Old Bill Cook", reference: REFERENCE,
+    checkIn: "2026-10-01", checkOut: "2026-10-08", refundAmount: "$362.25", manualAmount: null, stayUrl: STAY_URL,
+  }),
+  stayModifiedRefunded2: T.stayModifiedRefunded({
+    name: "Jane", property: "Old Bill Cook", reference: REFERENCE,
+    checkIn: "2026-10-01", checkOut: "2026-10-08", refundAmount: "$100.00", manualAmount: "$50.00", stayUrl: STAY_URL,
+  }),
   adminStayAutoDeclined: T.adminStayAutoDeclined({
     property: "Old Bill Cook", room: "Room 2 - Garden", guest: "Jane Resident",
     checkIn: "2026-10-01", checkOut: "2026-10-12", reference: REFERENCE, refundAmount: "$980.00",
@@ -220,6 +228,8 @@ describe("Rule 3 — action messages carry a link", () => {
     "strPreArrival", // credentials are in the email
     "stayExtended", // a receipt
     "stayDeclinedRefunded", // terminal
+    "stayModifiedRefunded", // a receipt for an admin edit
+    "stayModifiedRefunded2",
   ];
 
   it("classifies every guest message as action or informational", () => {

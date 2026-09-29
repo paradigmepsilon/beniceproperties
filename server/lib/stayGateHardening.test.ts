@@ -361,9 +361,12 @@ describe("the money path stays reachable only where it should be", () => {
     const names = callers.map((f) => f.split("/").pop()).sort();
     // stripe.ts defines it; bookingConflicts (admin cancel) and leasePayments
     // (deposit return) predate this work; bookingGateDecline is the new one.
+    // bookingModify (2026-09-28) returns the difference when an admin shortens a
+    // stay from UO — expectedDelta-guarded and keyed per (edit, payment).
     expect(names).toEqual([
       "bookingConflicts.ts",
       "bookingGateDecline.ts",
+      "bookingModify.ts",
       "leasePayments.ts",
       "stripe.ts",
     ]);

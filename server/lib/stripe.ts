@@ -293,12 +293,22 @@ export async function retrievePaymentIntent(id: string): Promise<Stripe.PaymentI
 export async function refundPaymentIntent(opts: {
   paymentIntentId: string;
   idempotencyKey: string;
+  /**
+   * Dollars to refund. Omit for a FULL refund (the original behaviour every
+   * existing caller relies on). A partial refund leaves the rest of the charge
+   * refundable later, which is how a shortened stay returns only the difference.
+   */
+  amount?: number;
   metadata?: Record<string, string>;
   reason?: "requested_by_customer" | "duplicate" | "fraudulent";
 }): Promise<Stripe.Refund> {
+  if (opts.amount !== undefined && !(opts.amount > 0)) {
+    throw new Error(`refund amount must be positive, got ${opts.amount}`);
+  }
   return requireStripe().refunds.create(
     {
       payment_intent: opts.paymentIntentId,
+      ...(opts.amount !== undefined ? { amount: Math.round(opts.amount * 100) } : {}),
       ...(opts.metadata ? { metadata: opts.metadata } : {}),
       ...(opts.reason ? { reason: opts.reason } : {}),
     },
